@@ -16,15 +16,18 @@ anv_hasvk_entrypoints = custom_target(
   depend_files : vk_entrypoints_gen_depend_files,
 )
 
+icd_file_name = libname_prefix + 'vulkan_intel_hasvk.' + libname_suffix
+
 intel_hasvk_icd = custom_target(
   'intel_hasvk_icd',
   input : [vk_icd_gen, vk_api_xml],
-  output : 'intel_hasvk_icd.@0@.json'.format(host_machine.cpu()),
+  output : 'intel_hasvk_icd.' + vulkan_manifest_suffix,
   command : [
     prog_python, '@INPUT0@',
     '--api-version', '1.3', '--xml', '@INPUT1@',
-    '--lib-path', join_paths(get_option('prefix'), get_option('libdir'),
-                             'libvulkan_intel_hasvk.so'),
+    '--sizeof-pointer', sizeof_pointer,
+    '--icd-lib-path', vulkan_icd_lib_path,
+    '--icd-filename', icd_file_name,
     '--out', '@OUTPUT@',
   ],
   build_by_default : true,
@@ -41,15 +44,47 @@ _dev_icd = custom_target(
   command : [
     prog_python, '@INPUT0@',
     '--api-version', '1.3', '--xml', '@INPUT1@',
-    '--lib-path', meson.current_build_dir() / 'libvulkan_intel_hasvk.so',
+    '--sizeof-pointer', sizeof_pointer,
+    '--icd-lib-path', meson.current_build_dir(),
+    '--icd-filename', icd_file_name,
     '--out', '@OUTPUT@',
   ],
   build_by_default : true,
 )
 
 devenv.append('VK_DRIVER_FILES', _dev_icd.full_path())
-# Deprecated: replaced by VK_DRIVER_FILES above
-devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
+
+anv_flags = [
+  no_override_init_args,
+  sse2_args,
+]
+
+anv_hasvk_drirc = custom_target(
+  'anv_hasvk_drirc',
+  input  : [files('anv_drirc_gen.py'), drirc_gen, '00-hasvk-defaults.conf'],
+  output : ['hasvk_drirc.c', 'hasvk_drirc.h'],
+  command : [
+    prog_python, '@INPUT0@',
+    '--import-path', join_paths(dir_source_root, 'src/util'),
+    '--drirc-src', '@OUTPUT0@',
+    '--drirc-hdr', '@OUTPUT1@',
+    '--validate', '@INPUT2@',
+  ],
+)
+
+libanv_hasvk_drirc = static_library(
+  'anv_hasvk_drirc',
+  anv_hasvk_drirc,
+  include_directories : [inc_include, inc_src, inc_intel],
+  c_args : anv_flags,
+  gnu_symbol_visibility : 'hidden',
+  dependencies : idep_mesautil,
+)
+
+idep_anv_hasvk_drirc = declare_dependency(
+  sources : anv_hasvk_drirc[1],
+  link_with : libanv_hasvk_drirc,
+)
 
 libanv_per_hw_ver_libs = []
 anv_per_hw_ver_files = files(
@@ -79,7 +114,7 @@ foreach g : [['70', ['gfx7_cmd_buffer.c']],
       dep_libdrm, dep_valgrind, idep_nir_headers, idep_genxml,
       idep_vulkan_util_headers, idep_vulkan_wsi_headers,
       idep_vulkan_runtime_headers, idep_intel_driver_ds_headers,
-      idep_intel_blorp_elk, idep_mesautil,
+      idep_intel_blorp_elk, idep_mesautil, idep_anv_hasvk_drirc,
     ],
   )
 endforeach
@@ -90,7 +125,6 @@ libanv_files = files(
   'anv_android.h',
   'anv_batch_chain.c',
   'anv_blorp.c',
-  'anv_bo_sync.c',
   'anv_cmd_buffer.c',
   'anv_descriptor_set.c',
   'anv_device.c',
@@ -124,10 +158,7 @@ anv_deps = [
   idep_vulkan_util_headers,
   idep_vulkan_runtime_headers,
   idep_vulkan_wsi_headers,
-]
-anv_flags = [
-  no_override_init_args,
-  sse2_args,
+  idep_anv_hasvk_drirc,
 ]
 
 anv_cpp_flags = []
@@ -206,7 +237,8 @@ if with_symbols_check
   )
 endif
 
-if with_tests
+# HasVK and its tests can only run on x86
+if with_tests and host_machine.cpu_family().startswith('x86')
   libvulkan_intel_hasvk_test = static_library(
     'vulkan_intel_hasvk_test',
     [files('anv_gem_stubs.c'), anv_hasvk_entrypoints[0]],
@@ -250,6 +282,7 @@ if with_tests
         idep_gtest, dep_libdrm, dep_thread, dep_m, dep_valgrind,
         idep_vulkan_util, idep_vulkan_wsi_headers,
         idep_vulkan_runtime, idep_intel_driver_ds, idep_intel_dev,
+        idep_anv_hasvk_drirc,
       ],
       include_directories : [
         inc_include, inc_src, inc_intel,

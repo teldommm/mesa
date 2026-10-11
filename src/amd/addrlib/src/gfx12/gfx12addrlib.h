@@ -1,7 +1,7 @@
 /*
 ************************************************************************************************************************
 *
-*  Copyright (C) 2023 Advanced Micro Devices, Inc.  All rights reserved.
+*  Copyright (C) 2022-2026 Advanced Micro Devices, Inc. All rights reserved.
 *  SPDX-License-Identifier: MIT
 *
 ***********************************************************************************************************************/
@@ -147,10 +147,6 @@ private:
     static const UINT_32 MaxImageDim  = 32768; // Max image size is 32k
     static const UINT_32 MaxMipLevels = 16;
 
-    virtual ADDR_E_RETURNCODE HwlComputePipeBankXor(
-        const ADDR3_COMPUTE_PIPEBANKXOR_INPUT* pIn,
-        ADDR3_COMPUTE_PIPEBANKXOR_OUTPUT*      pOut) const override;
-
     virtual BOOL_32 HwlInitGlobalParams(const ADDR_CREATE_INPUT* pCreateIn) override;
 
     virtual ADDR_E_RETURNCODE HwlComputeStereoInfo(
@@ -162,7 +158,15 @@ private:
         const ADDR3_COMPUTE_SURFACE_INFO_PARAMS_INPUT*   pIn,
         const ADDR3_COMPUTE_SURFACE_INFO_OUTPUT*         pOut) const;
 
-    UINT_32           m_numSwizzleBits;
+    virtual ADDR_E_RETURNCODE HwlCopyMemToSurface(
+        const ADDR3_COPY_MEMSURFACE_INPUT*  pIn,
+        const ADDR3_COPY_MEMSURFACE_REGION* pRegions,
+        UINT_32                             regionCount) const override;
+
+    virtual ADDR_E_RETURNCODE HwlCopySurfaceToMem(
+        const ADDR3_COPY_MEMSURFACE_INPUT*  pIn,
+        const ADDR3_COPY_MEMSURFACE_REGION* pRegions,
+        UINT_32                             regionCount) const override;
 
     // Initialize equation table
     VOID InitEquationTable();
@@ -223,13 +227,6 @@ private:
             ShiftCeil(Max(mip0.depth, 1u),  mipId)
         };
     }
-
-    UINT_32 ComputeOffsetFromEquation(
-        const ADDR_EQUATION* pEq,
-        UINT_32              x,
-        UINT_32              y,
-        UINT_32              z,
-        UINT_32              s) const;
 
     const ADDR_SW_PATINFO* GetSwizzlePatternInfo(
         Addr3SwizzleMode swizzleMode,

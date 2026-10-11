@@ -38,6 +38,25 @@ typedef struct u_printf_info {
    char *strings;
 } u_printf_info;
 
+struct blob;
+struct blob_reader;
+
+void u_printf_serialize_info(struct blob *blob,
+                             const u_printf_info *info,
+                             unsigned printf_info_count);
+
+u_printf_info *u_printf_deserialize_info(void *mem_ctx,
+                                         struct blob_reader *blob,
+                                         unsigned *printf_info_count);
+
+uint32_t u_printf_hash(const u_printf_info *info);
+
+void u_printf_singleton_init_or_ref(void);
+void u_printf_singleton_decref(void);
+void u_printf_singleton_add(const u_printf_info *info, unsigned count);
+void u_printf_singleton_add_serialized(const void *data, size_t data_size);
+const u_printf_info *u_printf_singleton_search(uint32_t hash);
+
 struct u_printf_ctx {
    simple_mtx_t lock;
    void *bo;
@@ -83,8 +102,7 @@ u_printf_destroy(struct u_printf_ctx *ctx)
 }
 
 static inline void
-u_printf_with_ctx(FILE *out, struct u_printf_ctx *ctx,
-                  const u_printf_info *info, unsigned info_size)
+u_printf_with_ctx(FILE *out, struct u_printf_ctx *ctx)
 {
    /* If the printf buffer is empty, early-exit without taking the lock. The
     * speeds up the happy path and makes this function reasonable to call even
@@ -94,7 +112,7 @@ u_printf_with_ctx(FILE *out, struct u_printf_ctx *ctx,
       return;
 
    simple_mtx_lock(&ctx->lock);
-   u_printf(out, (char *)(ctx->map + 2), ctx->map[0] - 8, info, info_size);
+   u_printf(out, (char *)(ctx->map + 2), ctx->map[0] - 8, NULL, 0);
 
    /* Reset */
    ctx->map[0] = 8;
@@ -106,10 +124,9 @@ u_printf_with_ctx(FILE *out, struct u_printf_ctx *ctx,
  * intended to be called periodically to handle aborts in a timely manner.
  */
 static inline bool
-u_printf_check_abort(FILE *out, struct u_printf_ctx *ctx,
-                     const u_printf_info *info, unsigned info_size)
+u_printf_check_abort(FILE *out, struct u_printf_ctx *ctx)
 {
-   u_printf_with_ctx(out, ctx, info, info_size);
+   u_printf_with_ctx(out, ctx);
 
    /* Check the aborted flag */
    return (ctx->map[1] != 0);

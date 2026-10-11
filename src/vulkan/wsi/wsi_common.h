@@ -29,6 +29,8 @@
 #include "util/log.h"
 #include "vk_alloc.h"
 #include "vk_dispatch_table.h"
+#include "vk_internal_exts.h"
+#include "vk_util.h"
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_icd.h>
 
@@ -44,56 +46,9 @@ extern const struct vk_device_entrypoint_table wsi_device_entrypoints;
 
 #include <util/list.h>
 
-/* This is guaranteed to not collide with anything because it's in the
- * VK_KHR_swapchain namespace but not actually used by the extension.
- */
-#define VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA (VkStructureType)1000001002
-#define VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA (VkStructureType)1000001003
-#define VK_STRUCTURE_TYPE_WSI_SURFACE_SUPPORTED_COUNTERS_MESA (VkStructureType)1000001005
-#define VK_STRUCTURE_TYPE_WSI_MEMORY_SIGNAL_SUBMIT_INFO_MESA (VkStructureType)1000001006
-
-#define VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA_cast struct wsi_image_create_info
-#define VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA_cast struct wsi_memory_allocate_info
-#define VK_STRUCTURE_TYPE_WSI_SURFACE_SUPPORTED_COUNTERS_MESA_cast struct wsi_surface_supported_counters
-#define VK_STRUCTURE_TYPE_WSI_MEMORY_SIGNAL_SUBMIT_INFO_MESA_cast struct wsi_memory_signal_submit_info
-
-/* This is always chained to VkImageCreateInfo when a wsi image is created.
- * It indicates that the image can be transitioned to/from
- * VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
- */
-struct wsi_image_create_info {
-    VkStructureType sType;
-    const void *pNext;
-    bool scanout;
-
-    /* if true, the image is a blit source */
-    bool blit_src;
-};
-
-struct wsi_memory_allocate_info {
-    VkStructureType sType;
-    const void *pNext;
-    bool implicit_sync;
-};
-
-/* To be chained into VkSurfaceCapabilities2KHR */
-struct wsi_surface_supported_counters {
-   VkStructureType sType;
-   const void *pNext;
-
-   VkSurfaceCounterFlagsEXT supported_surface_counters;
-
-};
-
-/* To be chained into VkSubmitInfo */
-struct wsi_memory_signal_submit_info {
-    VkStructureType sType;
-    const void *pNext;
-    VkDeviceMemory memory;
-};
-
 struct wsi_interface;
 struct vk_instance;
+struct vk_queue;
 
 struct driOptionCache;
 
@@ -105,10 +60,14 @@ struct wsi_device {
 
    VkPhysicalDevice pdevice;
    VkPhysicalDeviceMemoryProperties memory_props;
+   /* Properties (+ VkPhysicalDeviceDriverProperties) of the device, used by
+    * the X11 backend to publish the GPU name on the window. */
    VkPhysicalDeviceProperties2 properties2;
-   
    uint32_t queue_family_count;
    uint64_t queue_supports_blit;
+   uint64_t queue_supports_timestamps;
+   float timestamp_period;
+   uint32_t timestamp_bits;
 
    VkPhysicalDeviceDrmPropertiesEXT drm_info;
    VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus_info;
@@ -118,18 +77,33 @@ struct wsi_device {
 
    bool has_import_memory_host;
    bool has_timeline_semaphore;
+   bool has_host_query_reset;
+
+   /** Whether the device uses 32bpp formats for 24bpp
+    *
+    * If true, VkImages created with R8G8B8/B8G8R8 formats will be
+    * exported as 32bpp to the window system, as if they were B8G8R8A8
+    * or R8G8B8A8
+    */
+   bool emulate_24as32;
 
    /** Indicates if wsi_image_create_info::scanout is supported
     *
     * If false, WSI will always use either modifiers or the prime blit path.
     */
    bool supports_scanout;
+
+   bool supports_protected[VK_ICD_WSI_PLATFORM_MAX];
+
    bool supports_modifiers;
    uint32_t maxImageDimension2D;
    uint32_t optimalBufferCopyRowPitchAlignment;
    VkPresentModeKHR override_present_mode;
    bool force_bgra8_unorm_first;
    bool force_rgba8_unorm_first;
+
+   /* Cached result for wsi_drm_check_dma_buf_sync_file_import_export(). */
+   uint32_t cached_sync_file_import_export_result;
 
    /* Whether to enable adaptive sync for a swapchain if implemented and
     * available. Not all window systems might support this. */
@@ -142,6 +116,8 @@ struct wsi_device {
    bool force_headless_swapchain;
 
    bool force_swapchain_to_currentExtent;
+
+   bool disable_unordered_submits;
 
    struct {
       /* Override the minimum number of images on the swapchain.
@@ -157,11 +133,6 @@ struct wsi_device {
        * driver in VkSurfaceCapabilitiesKHR::minImageCount.
        */
       bool ensure_minImageCount;
-
-      /* Wait for fences before submitting buffers to Xwayland. Defaults to
-       * true.
-       */
-      bool xwaylandWaitReady;
 
       /* adds an extra minImageCount when running under xwayland */
       bool extra_xwayland_image;
@@ -180,34 +151,32 @@ struct wsi_device {
                                       VkDeviceMemory *out);
    } win32;
 
+   struct {
+      VkResult (*bind_drawable_to_vkimage)(VkImage image, void *drawable);
+      /* Does not transfer the ownership to the command buffer. The command
+       * buffer must retain the drawable to ensure lifespan. */
+      void (*encode_drawable_present)(VkCommandBuffer cmd, void *drawable);
+   } metal;
+
+
    bool sw;
+
+   /* Wait for the swapchain image fence before each present
+    * (MESA_VK_WSI_DEBUG=forcesync). */
    bool forcesync;
 
+   /* Render into a regular image and blit into the presented one
+    * (MESA_VK_WSI_DEBUG=blit or WRAPPER_BLIT=1). */
    bool needs_blit;
 
    /* Set to true if the implementation is ok with linear WSI images. */
    bool wants_linear;
 
-   /* Signals the semaphore such that any wait on the semaphore will wait on
-    * any reads or writes on the give memory object.  This is used to
-    * implement the semaphore signal operation in vkAcquireNextImage.  This
-    * requires the driver to implement vk_device::create_sync_for_memory.
-    */
-   bool signal_semaphore_with_memory;
-
-   /* Signals the fence such that any wait on the fence will wait on any reads
-    * or writes on the give memory object.  This is used to implement the
-    * semaphore signal operation in vkAcquireNextImage.  This requires the
-    * driver to implement vk_device::create_sync_for_memory.  The resulting
-    * vk_sync must support CPU waits.
-    */
-   bool signal_fence_with_memory;
-
    /* Whether present_wait functionality is enabled on the device.
     * In this case, we have to create an extra timeline semaphore
     * to be able to synchronize with the WSI present semaphore being unsignalled.
     * This requires VK_KHR_timeline_semaphore. */
-   bool khr_present_wait;
+   bool has_present_wait;
 
    struct {
       /* Don't use the commit-timing protocol for pacing */
@@ -240,7 +209,7 @@ struct wsi_device {
     * A driver can implement this callback to return a special queue to execute
     * buffer blits.
     */
-   VkQueue (*get_blit_queue)(VkDevice device);
+   struct vk_queue *(*get_blit_queue)(VkDevice device);
 
 #define WSI_CB(cb) PFN_vk##cb cb
    WSI_CB(AllocateMemory);
@@ -252,38 +221,49 @@ struct wsi_device {
    WSI_CB(CmdCopyImage);
    WSI_CB(CmdBlitImage);
    WSI_CB(CmdCopyImageToBuffer);
+   WSI_CB(CmdResetQueryPool);
+   WSI_CB(ResetQueryPoolEXT);
+   WSI_CB(CmdWriteTimestamp);
    WSI_CB(CreateBuffer);
    WSI_CB(CreateCommandPool);
    WSI_CB(CreateFence);
    WSI_CB(CreateImage);
+   WSI_CB(CreateQueryPool);
    WSI_CB(CreateSemaphore);
    WSI_CB(DestroyBuffer);
    WSI_CB(DestroyCommandPool);
    WSI_CB(DestroyFence);
    WSI_CB(DestroyImage);
+   WSI_CB(DestroyQueryPool);
    WSI_CB(DestroySemaphore);
    WSI_CB(EndCommandBuffer);
    WSI_CB(FreeMemory);
    WSI_CB(FreeCommandBuffers);
    WSI_CB(GetBufferMemoryRequirements);
+   WSI_CB(GetCalibratedTimestampsKHR);
    WSI_CB(GetFenceStatus);
    WSI_CB(GetImageDrmFormatModifierPropertiesEXT);
    WSI_CB(GetImageMemoryRequirements);
    WSI_CB(GetImageSubresourceLayout);
    WSI_CB(GetMemoryFdKHR);
+   WSI_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
+   WSI_CB(GetPhysicalDeviceProperties);
    WSI_CB(GetPhysicalDeviceFormatProperties);
    WSI_CB(GetPhysicalDeviceFormatProperties2);
    WSI_CB(GetPhysicalDeviceImageFormatProperties2);
+   WSI_CB(GetPhysicalDeviceQueueFamilyProperties);
+   WSI_CB(GetQueryPoolResults);
    WSI_CB(GetSemaphoreFdKHR);
    WSI_CB(ImportSemaphoreFdKHR);
    WSI_CB(ImportFenceFdKHR);
    WSI_CB(ResetFences);
-   WSI_CB(QueueSubmit);
+   WSI_CB(QueueSubmit2);
+   WSI_CB(SetDebugUtilsObjectNameEXT);
    WSI_CB(WaitForFences);
    WSI_CB(MapMemory);
    WSI_CB(UnmapMemory);
    WSI_CB(WaitSemaphores);
-#ifdef __TERMUX__
+#ifdef VK_WSI_ANDROID_AHB
    WSI_CB(GetMemoryAndroidHardwareBufferANDROID);
    WSI_CB(GetAndroidHardwareBufferPropertiesANDROID);
 #endif
@@ -291,6 +271,8 @@ struct wsi_device {
 
     struct wsi_interface *                  wsi[VK_ICD_WSI_PLATFORM_MAX];
 
+    /* Engine name of the application (VkApplicationInfo::pEngineName),
+     * published on the X11 window as _MESA_DRV_ENGINE_NAME. */
     const char *engine_name;
 };
 
@@ -299,6 +281,7 @@ typedef PFN_vkVoidFunction (VKAPI_PTR *WSI_FN_GetPhysicalDeviceProcAddr)(VkPhysi
 struct wsi_device_options {
    bool sw_device;
    bool extra_xwayland_image;
+   bool emulate_24as32;
 };
 
 VkResult
@@ -338,13 +321,8 @@ wsi_device_setup_syncobj_fd(struct wsi_device *wsi_device,
 
 ICD_DEFINE_NONDISP_HANDLE_CASTS(VkIcdSurfaceBase, VkSurfaceKHR)
 
-VkResult
-wsi_common_get_images(VkSwapchainKHR _swapchain,
-                      uint32_t *pSwapchainImageCount,
-                      VkImage *pSwapchainImages);
-
-VkImage
-wsi_common_get_image(VkSwapchainKHR _swapchain, uint32_t index);
+VkDeviceMemory
+wsi_common_get_memory(VkSwapchainKHR _swapchain, uint32_t index);
 
 VkResult
 wsi_common_acquire_next_image2(const struct wsi_device *wsi,
@@ -354,30 +332,47 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
 
 VkResult
 wsi_common_queue_present(const struct wsi_device *wsi,
-                         VkDevice device_h,
-                         VkQueue queue_h,
-                         int queue_family_index,
+                         struct vk_queue *queue,
                          const VkPresentInfoKHR *pPresentInfo);
+
+static inline bool
+wsi_common_is_swapchain_image(const VkImageCreateInfo *pCreateInfo)
+{
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+   return false;
+# else
+   const VkImageSwapchainCreateInfoKHR *swapchain_info =
+      vk_find_struct_const(pCreateInfo->pNext, IMAGE_SWAPCHAIN_CREATE_INFO_KHR);
+   return swapchain_info && swapchain_info->swapchain != VK_NULL_HANDLE;
+#endif
+}
 
 VkResult
 wsi_common_create_swapchain_image(const struct wsi_device *wsi,
                                   const VkImageCreateInfo *pCreateInfo,
-                                  VkSwapchainKHR _swapchain,
                                   VkImage *pImage);
-VkResult
-wsi_common_bind_swapchain_image(const struct wsi_device *wsi,
-                                VkImage vk_image,
-                                VkSwapchainKHR _swapchain,
-                                uint32_t image_idx);
-
-bool
-wsi_common_vk_instance_supports_present_wait(const struct vk_instance *instance);
 
 VkImageUsageFlags
 wsi_caps_get_image_usage(void);
 
 bool
+wsi_instance_supports_google_display_timing(const struct vk_instance *instance,
+                                            const struct driOptionCache *dri_options);
+
+bool
 wsi_device_supports_explicit_sync(struct wsi_device *device);
+
+static inline VkImageUsageFlags2KHR
+vk_swapchain_usage_flags(const VkSwapchainCreateInfoKHR *info)
+{
+   const VkImageUsageFlags2CreateInfoKHR *usage2 =
+      vk_find_struct_const(info->pNext,
+                           IMAGE_USAGE_FLAGS_2_CREATE_INFO_KHR);
+   if (usage2)
+      return usage2->usage;
+   else
+      return info->imageUsage;
+}
 
 #define wsi_common_vk_warn_once(warning) \
    do { \

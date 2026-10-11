@@ -61,6 +61,11 @@ supported_interface_enum(struct gl_context *ctx, GLenum iface)
    case GL_TESS_CONTROL_SUBROUTINE_UNIFORM:
    case GL_TESS_EVALUATION_SUBROUTINE_UNIFORM:
       return _mesa_has_tessellation(ctx) && _mesa_has_ARB_shader_subroutine(ctx);
+   case GL_TASK_SUBROUTINE_EXT:
+   case GL_MESH_SUBROUTINE_EXT:
+   case GL_TASK_SUBROUTINE_UNIFORM_EXT:
+   case GL_MESH_SUBROUTINE_UNIFORM_EXT:
+      return _mesa_has_EXT_mesh_shader(ctx);
    default:
       return false;
    }
@@ -89,12 +94,6 @@ _mesa_GetProgramInterfaceiv(GLuint program, GLenum programInterface,
                             GLenum pname, GLint *params)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API) {
-      _mesa_debug(ctx, "glGetProgramInterfaceiv(%u, %s, %s, %p)\n",
-                  program, _mesa_enum_to_string(programInterface),
-                  _mesa_enum_to_string(pname), params);
-   }
 
    struct gl_shader_program *shProg =
       _mesa_lookup_shader_program_err(ctx, program,
@@ -147,11 +146,6 @@ _mesa_GetProgramResourceIndex(GLuint program, GLenum programInterface,
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API) {
-      _mesa_debug(ctx, "glGetProgramResourceIndex(%u, %s, %s)\n",
-                  program, _mesa_enum_to_string(programInterface), name);
-   }
-
    unsigned array_index = 0;
    struct gl_program_resource *res;
    struct gl_shader_program *shProg =
@@ -188,6 +182,10 @@ _mesa_GetProgramResourceIndex(GLuint program, GLenum programInterface,
    case GL_FRAGMENT_SUBROUTINE:
    case GL_VERTEX_SUBROUTINE_UNIFORM:
    case GL_FRAGMENT_SUBROUTINE_UNIFORM:
+   case GL_TASK_SUBROUTINE_EXT:
+   case GL_TASK_SUBROUTINE_UNIFORM_EXT:
+   case GL_MESH_SUBROUTINE_EXT:
+   case GL_MESH_SUBROUTINE_UNIFORM_EXT:
    case GL_PROGRAM_INPUT:
    case GL_PROGRAM_OUTPUT:
    case GL_UNIFORM:
@@ -218,12 +216,6 @@ _mesa_GetProgramResourceName(GLuint program, GLenum programInterface,
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API) {
-      _mesa_debug(ctx, "glGetProgramResourceName(%u, %s, %u, %d, %p, %p)\n",
-                  program, _mesa_enum_to_string(programInterface), index,
-                  bufSize, length, name);
-   }
-
    struct gl_shader_program *shProg =
       _mesa_lookup_shader_program_err(ctx, program,
                                       "glGetProgramResourceName");
@@ -252,12 +244,6 @@ _mesa_GetProgramResourceiv(GLuint program, GLenum programInterface,
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API) {
-      _mesa_debug(ctx, "glGetProgramResourceiv(%u, %s, %u, %d, %p, %d, %p, %p)\n",
-                  program, _mesa_enum_to_string(programInterface), index,
-                  propCount, props, bufSize, length, params);
-   }
-
    struct gl_shader_program *shProg =
       _mesa_lookup_shader_program_err(ctx, program, "glGetProgramResourceiv");
 
@@ -282,11 +268,6 @@ _mesa_GetProgramResourceLocation(GLuint program, GLenum programInterface,
                                  const GLchar *name)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API) {
-      _mesa_debug(ctx, "glGetProgramResourceLocation(%u, %s, %s)\n",
-                  program, _mesa_enum_to_string(programInterface), name);
-   }
 
    struct gl_shader_program *shProg =
       lookup_linked_program(program, "glGetProgramResourceLocation");
@@ -319,6 +300,11 @@ _mesa_GetProgramResourceLocation(GLuint program, GLenum programInterface,
       if (!_mesa_has_tessellation(ctx) || !_mesa_has_ARB_shader_subroutine(ctx))
          goto fail;
       break;
+   case GL_TASK_SUBROUTINE_UNIFORM_EXT:
+   case GL_MESH_SUBROUTINE_UNIFORM_EXT:
+      if (!_mesa_has_EXT_mesh_shader(ctx))
+         goto fail;
+      break;
    default:
          goto fail;
    }
@@ -338,11 +324,6 @@ _mesa_GetProgramResourceLocationIndex(GLuint program, GLenum programInterface,
                                       const GLchar *name)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API) {
-      _mesa_debug(ctx, "glGetProgramResourceLocationIndex(%u, %s, %s)\n",
-                  program, _mesa_enum_to_string(programInterface), name);
-   }
 
    struct gl_shader_program *shProg =
       lookup_linked_program(program, "glGetProgramResourceLocationIndex");

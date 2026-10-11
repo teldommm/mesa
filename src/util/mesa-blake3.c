@@ -30,6 +30,9 @@ void _mesa_blake3_format(char *buf, const unsigned char *blake3)
   mesa_bytes_to_hex(buf, blake3, BLAKE3_OUT_LEN);
 }
 
+/* Convert the string hexadecimal representation into its more compact
+ * form.
+ */
 void _mesa_blake3_hex_to_blake3(unsigned char *buf, const char *hex)
 {
   mesa_hex_to_bytes(buf, hex, BLAKE3_OUT_LEN);
@@ -73,7 +76,7 @@ _mesa_blake3_print(FILE *f, const blake3_hash blake3)
 bool
 _mesa_blake3_from_printed_string(blake3_hash blake3, const char *printed)
 {
-   unsigned expected_len = BLAKE3_OUT_LEN32 * 12 - 2;
+   unsigned expected_len = BLAKE3_PRINTED_LEN;
    if (strlen(printed) != expected_len)
       return false;
 

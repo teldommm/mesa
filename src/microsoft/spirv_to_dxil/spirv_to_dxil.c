@@ -32,14 +32,14 @@
 #include "git_sha1.h"
 #include "vulkan/vulkan.h"
 
-static_assert(DXIL_SPIRV_SHADER_NONE == (int)MESA_SHADER_NONE, "must match");
-static_assert(DXIL_SPIRV_SHADER_VERTEX == (int)MESA_SHADER_VERTEX, "must match");
-static_assert(DXIL_SPIRV_SHADER_TESS_CTRL == (int)MESA_SHADER_TESS_CTRL, "must match");
-static_assert(DXIL_SPIRV_SHADER_TESS_EVAL == (int)MESA_SHADER_TESS_EVAL, "must match");
-static_assert(DXIL_SPIRV_SHADER_GEOMETRY == (int)MESA_SHADER_GEOMETRY, "must match");
-static_assert(DXIL_SPIRV_SHADER_FRAGMENT == (int)MESA_SHADER_FRAGMENT, "must match");
-static_assert(DXIL_SPIRV_SHADER_COMPUTE == (int)MESA_SHADER_COMPUTE, "must match");
-static_assert(DXIL_SPIRV_SHADER_KERNEL == (int)MESA_SHADER_KERNEL, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_NONE == MESA_SHADER_NONE, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_VERTEX == MESA_SHADER_VERTEX, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_TESS_CTRL == MESA_SHADER_TESS_CTRL, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_TESS_EVAL == MESA_SHADER_TESS_EVAL, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_GEOMETRY == MESA_SHADER_GEOMETRY, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_FRAGMENT == MESA_SHADER_FRAGMENT, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_COMPUTE == MESA_SHADER_COMPUTE, "must match");
+static_assert((mesa_shader_stage)DXIL_SPIRV_SHADER_KERNEL == MESA_SHADER_KERNEL, "must match");
 
 bool
 spirv_to_dxil(const uint32_t *words, size_t word_count,
@@ -71,10 +71,20 @@ spirv_to_dxil(const uint32_t *words, size_t word_count,
    // have been already converted to zero-base.
    nir_options.lower_base_vertex = conf->first_vertex_and_base_instance_mode != DXIL_SPIRV_SYSVAL_TYPE_ZERO;
 
-   nir_shader *nir = spirv_to_nir(
-      words, word_count, (struct nir_spirv_specialization *)specializations,
-      num_specializations, (gl_shader_stage)stage, entry_point_name,
-      spirv_opts, &nir_options);
+   struct nir_spirv_specialization *spec = NULL;
+   if (specializations && num_specializations > 0) {
+      spec = vtn_alloc_specialization(num_specializations);
+
+      for (unsigned i = 0; i < num_specializations; i++) {
+         vtn_add_specialization_entry(spec, i, specializations[i].id,
+                                      sizeof(specializations[i].value),
+                                      &specializations[i].value, false);
+      }
+   }
+   nir_shader *nir = spirv_to_nir(words, word_count, spec,
+                                  (mesa_shader_stage)stage, entry_point_name,
+                                  spirv_opts, &nir_options);
+   vtn_free_specialization(spec);
    if (!nir) {
       glsl_type_singleton_decref();
       return false;

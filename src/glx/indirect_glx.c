@@ -37,8 +37,6 @@
 #include "indirect.h"
 #include "util/u_debug.h"
 
-#if !defined(GLX_USE_APPLEGL) || defined(GLX_USE_APPLE)
-
 extern struct _glapi_table *__glXNewIndirectAPI(void);
 
 /*
@@ -135,7 +133,7 @@ indirect_bind_context(struct glx_context *gc,
    if (sent) {
       if (!IndirectAPI)
          IndirectAPI = __glXNewIndirectAPI();
-      _glapi_set_dispatch(IndirectAPI);
+      _mesa_glapi_set_dispatch(IndirectAPI);
 
       /* The indirect vertex array state must to be initialised after we
        * have setup the context, as it needs to query server attributes.
@@ -209,9 +207,11 @@ static const struct glx_context_vtable indirect_context_vtable = {
    .unbind              = indirect_unbind_context,
    .wait_gl             = indirect_wait_gl,
    .wait_x              = indirect_wait_x,
+   .copy_context        = __glXCopyContext,
+   .swap_buffers        = __glXSwapBuffers,
 };
 
-_X_HIDDEN struct glx_context *
+struct glx_context *
 indirect_create_context(struct glx_screen *psc,
          struct glx_config *mode,
          struct glx_context *shareList, int renderType)
@@ -228,7 +228,7 @@ indirect_create_context(struct glx_screen *psc,
  * function called \c __glXAllocateClientState that allocates the memory and
  * does all the initialization (including the pixel pack / unpack).
  */
-_X_HIDDEN struct glx_context *
+struct glx_context *
 indirect_create_context_attribs(struct glx_screen *psc,
             struct glx_config *mode,
             struct glx_context *shareList,
@@ -349,7 +349,6 @@ indirect_create_context_attribs(struct glx_screen *psc,
    gc->maxSmallRenderCommandSize = MIN3(bufSize, __GLX_RENDER_CMD_SIZE_LIMIT,
                                         __GLX_MAX_RENDER_CMD_SIZE);
 
-
    return gc;
 }
 
@@ -360,7 +359,7 @@ static const struct glx_screen_vtable indirect_screen_vtable = {
    .query_renderer_string  = NULL,
 };
 
-_X_HIDDEN struct glx_screen *
+struct glx_screen *
 indirect_create_screen(int screen, struct glx_display * priv)
 {
    struct glx_screen *psc;
@@ -375,4 +374,3 @@ indirect_create_screen(int screen, struct glx_display * priv)
    return psc;
 }
 
-#endif

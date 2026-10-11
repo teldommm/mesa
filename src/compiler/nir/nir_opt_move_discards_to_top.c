@@ -43,7 +43,7 @@ static bool
 add_src_to_worklist(nir_src *src, void *state_)
 {
    struct move_discard_state *state = state_;
-   nir_instr *instr = src->ssa->parent_instr;
+   nir_instr *instr = nir_def_instr(src->ssa);
    if (instr->pass_flags)
       return true;
 
@@ -88,7 +88,7 @@ add_src_to_worklist(nir_src *src, void *state_)
     * cleanup.
     */
    instr->pass_flags = MOVE_INSTR_FLAG(state->discard_id);
-   util_dynarray_append(&state->worklist, nir_instr *, instr);
+   util_dynarray_append(&state->worklist, instr);
 
    return true;
 }
@@ -124,7 +124,7 @@ try_move_discard(nir_intrinsic_instr *discard, unsigned *next_discard_id)
    struct move_discard_state state;
    state.discard_id = *next_discard_id;
    util_dynarray_init_from_stack(&state.worklist, work_, sizeof(work_));
-   util_dynarray_append(&state.worklist, nir_instr *, &discard->instr);
+   util_dynarray_append(&state.worklist, &discard->instr);
 
    unsigned next = 0;
    bool can_move_discard = true;
@@ -160,20 +160,6 @@ can_move_intrinsic_after_discard(nir_intrinsic_instr *intrin)
       return can_move_after_demote | can_move_after_terminate;
 
    switch (intrin->intrinsic) {
-   case nir_intrinsic_quad_broadcast:
-   case nir_intrinsic_quad_swap_horizontal:
-   case nir_intrinsic_quad_swap_vertical:
-   case nir_intrinsic_quad_swap_diagonal:
-   case nir_intrinsic_quad_vote_all:
-   case nir_intrinsic_quad_vote_any:
-   case nir_intrinsic_quad_swizzle_amd:
-   case nir_intrinsic_ddx:
-   case nir_intrinsic_ddx_fine:
-   case nir_intrinsic_ddx_coarse:
-   case nir_intrinsic_ddy:
-   case nir_intrinsic_ddy_fine:
-   case nir_intrinsic_ddy_coarse:
-      return can_move_after_demote;
    case nir_intrinsic_is_helper_invocation:
    case nir_intrinsic_load_helper_invocation:
       return can_move_after_terminate;
@@ -191,12 +177,15 @@ can_move_intrinsic_after_discard(nir_intrinsic_instr *intrin)
    case nir_intrinsic_image_deref_load:
    case nir_intrinsic_image_load:
    case nir_intrinsic_bindless_image_load:
+   case nir_intrinsic_image_heap_load:
    case nir_intrinsic_image_deref_sparse_load:
    case nir_intrinsic_image_sparse_load:
    case nir_intrinsic_bindless_image_sparse_load:
+   case nir_intrinsic_image_heap_sparse_load:
    case nir_intrinsic_image_deref_samples_identical:
    case nir_intrinsic_image_samples_identical:
    case nir_intrinsic_bindless_image_samples_identical:
+   case nir_intrinsic_image_heap_samples_identical:
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_load_output:
    case nir_intrinsic_load_shared:
@@ -223,6 +212,9 @@ can_move_intrinsic_after_discard(nir_intrinsic_instr *intrin)
       break;
    }
 
+   if (nir_intrinsic_has_semantic(intrin, NIR_INTRINSIC_QUADGROUP))
+      return can_move_after_demote;
+
    return 0;
 }
 
@@ -248,11 +240,11 @@ opt_move_discards_to_top_impl(nir_function_impl *impl)
          case nir_instr_type_load_const:
          case nir_instr_type_undef:
          case nir_instr_type_phi:
-         case nir_instr_type_debug_info:
             /* These are all safe */
             continue;
 
          case nir_instr_type_call:
+         case nir_instr_type_cmat_call:
             instr->pass_flags = STOP_PROCESSING_INSTR_FLAG;
             /* We don't know what the function will do */
             goto break_all;
@@ -273,7 +265,7 @@ opt_move_discards_to_top_impl(nir_function_impl *impl)
                   instr->pass_flags = STOP_PROCESSING_INSTR_FLAG;
                   goto break_all;
                }
-            FALLTHROUGH;
+               FALLTHROUGH;
             case nir_intrinsic_demote_if:
                try_move_discard(intrin, &next_discard_id);
                break;
@@ -300,9 +292,6 @@ opt_move_discards_to_top_impl(nir_function_impl *impl)
             }
             continue;
          }
-
-         case nir_instr_type_parallel_copy:
-            unreachable("Unhanded instruction type");
          }
       }
    }
@@ -356,8 +345,8 @@ break_all:
    return progress;
 }
 
-/* This optimization only operates on discard_if/demoe_if so
- * nir_opt_conditional_discard and nir_lower_discard_or_demote
+/* This optimization only operates on terminate_if/demote_if so
+ * nir_opt_peephole_select and nir_lower_discard_or_demote
  * should have been called before.
  */
 bool
@@ -372,8 +361,7 @@ nir_opt_move_discards_to_top(nir_shader *shader)
 
    nir_foreach_function_impl(impl, shader) {
       if (opt_move_discards_to_top_impl(impl)) {
-         nir_metadata_preserve(impl, nir_metadata_control_flow);
-         progress = true;
+         progress = nir_progress(true, impl, nir_metadata_control_flow);
       }
    }
 

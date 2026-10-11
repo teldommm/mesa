@@ -80,7 +80,7 @@ To build everything on Linux invoke meson as:
 
    mkdir build
    cd build
-   meson -D glx=xlib -D gallium-drivers=swrast
+   meson -D glx=xlib -D gallium-drivers=llvmpipe
    ninja
 
 Building for Android
@@ -98,6 +98,7 @@ You need to set the ``ANDROID_NDK_ROOT``, ``ANDROID_SDK_VERSION`` and
 ``LLVML_INSTALL_PREFIX`` environment variables appropriately.
 
 .. code-block:: sh
+
    #!/bin/bash
 
    set -e
@@ -146,6 +147,7 @@ The list of libraries passed in `dep_llvm` below should match what it was
 produced by the LLVM build from above.
 
 .. code-block:: sh
+
    #!/usr/bin/env bash
 
    set -exu
@@ -346,7 +348,7 @@ Recommended Reading
    -  `Triangle Scan Conversion using 2D Homogeneous
       Coordinates <https://userpages.cs.umbc.edu/olano/papers/2dh-tri/>`__
    -  `Rasterization on
-      Larrabee <https://www.drdobbs.com/parallel/rasterization-on-larrabee/217200602>`__
+      Larrabee <https://www.gamedeveloper.com/programming/sponsored-feature-rasterization-on-larrabee----adaptive-rasterization-helps-boost-efficiency>`__
    -  `Rasterization using half-space
       functions <http://web.archive.org/web/20110820052005/http://www.devmaster.net/codespotlight/show.php?id=17>`__
    -  `Advanced
@@ -377,7 +379,7 @@ Recommended Reading
 -  Optimization
 
    -  `Optimizing Pixomatic For Modern x86
-      Processors <https://www.drdobbs.com/optimizing-pixomatic-for-modern-x86-proc/184405807>`__
+      Processors <https://web.archive.org/web/20250114121202/https://www.drdobbs.com/optimizing-pixomatic-for-modern-x86-proc/184405807>`__
    -  `Intel 64 and IA-32 Architectures Optimization Reference
       Manual <https://www.intel.com/content/www/us/en/content-details/779559/intel-64-and-ia-32-architectures-optimization-reference-manual.html>`__
    -  `Software optimization

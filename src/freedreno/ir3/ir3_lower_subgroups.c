@@ -273,7 +273,8 @@ lower_instr(struct ir3 *ir, struct ir3_block **block, struct ir3_instruction *in
        */
       assert(instr->dsts[0]->flags & IR3_REG_SHARED);
       instr->opc = OPC_MOV;
-      instr->cat1.dst_type = TYPE_U32;
+      instr->cat1.dst_type =
+         (instr->dsts[0]->flags & IR3_REG_HALF) ? TYPE_U16 : TYPE_U32;
       instr->cat1.src_type =
          (instr->srcs[0]->flags & IR3_REG_HALF) ? TYPE_U16 : TYPE_U32;
       return false;
@@ -452,7 +453,7 @@ lower_instr(struct ir3 *ir, struct ir3_block **block, struct ir3_instruction *in
          branch_flags = instr->flags & IR3_INSTR_NEEDS_HELPERS;
          break;
       default:
-         unreachable("bad opcode");
+         UNREACHABLE("bad opcode");
       }
 
       struct ir3_block *then_block =
@@ -468,10 +469,13 @@ lower_instr(struct ir3 *ir, struct ir3_block **block, struct ir3_instruction *in
          break;
 
       case OPC_BALLOT_MACRO: {
-         unsigned comp_count = util_last_bit(instr->dsts[0]->wrmask);
+         unsigned wrmask = instr->dsts[0]->wrmask;
+         unsigned comp_count = util_last_bit(wrmask);
          struct ir3_instruction *movmsk = ir3_instr_create_at(
             ir3_before_terminator(then_block), OPC_MOVMSK, 1, 0);
-         ir3_dst_create(movmsk, instr->dsts[0]->num, instr->dsts[0]->flags);
+         struct ir3_register *dst =
+            ir3_dst_create(movmsk, instr->dsts[0]->num, instr->dsts[0]->flags);
+         dst->wrmask = wrmask;
          movmsk->repeat = comp_count - 1;
          break;
       }
@@ -484,7 +488,8 @@ lower_instr(struct ir3 *ir, struct ir3_block **block, struct ir3_instruction *in
          struct ir3_register *new_src = ir3_src_create(mov, 0, 0);
          unsigned idx = instr->opc == OPC_READ_COND_MACRO ? 1 : 0;
          *new_src = *instr->srcs[idx];
-         mov->cat1.dst_type = TYPE_U32;
+         mov->cat1.dst_type =
+            (instr->dsts[0]->flags & IR3_REG_HALF) ? TYPE_U16 : TYPE_U32;
          mov->cat1.src_type =
             (new_src->flags & IR3_REG_HALF) ? TYPE_U16 : TYPE_U32;
          mov->flags |= IR3_INSTR_NEEDS_HELPERS;
@@ -492,7 +497,7 @@ lower_instr(struct ir3 *ir, struct ir3_block **block, struct ir3_instruction *in
       }
 
       default:
-         unreachable("bad opcode");
+         UNREACHABLE("bad opcode");
       }
    }
 
@@ -692,14 +697,14 @@ lower_scan_reduce(struct nir_builder *b, nir_instr *instr, void *data)
       return nir_exclusive_scan_clusters_ir3(b, inclusive, exclusive,
                                              .reduction_op = op);
    default:
-      unreachable("filtered intrinsic");
+      UNREACHABLE("filtered intrinsic");
    }
 }
 
 bool
 ir3_nir_opt_subgroups(nir_shader *nir, struct ir3_shader_variant *v)
 {
-   if (!v->compiler->has_getfiberid)
+   if (!v->compiler->info->props.has_getfiberid)
       return false;
 
    return nir_shader_lower_instructions(nir, filter_scan_reduce,
@@ -707,13 +712,8 @@ ir3_nir_opt_subgroups(nir_shader *nir, struct ir3_shader_variant *v)
 }
 
 bool
-ir3_nir_lower_subgroups_filter(const nir_instr *instr, const void *data)
+ir3_nir_lower_subgroups_filter(const nir_intrinsic_instr *intrin, const void *data)
 {
-   if (instr->type != nir_instr_type_intrinsic)
-      return false;
-
-   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-
    const struct ir3_compiler *compiler = data;
 
    switch (intrin->intrinsic) {
@@ -721,7 +721,7 @@ ir3_nir_lower_subgroups_filter(const nir_instr *instr, const void *data)
       if (nir_intrinsic_cluster_size(intrin) == 1) {
          return true;
       }
-      if (nir_intrinsic_cluster_size(intrin) > 0 && !compiler->has_getfiberid) {
+      if (nir_intrinsic_cluster_size(intrin) > 0 && !compiler->info->props.has_getfiberid) {
          return true;
       }
       FALLTHROUGH;
@@ -740,6 +740,8 @@ ir3_nir_lower_subgroups_filter(const nir_instr *instr, const void *data)
       default:
          return intrin->def.num_components > 1;
       }
+   case nir_intrinsic_read_invocation:
+      return !compiler->info->props.has_movs;
    default:
       return true;
    }
@@ -779,7 +781,7 @@ shuffle_to_uniform(nir_builder *b, nir_intrinsic_op op, struct nir_def *val,
    case nir_intrinsic_shuffle_xor:
       return nir_shuffle_xor_uniform_ir3(b, val, id);
    default:
-      unreachable("filtered intrinsic");
+      UNREACHABLE("filtered intrinsic");
    }
 }
 

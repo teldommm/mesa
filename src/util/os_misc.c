@@ -32,6 +32,9 @@
 #include "os_file.h"
 #include "ralloc.h"
 #include "simple_mtx.h"
+#include "u_call_once.h"
+#include "u_debug.h"
+#include "u_math.h"
 
 #include <stdarg.h>
 
@@ -55,8 +58,8 @@
 #if DETECT_OS_ANDROID
 #  define LOG_TAG "MESA"
 #  include <unistd.h>
-#  include <log/log.h>
-#  include <cutils/properties.h>
+#  include <android/log.h>
+#  include <sys/system_properties.h>
 #elif DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD || DETECT_OS_MANAGARM
 #  include <unistd.h>
 #elif DETECT_OS_OPENBSD || DETECT_OS_FREEBSD
@@ -65,7 +68,9 @@
 #elif DETECT_OS_APPLE || DETECT_OS_BSD
 #  include <sys/sysctl.h>
 #  if DETECT_OS_APPLE
+#    include <sys/mman.h>
 #    include <mach/mach_host.h>
+#    include <mach/mach_init.h>
 #    include <mach/vm_param.h>
 #    include <mach/vm_statistics.h>
 #   endif
@@ -131,7 +136,7 @@ os_log_message(const char *message)
    fputs(message, fout);
    fflush(fout);
 #  if DETECT_OS_ANDROID
-   LOG_PRI(ANDROID_LOG_ERROR, LOG_TAG, "%s", message);
+   __android_log_write(ANDROID_LOG_ERROR, LOG_TAG, message);
 #  endif
 #endif
 }
@@ -139,6 +144,16 @@ os_log_message(const char *message)
 #if DETECT_OS_ANDROID
 #  include <ctype.h>
 #  include "c11/threads.h"
+
+/**
+ * In Android 26+ there is no restriction on the length of the name for a
+ * property, replace the default max length with one large enough to support
+ * all property names.
+ */
+#if ANDROID_API_LEVEL >= 26
+#undef PROP_NAME_MAX
+#define PROP_NAME_MAX 128
+#endif /* ANDROID_API_LEVEL >= 26 */
 
 /**
  * Get an option value from android's property system, as a fallback to
@@ -163,9 +178,9 @@ os_log_message(const char *message)
 static char *
 os_get_android_option(const char *name)
 {
-   static thread_local char os_android_option_value[PROPERTY_VALUE_MAX];
-   char key[PROPERTY_KEY_MAX];
-   char *p = key, *end = key + PROPERTY_KEY_MAX;
+   static thread_local char os_android_option_value[PROP_VALUE_MAX];
+   char key[PROP_NAME_MAX];
+   char *p = key, *end = key + PROP_NAME_MAX;
    /* add "mesa." prefix if necessary: */
    if (strstr(name, "MESA_") != name)
       p += strlcpy(p, "mesa.", end - p);
@@ -180,12 +195,12 @@ os_get_android_option(const char *name)
 
    /* prefixes to search sorted by preference */
    const char *prefices[] = { "debug.", "vendor.", "" };
-   char full_key[PROPERTY_KEY_MAX];
+   char full_key[PROP_NAME_MAX];
    int len = 0;
    for (int i = 0; i < ARRAY_SIZE(prefices); i++) {
-      strlcpy(full_key, prefices[i], PROPERTY_KEY_MAX);
-      strlcat(full_key, key, PROPERTY_KEY_MAX);
-      len = property_get(full_key, os_android_option_value, NULL);
+      strlcpy(full_key, prefices[i], PROP_NAME_MAX);
+      strlcat(full_key, key, PROP_NAME_MAX);
+      len = __system_property_get(full_key, os_android_option_value);
       if (len > 0)
          return os_android_option_value;
    }
@@ -199,20 +214,29 @@ os_get_android_option(const char *name)
  * that have been made during the process lifetime, if either the
  * setter uses a different CRT (e.g. due to static linking) or the
  * setter used the Win32 API directly. */
-const char *
-os_get_option(const char *name)
+static const char *
+os_get_option_internal(const char *name, UNUSED bool use_secure_getenv)
 {
    static thread_local char value[_MAX_ENV];
    DWORD size = GetEnvironmentVariableA(name, value, _MAX_ENV);
    return (size > 0 && size < _MAX_ENV) ? value : NULL;
 }
 
-#else
+#else /* !DETECT_OS_WINDOWS */
 
-const char *
-os_get_option(const char *name)
+static const char *
+os_get_option_internal(const char *name, bool use_secure_getenv)
 {
-   const char *opt = getenv(name);
+   const char *opt;
+   if (use_secure_getenv) {
+#ifdef HAVE_SECURE_GETENV
+      opt = secure_getenv(name);
+#else
+      opt = getenv(name);
+#endif
+   } else {
+      opt = getenv(name);
+   }
 #if DETECT_OS_ANDROID
    if (!opt) {
       opt = os_get_android_option(name);
@@ -221,7 +245,39 @@ os_get_option(const char *name)
    return opt;
 }
 
-#endif
+#endif /* DETECT_OS_WINDOWS */
+
+const char *
+os_get_option(const char *name)
+{
+   return os_get_option_internal(name, false);
+}
+
+char *
+os_get_option_dup(const char *name)
+{
+   const char *opt = os_get_option_internal(name, false);
+   if (opt) {
+      return strdup(opt);
+   }
+   return NULL;
+}
+
+const char *
+os_get_option_secure(const char *name)
+{
+   return os_get_option_internal(name, true);
+}
+
+char *
+os_get_option_secure_dup(const char *name)
+{
+   const char *opt = os_get_option_internal(name, true);
+   if (opt) {
+      return strdup(opt);
+   }
+   return NULL;
+}
 
 static struct hash_table *options_tbl;
 static bool options_tbl_exited = false;
@@ -276,6 +332,25 @@ exit_mutex:
    return opt;
 }
 
+void
+os_set_option(const char *name, const char *value, bool override)
+{
+   if (override == false) {
+      if (os_get_option(name)) {
+         return;
+      }
+   }
+#if DETECT_OS_WINDOWS
+   SetEnvironmentVariableA(name, value);
+#else
+   if (value == NULL) {
+      unsetenv(name);
+   } else {
+      setenv(name, value, 1);
+   }
+#endif
+}
+
 /**
  * Return the size of the total physical memory.
  * \param size returns the size of the total physical memory
@@ -284,9 +359,9 @@ exit_mutex:
 bool
 os_get_total_physical_memory(uint64_t *size)
 {
-#if DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD || DETECT_OS_MANAGARM
+#if HAVE_SYSCONF
    const long phys_pages = sysconf(_SC_PHYS_PAGES);
-   const long page_size = sysconf(_SC_PAGE_SIZE);
+   const long page_size = sysconf(_SC_PAGESIZE);
 
    if (phys_pages <= 0 || page_size <= 0)
       return false;
@@ -412,8 +487,8 @@ os_get_available_system_memory(uint64_t *size)
 bool
 os_get_page_size(uint64_t *size)
 {
-#if DETECT_OS_POSIX_LITE && !DETECT_OS_APPLE && !DETECT_OS_HAIKU
-   const long page_size = sysconf(_SC_PAGE_SIZE);
+#if HAVE_SYSCONF
+   const long page_size = sysconf(_SC_PAGESIZE);
 
    if (page_size <= 0)
       return false;
@@ -435,5 +510,48 @@ os_get_page_size(uint64_t *size)
 #else
 #error unexpected platform in os_sysinfo.c
    return false;
+#endif
+}
+
+#if DETECT_OS_APPLE
+
+static bool jit_allowed;
+
+/**
+ * On macOS, a process that has library validation enabled but lacks the
+ * com.apple.security.cs.allow-jit entitlement is not permitted to create
+ * writable+executable mappings.  There is no API to query that policy, so
+ * probe it by attempting the MAP_JIT mapping that any JIT would need.
+ */
+static void
+os_probe_jit_allowed(void)
+{
+   uint64_t page_size;
+
+   if (!os_get_page_size(&page_size))
+      return;
+
+   void *addr = mmap(NULL, page_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                     MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
+   if (addr == MAP_FAILED)
+      return;
+
+   munmap(addr, page_size);
+   jit_allowed = true;
+}
+
+#endif /* DETECT_OS_APPLE */
+
+bool
+os_jit_allowed(void)
+{
+#if DETECT_OS_APPLE
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
+
+   util_call_once(&once, os_probe_jit_allowed);
+
+   return jit_allowed;
+#else
+   return true;
 #endif
 }

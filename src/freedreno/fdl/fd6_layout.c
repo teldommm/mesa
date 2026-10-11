@@ -11,16 +11,7 @@
 
 #include "freedreno_layout.h"
 
-#include "adreno_pm4.xml.h"
-#include "adreno_common.xml.h"
-#include "a6xx.xml.h"
-
-static bool
-is_r8g8(const struct fdl_layout *layout)
-{
-   return layout->cpp == 2 &&
-          util_format_get_nr_components(layout->format) == 2;
-}
+#include "fd6_hw.h"
 
 void
 fdl6_get_ubwc_blockwidth(const struct fdl_layout *layout,
@@ -43,14 +34,17 @@ fdl6_get_ubwc_blockwidth(const struct fdl_layout *layout,
       {  0, 0 }, /* cpp = 128 */
    };
 
-   /* special case for r8g8: */
-   if (is_r8g8(layout)) {
+   /* special case for r8g8 and plane 1 of r8_g8b8_420_unorm (NV12) */
+   if (fdl6_is_r8g8_layout(layout) ||
+      ((layout->format == PIPE_FORMAT_R8_G8B8_420_UNORM) && (layout->plane == 1))) {
       *blockwidth = 16;
       *blockheight = 8;
       return;
    }
 
-   if (layout->format == PIPE_FORMAT_Y8_UNORM) {
+   /* special handling for y8_unorm and plane 0 of r8_g8b8_420_unorm (NV12) */
+   if ((layout->format == PIPE_FORMAT_Y8_UNORM) ||
+      ((layout->format == PIPE_FORMAT_R8_G8B8_420_UNORM) && (layout->plane == 0))) {
       *blockwidth = 32;
       *blockheight = 8;
       return;
@@ -70,7 +64,7 @@ fdl6_get_ubwc_blockwidth(const struct fdl_layout *layout,
          *blockwidth = 4;
          *blockheight = 2;
       } else {
-         unreachable("bad nr_samples");
+         UNREACHABLE("bad nr_samples");
       }
       return;
    }
@@ -87,83 +81,101 @@ fdl6_tile_alignment(struct fdl_layout *layout, uint32_t *heightalign)
    layout->pitchalign = fdl_cpp_shift(layout);
    *heightalign = 16;
 
-   if (is_r8g8(layout) || layout->cpp == 1) {
+   if (fdl6_is_r8g8_layout(layout) || layout->cpp == 1) {
       layout->pitchalign = 1;
       *heightalign = 32;
    } else if (layout->cpp == 2) {
       layout->pitchalign = 2;
    }
 
-   /* Empirical evidence suggests that images with UBWC could have much
-    * looser alignment requirements, however the validity of alignment is
-    * heavily undertested and the "officially" supported alignment is 4096b.
-    */
-   if (layout->ubwc || util_format_is_depth_or_stencil(layout->format))
-      layout->base_align = 4096;
-   else if (layout->cpp == 1)
-      layout->base_align = 64;
-   else if (layout->cpp == 2)
-      layout->base_align = 128;
-   else
-      layout->base_align = 256;
+   layout->base_align = 4096;
 }
 
 /* NOTE: good way to test this is:  (for example)
  *  piglit/bin/texelFetch fs sampler3D 100x100x8
  */
 bool
-fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
-            enum pipe_format format, uint32_t nr_samples, uint32_t width0,
-            uint32_t height0, uint32_t depth0, uint32_t mip_levels,
-            uint32_t array_size, bool is_3d,
-            struct fdl_explicit_layout *explicit_layout)
+fdl6_layout_image(struct fdl_layout *layout, const struct fd_dev_info *info,
+                  const struct fdl_image_params *params,
+                  const struct fdl_explicit_layout *explicit_layout)
 {
    uint32_t offset = 0, heightalign;
    uint32_t ubwc_blockwidth, ubwc_blockheight;
+   uint32_t sparse_blockwidth, sparse_blockheight;
 
-   assert(nr_samples > 0);
-   layout->width0 = width0;
-   layout->height0 = height0;
-   layout->depth0 = depth0;
-   layout->mip_levels = mip_levels;
+   memset(layout, 0, sizeof(*layout));
 
-   layout->cpp = util_format_get_blocksize(format);
-   layout->cpp *= nr_samples;
+   assert(params->nr_samples > 0);
+
+   layout->width0 = params->width0;
+   layout->height0 = params->height0;
+   layout->depth0 = params->depth0;
+   layout->mip_levels = params->mip_levels;
+
+   layout->cpp = util_format_get_blocksize(params->format);
+   layout->cpp *= params->nr_samples;
    layout->cpp_shift = ffs(layout->cpp) - 1;
 
-   layout->format = format;
-   layout->nr_samples = nr_samples;
-   layout->layer_first = !is_3d;
+   layout->format = params->format;
+   layout->nr_samples = params->nr_samples;
+   layout->layer_first = !params->is_3d;
+   layout->is_mutable = params->is_mutable;
 
-   fdl6_get_ubwc_blockwidth(layout, &ubwc_blockwidth, &ubwc_blockheight);
+   layout->ubwc = params->ubwc;
+   layout->tile_mode = params->tile_mode;
+   layout->plane = params->plane;
+   uint32_t sparse_blocksize = 65536;
 
-   /* For simplicity support UBWC only for 3D images without mipmaps,
-    * most d3d11 games don't use mipmaps for 3D images.
-    */
-   if (depth0 > 1 && mip_levels > 1)
+   if (!util_is_power_of_two_or_zero(layout->cpp)) {
+      /* R8G8B8 and other 3 component formats don't get UBWC: */
+      ubwc_blockwidth = ubwc_blockheight = 0;
       layout->ubwc = false;
+   } else {
+      fdl6_get_ubwc_blockwidth(layout, &ubwc_blockwidth, &ubwc_blockheight);
 
-   if (ubwc_blockwidth == 0)
-      layout->ubwc = false;
+      fdl_get_sparse_block_size(params->format, params->nr_samples,
+                                &sparse_blockwidth, &sparse_blockheight);
+      assert(sparse_blocksize == sparse_blockwidth * sparse_blockheight * layout->cpp);
 
-   if (width0 < FDL_MIN_UBWC_WIDTH) {
+      /* For simplicity support UBWC only for 3D images without mipmaps,
+       * most d3d11 games don't use mipmaps for 3D images.
+       */
+      if (params->depth0 > 1 && params->mip_levels > 1)
+         layout->ubwc = false;
+
+      if (ubwc_blockwidth == 0)
+         layout->ubwc = false;
+   }
+
+   assert(!params->force_ubwc || layout->ubwc);
+
+   layout->linear_fallback_threshold_texels =
+      fdl_linear_fallback_threshold_texels(layout, info);
+
+   if (!params->force_ubwc &&
+       layout->width0 < layout->linear_fallback_threshold_texels) {
       layout->ubwc = false;
       /* Linear D/S is not supported by HW. */
-      if (!util_format_is_depth_or_stencil(format))
+      if (!util_format_is_depth_or_stencil(params->format))
          layout->tile_mode = TILE6_LINEAR;
    }
 
    /* Linear D/S is not supported by HW. */
-   if (util_format_is_depth_or_stencil(format))
+   if (util_format_is_depth_or_stencil(params->format))
       layout->tile_all = true;
 
-   if (layout->ubwc && !info->a6xx.has_ubwc_linear_mipmap_fallback)
+   if (layout->ubwc && !info->props.has_ubwc_linear_mipmap_fallback)
       layout->tile_all = true;
+
+   if (layout->tile_mode != TILE6_LINEAR &&
+       params->force_disable_linear_fallback) {
+      layout->tile_all = true;
+   }
 
    /* in layer_first layout, the level (slice) contains just one
     * layer (since in fact the layer contains the slices)
     */
-   uint32_t layers_in_level = layout->layer_first ? 1 : array_size;
+   uint32_t layers_in_level = layout->layer_first ? 1 : params->array_size;
 
    /* note: for tiled+noubwc layouts, we can use a lower pitchalign
     * which will affect the linear levels only, (the hardware will still
@@ -174,19 +186,28 @@ fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
    } else {
       layout->base_align = 64;
       layout->pitchalign = 0;
-      /* align pitch to at least 16 pixels:
-       * both turnip and galium assume there is enough alignment for 16x4
-       * aligned gmem store. turnip can use CP_BLIT to work without this
-       * extra alignment, but gallium driver doesn't implement it yet
-       */
-      if (layout->cpp > 4)
-         layout->pitchalign = fdl_cpp_shift(layout) - 2;
 
-      /* when possible, use a bit more alignment than necessary
-       * presumably this is better for performance?
-       */
-      if (!explicit_layout)
-         layout->pitchalign = fdl_cpp_shift(layout);
+      if (util_is_power_of_two_or_zero(layout->cpp)) {
+         /* align pitch to at least 16 pixels:
+          * both turnip and galium assume there is enough alignment for 16x4
+          * aligned gmem store. turnip can use CP_BLIT to work without this
+          * extra alignment, but gallium driver doesn't implement it yet
+          */
+         if (layout->cpp > 4)
+            layout->pitchalign = fdl_cpp_shift(layout) - 2;
+
+         /* when possible, use a bit more alignment than necessary
+          * presumably this is better for performance?
+          */
+         if (!explicit_layout)
+            layout->pitchalign = fdl_cpp_shift(layout);
+      } else {
+         /* 3 component formats have pitch aligned as their counterpart
+          * 4 component formats
+          */
+         layout->cpp_shift = ffs(util_next_power_of_two(layout->cpp)) - 1;
+         layout->pitchalign = layout->cpp_shift;
+      }
 
       /* not used, avoid "may be used uninitialized" warning */
       heightalign = 1;
@@ -201,35 +222,58 @@ fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
          return false;
    }
 
-   uint32_t ubwc_width0 = width0;
-   uint32_t ubwc_height0 = height0;
+   uint32_t ubwc_width0 = params->width0;
+   uint32_t ubwc_height0 = params->height0;
    uint32_t ubwc_tile_height_alignment = RGB_TILE_HEIGHT_ALIGNMENT;
-   if (mip_levels > 1) {
-      /* With mipmapping enabled, UBWC layout is power-of-two sized,
-       * specified in log2 width/height in the descriptors.  The height
-       * alignment is 64 for mipmapping, but for buffer sharing (always
-       * single level) other participants expect 16.
-       */
-      ubwc_width0 = util_next_power_of_two(width0);
-      ubwc_height0 = util_next_power_of_two(height0);
-      ubwc_tile_height_alignment = 64;
+   if (layout->ubwc) {
+      if (params->mip_levels > 1) {
+         /* With mipmapping enabled, UBWC layout is power-of-two sized,
+          * specified in log2 width/height in the descriptors.  The height
+          * alignment is 64 for mipmapping, but for buffer sharing (always
+          * single level) other participants expect 16.
+          */
+         ubwc_width0 = util_next_power_of_two(params->width0);
+         ubwc_height0 = util_next_power_of_two(params->height0);
+         ubwc_tile_height_alignment = 64;
+      }
+
+      layout->ubwc_width0 = align(DIV_ROUND_UP(ubwc_width0, ubwc_blockwidth),
+                                  RGB_TILE_WIDTH_ALIGNMENT);
+      ubwc_height0 = align(DIV_ROUND_UP(ubwc_height0, ubwc_blockheight),
+                           ubwc_tile_height_alignment);
+   } else {
+      layout->ubwc_width0 = 0;
+      ubwc_height0 = 0;
+      layout->ubwc_layer_size = 0;
    }
-   layout->ubwc_width0 = align(DIV_ROUND_UP(ubwc_width0, ubwc_blockwidth),
-                               RGB_TILE_WIDTH_ALIGNMENT);
-   ubwc_height0 = align(DIV_ROUND_UP(ubwc_height0, ubwc_blockheight),
-                        ubwc_tile_height_alignment);
 
    uint32_t min_3d_layer_size = 0;
+   bool in_sparse_miptail = false;
 
-   for (uint32_t level = 0; level < mip_levels; level++) {
-      uint32_t depth = u_minify(depth0, level);
+   for (uint32_t level = 0; level < params->mip_levels; level++) {
+      uint32_t depth = u_minify(params->depth0, level);
       struct fdl_slice *slice = &layout->slices[level];
       struct fdl_slice *ubwc_slice = &layout->ubwc_slices[level];
       enum a6xx_tile_mode tile_mode = fdl_tile_mode(layout, level);
       uint32_t pitch = fdl_pitch(layout, level);
-      uint32_t height = u_minify(height0, level);
+      uint32_t width = u_minify(params->width0, level);
+      uint32_t height = u_minify(params->height0, level);
 
-      uint32_t nblocksy = util_format_get_nblocksy(format, height);
+      uint32_t nblocksx = util_format_get_nblocksx(params->format, width);
+      uint32_t nblocksy = util_format_get_nblocksy(params->format, height);
+
+      /* Follow the Vulkan requirements for when the miptail begins. */
+      if (params->sparse &&
+          (nblocksx < sparse_blockwidth || nblocksy < sparse_blockheight) &&
+          !in_sparse_miptail) {
+         in_sparse_miptail = true;
+         layout->mip_tail_first_lod = level;
+         /* The algorithm here follows the HW, which should ensure that the
+          * miptail is page aligned. If not we're in big trouble.
+          */
+         assert(layout->size % 4096 == 0);
+      }
+
       if (tile_mode)
          nblocksy = align(nblocksy, heightalign);
 
@@ -240,7 +284,7 @@ fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
        * The pitch is already sufficiently aligned, but height
        * may not be. note this only matters if last level is linear
        */
-      if (level == mip_levels - 1)
+      if (level == params->mip_levels - 1)
          nblocksy = align(nblocksy, 4);
 
       slice->offset = offset + layout->size;
@@ -250,7 +294,7 @@ fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
        * until the value we specify in TEX_CONST_3_MIN_LAYERSZ, which is used to
        * make sure that we follow alignment requirements after minification.
        */
-      if (is_3d) {
+      if (params->is_3d) {
          if (level == 0) {
             slice->size0 = align(nblocksy * pitch, 4096);
          } else if (min_3d_layer_size) {
@@ -266,10 +310,8 @@ fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
             if (pitch != fdl_pitch(layout, level - 1) / 2)
                min_3d_layer_size = slice->size0 = nblocksy * pitch;
 
-            /* If the height is now less than the alignment requirement, then
-             * scale it up and let this be the minimum layer size.
-             */
-            if (tile_mode && util_format_get_nblocksy(format, height) < heightalign)
+            /* If the height wouldn't be aligned, stay aligned instead */
+            if (slice->size0 < nblocksy * pitch)
                min_3d_layer_size = slice->size0 = nblocksy * pitch;
 
             /* If the size would become un-page-aligned, stay aligned instead. */
@@ -297,9 +339,42 @@ fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
       }
    }
 
-   if (layout->layer_first) {
+   if (layout->layer_first)
       layout->layer_size = align64(layout->size, 4096);
-      layout->size = layout->layer_size * array_size;
+
+   if (layout->layer_first && !explicit_layout) {
+      if (params->sparse) {
+         if (!in_sparse_miptail) {
+            layout->mip_tail_first_lod = layout->mip_levels;
+            assert(layout->layer_size % 4096 == 0);
+         }
+
+         /* Honor the Vulkan requirement that the mip tail region is a
+          * multiple of the sparse block size (i.e. 64k). Note that the mip
+          * tail offset is *not* required to be a multiple of the sparse
+          * block size, and we can't guarantee that anyway as the miplevel
+          * offset is controlled by the HW. The partial block before the
+          * miptail will only be partially mapped.
+          */
+         uint32_t mip_tail_size = fdl_sparse_miptail_size(layout);
+
+         /* Vulkan CTS requires that as the image size decreases, the
+          * memory requirements always decrease or stay the same. If there
+          * is no sparse miptail, apply the same padding to the last layer
+          * so that if the image becomes small enough to have a sparse
+          * miptail then the padding still applies.
+          */
+         if (mip_tail_size == 0) {
+            mip_tail_size = layout->slices[params->mip_levels - 1].size0;
+         }
+
+         assert(mip_tail_size % 4096 == 0);
+
+         layout->layer_size +=
+            (sparse_blocksize - mip_tail_size) % sparse_blocksize;
+      }
+
+      layout->size = layout->layer_size * params->array_size;
    }
 
    /* Place the UBWC slices before the uncompressed slices, because the
@@ -308,10 +383,12 @@ fdl6_layout(struct fdl_layout *layout, const struct fd_dev_info *info,
     * independently.
     */
    if (layout->ubwc) {
-      assert(!(depth0 > 1 && mip_levels > 1));
-      for (uint32_t level = 0; level < mip_levels; level++)
-         layout->slices[level].offset += layout->ubwc_layer_size * array_size * depth0;
-      layout->size += layout->ubwc_layer_size * array_size * depth0;
+      assert(!(params->depth0 > 1 && params->mip_levels > 1));
+      for (uint32_t level = 0; level < params->mip_levels; level++) {
+         layout->slices[level].offset +=
+            layout->ubwc_layer_size * params->array_size * params->depth0;
+      }
+      layout->size += layout->ubwc_layer_size * params->array_size * params->depth0;
    }
 
    /* include explicit offset in size */

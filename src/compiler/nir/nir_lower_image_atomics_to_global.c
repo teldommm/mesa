@@ -6,6 +6,11 @@
 #include "util/format/u_format.h"
 #include "nir_builder.h"
 
+struct lower_state {
+   nir_intrin_filter_cb filter;
+   const void *data;
+};
+
 /*
  * If shader images are uncompressed, dedicated image atomics are unnecessary.
  * Instead, there may be a "load texel address" instruction that does all the
@@ -15,8 +20,9 @@
  */
 
 static bool
-lower(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *_)
+lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
+   const struct lower_state *state = data;
    nir_intrinsic_op address_op;
    bool swap;
 
@@ -31,6 +37,7 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *_)
       CASE(image)
       CASE(bindless_image)
       CASE(image_deref)
+      CASE(image_heap)
    default:
       return false;
    }
@@ -39,7 +46,11 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *_)
    b->cursor = nir_before_instr(&intr->instr);
    nir_atomic_op atomic_op = nir_intrinsic_atomic_op(intr);
    enum pipe_format format = nir_intrinsic_format(intr);
+   unsigned num_comps = intr->def.num_components;
    unsigned bit_size = intr->def.bit_size;
+
+   if (state->filter && !state->filter(intr, state->data))
+      return false;
 
    /* Even for "formatless" access, we know the size of the texel accessed,
     * since it's the size of the atomic. We can use that to synthesize a
@@ -55,7 +66,7 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *_)
       else
          format_type = UTIL_FORMAT_TYPE_UNSIGNED;
 
-      format = util_format_get_array(format_type, bit_size, 1, false,
+      format = util_format_get_array(format_type, bit_size, num_comps, false,
                                      type_ != nir_type_float);
    }
 
@@ -67,8 +78,7 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *_)
       .format = format,
       .access = nir_intrinsic_access(intr));
 
-   nir_instr *address_instr = address->parent_instr;
-   nir_intrinsic_instr *address_intr = nir_instr_as_intrinsic(address_instr);
+   nir_intrinsic_instr *address_intr = nir_def_as_intrinsic(address);
 
    address_intr->intrinsic = address_op;
    if (address_op == nir_intrinsic_image_texel_address) {
@@ -86,18 +96,25 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *_)
                                  .atomic_op = atomic_op);
    }
 
+   b->shader->info.use_lowered_image_to_global = true;
+
    /* Replace the image atomic with the global atomic. Remove the image
     * explicitly because it has side effects so is not DCE'd.
     */
-   nir_def_rewrite_uses(&intr->def, global);
-   nir_instr_remove(&intr->instr);
+   nir_def_replace(&intr->def, global);
    return true;
 }
 
 bool
-nir_lower_image_atomics_to_global(nir_shader *shader)
+nir_lower_image_atomics_to_global(nir_shader *shader,
+                                  nir_intrin_filter_cb filter,
+                                  const void *data)
 {
+   struct lower_state state = {
+      .filter = filter,
+      .data = data,
+   };
    return nir_shader_intrinsics_pass(shader, lower,
                                      nir_metadata_control_flow,
-                                     NULL);
+                                     (void *)&state);
 }

@@ -566,7 +566,7 @@ init_args(struct gallivm_state *gallivm,
    load_attribute(gallivm, args, key, 0, attr_pos);
 
    pixel_center = lp_build_const_vec(gallivm, typef4,
-                                     (!key->multisample && key->pixel_center_half) ? 0.5 : 0.0);
+                                     key->pixel_center_half ? 0.5 : 0.0);
 
    /*
     * xy are first two elems in v0a/v1a/v2a but just use vec4 arit
@@ -633,7 +633,7 @@ init_args(struct gallivm_state *gallivm,
  *
  */
 static struct lp_setup_variant *
-generate_setup_variant(struct lp_setup_variant_key *key,
+generate_setup_variant(const struct lp_setup_variant_key *key,
                        struct llvmpipe_context *lp)
 {
    int64_t t0 = 0, t1;
@@ -664,7 +664,6 @@ generate_setup_variant(struct lp_setup_variant_key *key,
    }
 
    memcpy(&variant->key, key, key->size);
-   variant->list_item_global.base = variant;
 
    /* Currently always deal with full 4-wide vertex attributes from
     * the vertices.
@@ -687,24 +686,24 @@ generate_setup_variant(struct lp_setup_variant_key *key,
       LLVMFunctionType(LLVMVoidTypeInContext(gallivm->context),
                        arg_types, ARRAY_SIZE(arg_types), 0);
 
-   variant->function = LLVMAddFunction(gallivm->module, func_name, func_type);
-   variant->function_name = MALLOC(strlen(func_name)+1);
-   strcpy(variant->function_name, func_name);
-   if (!variant->function)
+   LLVMValueRef function = LLVMAddFunction(gallivm->module, func_name, func_type);
+   if (!function)
       goto fail;
 
-   LLVMSetFunctionCallConv(variant->function, LLVMCCallConv);
+   LLVMSetFunctionCallConv(function, LLVMCCallConv);
+
+   lp_function_add_debug_info(gallivm, function, func_type);
 
    struct lp_setup_args args;
    args.vec4f_type = vec4f_type;
-   args.v0       = LLVMGetParam(variant->function, 0);
-   args.v1       = LLVMGetParam(variant->function, 1);
-   args.v2       = LLVMGetParam(variant->function, 2);
-   args.facing   = LLVMGetParam(variant->function, 3);
-   args.a0       = LLVMGetParam(variant->function, 4);
-   args.dadx     = LLVMGetParam(variant->function, 5);
-   args.dady     = LLVMGetParam(variant->function, 6);
-   args.key      = LLVMGetParam(variant->function, 7);
+   args.v0       = LLVMGetParam(function, 0);
+   args.v1       = LLVMGetParam(function, 1);
+   args.v2       = LLVMGetParam(function, 2);
+   args.facing   = LLVMGetParam(function, 3);
+   args.a0       = LLVMGetParam(function, 4);
+   args.dadx     = LLVMGetParam(function, 5);
+   args.dady     = LLVMGetParam(function, 6);
+   args.key      = LLVMGetParam(function, 7);
 
    lp_build_name(args.v0, "in_v0");
    lp_build_name(args.v1, "in_v1");
@@ -720,21 +719,21 @@ generate_setup_variant(struct lp_setup_variant_key *key,
     */
    LLVMBasicBlockRef block =
       LLVMAppendBasicBlockInContext(gallivm->context,
-                                    variant->function, "entry");
+                                    function, "entry");
    LLVMPositionBuilderAtEnd(builder, block);
 
-   set_noalias(builder, variant->function, arg_types, ARRAY_SIZE(arg_types));
+   set_noalias(builder, function, arg_types, ARRAY_SIZE(arg_types));
    init_args(gallivm, &variant->key, &args);
    emit_tri_coef(gallivm, &variant->key, &args);
 
    LLVMBuildRetVoid(builder);
 
-   gallivm_verify_function(gallivm, variant->function);
+   gallivm_verify_function(gallivm, function);
 
    gallivm_compile_module(gallivm);
 
    variant->jit_function = (lp_jit_setup_triangle)
-      gallivm_jit_function(gallivm, variant->function, variant->function_name);
+      gallivm_jit_function(gallivm, function, func_name);
    if (!variant->jit_function)
       goto fail;
 
@@ -754,7 +753,10 @@ generate_setup_variant(struct lp_setup_variant_key *key,
 fail:
    if (variant) {
       if (variant->gallivm) {
-         gallivm_destroy(variant->gallivm);
+         /* Runs under the compile lock (setup_compile_cb); the plain
+          * gallivm_destroy would re-take that lock and deadlock.
+          */
+         gallivm_destroy_locked(variant->gallivm);
       }
       FREE(variant);
    }
@@ -768,15 +770,15 @@ lp_make_setup_variant_key(const struct llvmpipe_context *lp,
                           struct lp_setup_variant_key *key)
 {
    const struct lp_fragment_shader *fs = lp->fs;
+   const struct pipe_rasterizer_state *rast = lp->rasterizer;
    struct nir_shader *nir = fs->base.ir.nir;
 
    assert(sizeof key->inputs[0] == sizeof(uint));
 
    key->num_inputs = nir->num_inputs;
-   key->flatshade_first = lp->rasterizer->flatshade_first;
-   key->pixel_center_half = lp->rasterizer->half_pixel_center;
-   key->multisample = lp->rasterizer->multisample;
-   key->twoside = lp->rasterizer->light_twoside;
+   key->flatshade_first = rast->flatshade_first;
+   key->pixel_center_half = rast->half_pixel_center && !rast->multisample;
+   key->twoside = rast->light_twoside;
    key->size = offsetof(struct lp_setup_variant_key, inputs[key->num_inputs]);
 
    key->color_slot = lp->color_slot[0];
@@ -789,17 +791,23 @@ lp_make_setup_variant_key(const struct llvmpipe_context *lp,
     * to the primitive's maximum Z value. Retain the original depth bias
     * value until that stage.
     */
-   key->floating_point_depth = lp->floating_point_depth;
+   key->floating_point_depth = lp->floating_point_depth && !rast->offset_units_unscaled;
 
-   if (key->floating_point_depth) {
-      key->pgon_offset_units = (float) lp->rasterizer->offset_units;
-   } else {
+   key->pgon_offset_units = (float) rast->offset_units;
+   if (rast->offset_units != 0 && !lp->floating_point_depth &&
+       !rast->offset_units_unscaled) {
+      /* Ensure correct rounding if a unorm format is used. */
+      float adjustment =
+         lp->floating_point_depth
+         ? 0
+         : (rast->offset_units > 0.0f ? 0.5f : -0.5f);
+
       key->pgon_offset_units =
-         (float) (lp->rasterizer->offset_units * lp->mrd * 2);
+         (float) ((rast->offset_units + adjustment) * lp->mrd);
    }
 
-   key->pgon_offset_scale = lp->rasterizer->offset_scale;
-   key->pgon_offset_clamp = lp->rasterizer->offset_clamp;
+   key->pgon_offset_scale = rast->offset_scale;
+   key->pgon_offset_clamp = rast->offset_clamp;
    key->uses_constant_interp = 0;
    key->pad = 0;
 
@@ -807,7 +815,7 @@ lp_make_setup_variant_key(const struct llvmpipe_context *lp,
 
    for (unsigned i = 0; i < key->num_inputs; i++) {
       if (key->inputs[i].interp == LP_INTERP_COLOR) {
-         if (lp->rasterizer->flatshade)
+         if (rast->flatshade)
             key->inputs[i].interp = LP_INTERP_CONSTANT;
          else
             key->inputs[i].interp = LP_INTERP_PERSPECTIVE;
@@ -820,51 +828,55 @@ lp_make_setup_variant_key(const struct llvmpipe_context *lp,
 
 
 static void
-remove_setup_variant(struct llvmpipe_context *lp,
-                     struct lp_setup_variant *variant)
+setup_destroy_cb(struct util_shader_variant *base)
 {
+   struct lp_setup_variant *variant =
+      container_of(base, struct lp_setup_variant, base);
+
    if (gallivm_debug & GALLIVM_DEBUG_IR) {
-      debug_printf("llvmpipe: del setup_variant #%u total %u\n",
-                   variant->no, lp->nr_setup_variants);
+      debug_printf("llvmpipe: del setup_variant #%u\n", variant->no);
    }
 
-   if (variant->gallivm) {
+   if (variant->gallivm)
       gallivm_destroy(variant->gallivm);
-   }
-
-   list_del(&variant->list_item_global.list);
-   lp->nr_setup_variants--;
-   FREE(variant->function_name);
    FREE(variant);
 }
 
 
-/* When the number of setup variants exceeds a threshold, cull a
- * fraction (currently a quarter) of them.
- */
-static void
-cull_setup_variants(struct llvmpipe_context *lp)
+static struct util_shader_variant *
+setup_compile_cb(void *user_data, void *cso, const void *key)
 {
-   struct pipe_context *pipe = &lp->pipe;
+   struct llvmpipe_screen *screen = user_data;
+   struct llvmpipe_context *lp = cso;
 
-   /*
-    * XXX: we need to flush the context until we have some sort of reference
-    * counting in fragment shaders as they may still be binned
-    * Flushing alone might not be sufficient we need to wait on it too.
-    */
-   llvmpipe_finish(pipe, __func__);
+   simple_mtx_lock(screen->llvm_context.mutex);
+   struct lp_setup_variant *variant = generate_setup_variant(key, lp);
+   simple_mtx_unlock(screen->llvm_context.mutex);
 
-   for (int i = 0; i < LP_MAX_SETUP_VARIANTS / 4; i++) {
-      struct lp_setup_variant_list_item *item;
-      if (list_is_empty(&lp->setup_variants_list.list)) {
-         break;
-      }
-      item = list_last_entry(&lp->setup_variants_list.list,
-                             struct lp_setup_variant_list_item, list);
-      assert(item);
-      assert(item->base);
-      remove_setup_variant(lp, item->base);
-   }
+   return variant ? &variant->base : NULL;
+}
+
+
+void
+llvmpipe_screen_init_setup_cache(struct llvmpipe_screen *screen)
+{
+   const struct util_shader_variant_cache_options opts = {
+      .compile = setup_compile_cb,
+      .destroy = setup_destroy_cb,
+      .user_data = screen,
+      .cap = LP_MAX_SETUP_VARIANTS,
+   };
+   screen->setup_variant_opts = opts;
+
+   util_shader_variant_list_init(&screen->setup_variants);
+}
+
+
+void
+llvmpipe_screen_destroy_setup_cache(struct llvmpipe_screen *screen)
+{
+   util_shader_variant_list_destroy(&screen->setup_variant_opts,
+                                    &screen->setup_variants);
 }
 
 
@@ -876,33 +888,19 @@ cull_setup_variants(struct llvmpipe_context *lp)
 void
 llvmpipe_update_setup(struct llvmpipe_context *lp)
 {
-   struct lp_setup_variant_key *key = &lp->setup_variant.key;
-   struct lp_setup_variant *variant = NULL;
-   struct lp_setup_variant_list_item *li;
+   struct llvmpipe_screen *screen = llvmpipe_screen(lp->pipe.screen);
+   struct lp_setup_variant_key *key = &lp->cached_setup_key;
 
    lp_make_setup_variant_key(lp, key);
 
-   LIST_FOR_EACH_ENTRY(li, &lp->setup_variants_list.list, list) {
-      if (li->base->key.size == key->size &&
-         memcmp(&li->base->key, key, key->size) == 0) {
-         variant = li->base;
-         break;
-      }
-   }
+   util_shader_variant_get_pinned(&screen->setup_variant_opts,
+                                  &screen->setup_variants,
+                                  lp, key, key->size,
+                                  &lp->setup_variant_pin, NULL);
 
-   if (variant) {
-      list_move_to(&variant->list_item_global.list, &lp->setup_variants_list.list);
-   } else {
-      if (lp->nr_setup_variants >= LP_MAX_SETUP_VARIANTS) {
-         cull_setup_variants(lp);
-      }
-
-      variant = generate_setup_variant(key, lp);
-      if (variant) {
-         list_add(&variant->list_item_global.list, &lp->setup_variants_list.list);
-         lp->nr_setup_variants++;
-      }
-   }
+   struct lp_setup_variant *variant = lp->setup_variant_pin
+      ? container_of(lp->setup_variant_pin, struct lp_setup_variant, base)
+      : NULL;
 
    lp_setup_set_setup_variant(lp->setup, variant);
 }
@@ -911,10 +909,9 @@ llvmpipe_update_setup(struct llvmpipe_context *lp)
 void
 lp_delete_setup_variants(struct llvmpipe_context *lp)
 {
-   struct lp_setup_variant_list_item *li, *next;
-   LIST_FOR_EACH_ENTRY_SAFE(li, next, &lp->setup_variants_list.list, list) {
-      remove_setup_variant(lp, li->base);
-   }
+   struct llvmpipe_screen *screen = llvmpipe_screen(lp->pipe.screen);
+   util_shader_variant_reference(&screen->setup_variant_opts,
+                                 &lp->setup_variant_pin, NULL);
 }
 
 

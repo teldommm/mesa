@@ -1,8 +1,12 @@
 .cache
 .vscode*
+*.kdev4
 *.pyc
 *.pyo
 *.out
 /build
 .venv/
-*.patch
+*.mda.tar
+/build-wrapper
+/.wrapper-cache
+/out

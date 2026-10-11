@@ -50,7 +50,7 @@ def get_problem_jobs(jobs: list[dict[str, Any]]):
     for job in jobs:
         if any(ignore.lower() in job["stage"] for ignore in ignore_stage_list):
             continue
-        if job["status"] in {"failed", "canceled"}:
+        if job["status"] != "success":
             problem_jobs.append(job)
     return problem_jobs
 
@@ -217,31 +217,47 @@ async def search_job_log_for_errors(session, project_id, job):
     # The entries are case insensitive. Keep them in alphabetical order and don't
     # forget to add a comma after each entry
     ignore_list = [
+        "403: b",
         "aborting",
+        "building c",
+        "continuing",
         "error_msg      : None",
-        "error_type     : None",
+        "error_type",
+        "error generated",
+        "errors generated",
         "exit code",
         "exit status",
         "exiting now",
         "job failed",
+        "no_error",
         "no files to upload",
+        "performing test",
         "ret code",
         "retry",
         "retry-all-errors",
+        "strerror_",
+        "success",
         "unknown-section",
     ]
     job_log = await get_job_log(session, project_id, job["id"])
 
     for line in reversed(job_log.splitlines()):
+        if "fatal" in line.lower():
+            # remove date and formatting before fatal message
+            log_error_message = line[line.lower().find("fatal") :]
+            break
+
         if "error" in line.lower():
             if any(ignore.lower() in line.lower() for ignore in ignore_list):
                 continue
+
             # remove date and formatting before error message
-            log_error_message = line[line.lower().find("error") :]
+            log_error_message = line[line.lower().find("error") :].strip()
+
             # if there is no further info after the word error then it's not helpful
-            if log_error_message.lower() == "error":
-                continue
-            if log_error_message.lower() == "errors":
+            # so reset the message and try again.
+            if log_error_message.lower() in {"error", "errors", "error:", "errors:"}:
+                log_error_message = ""
                 continue
             break
 
@@ -260,6 +276,12 @@ async def process_single_job(session, project_id, job):
 
     job_name = job.get("name", "Unnamed Job")
     message = f"[{job_name}]({job_url})"
+
+    if job["status"] == "running":
+        return f"{message}: still running<br>"
+
+    if job["status"] == "manual":
+        return f"{message}: waiting for manual action<br>"
 
     # if a job times out it's cancelled, so worth mentioning here
     if job["status"] == "canceled":
@@ -281,7 +303,7 @@ async def process_single_job(session, project_id, job):
     if log_error_message:
         return f"{message}: {log_error_message}<br>"
 
-    return message
+    return f"{message}<br>"
 
 
 async def process_job_with_limit(session, project_id, job):
@@ -320,16 +342,17 @@ async def process_problem_jobs(session, project_id, problem_jobs):
 async def main(pipeline_id: str, project_id: str = "176") -> str:
 
     message = ""
-    timeout = aiohttp.ClientTimeout(total=120)
-    logging.basicConfig(level=logging.INFO)
 
     try:
+        timeout = aiohttp.ClientTimeout(total=120)
+        logging.basicConfig(level=logging.INFO)
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             pipeline_status = await get_pipeline_status(
                 session, project_id, pipeline_id
             )
             logging.debug(f"Pipeline status: {pipeline_status}")
-            if pipeline_status != "failed":
+            if pipeline_status == "success":
                 return message
 
             jobs = await get_jobs_for_pipeline(session, project_id, pipeline_id)

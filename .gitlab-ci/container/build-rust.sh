@@ -5,31 +5,47 @@
 
 set -ex
 
-uncollapsed_section_start rust "Building Rust toolchain"
+section_start rust "Building Rust toolchain"
 
-# cargo (and rustup) wants to store stuff in $HOME/.cargo, and binaries in
-# $HOME/.cargo/bin.  Make bin a link to a public bin directory so the commands
-# are just available to all build jobs.
-mkdir -p "$HOME"/.cargo
-ln -s /usr/local/bin "$HOME"/.cargo/bin
+# When changing this file, you need to bump the following
+# .gitlab-ci/image-tags.yml tags:
+# ALPINE_X86_64_BUILD_TAG
+# DEBIAN_BUILD_BASE_TAG
+# DEBIAN_TEST_BASE_TAG
+# FEDORA_X86_64_BUILD_TAG
 
-# Pick a specific snapshot from rustup so the compiler doesn't drift on us.
-RUST_VERSION=1.78.0-2024-05-02
+MINIMUM_SUPPORTED_RUST_VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("clippy.toml", "rb"))["msrv"])')
+
+# This version number can be bumped freely, to benefit from the latest
+# diagnostics in CI `build-only` jobs, and for building external CI
+# components.
+LATEST_RUST_VERSION=1.96.0
 
 # For rust in Mesa, we use rustup to install.  This lets us pick an arbitrary
 # version of the compiler, rather than whatever the container's Debian comes
 # with.
 curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
     --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
-      --default-toolchain $RUST_VERSION \
+      --default-toolchain $LATEST_RUST_VERSION \
       --profile minimal \
+      --component clippy,rustfmt \
       -y
 
-rustup component add clippy rustfmt
+# Make rustup tools available in the PATH environment variable
+# shellcheck disable=SC1091
+. "$HOME/.cargo/env"
+
+if [ "$1" = "build" ]
+then
+  rustup toolchain install --profile minimal --component clippy,rustfmt "$MINIMUM_SUPPORTED_RUST_VERSION"
+fi
+
+find "$HOME"/.rustup/toolchains/*/lib -type f -name "*.so" -exec strip {} \;
+find "$HOME"/.rustup/toolchains -type f -executable -exec strip {} \;
 
 # Set up a config script for cross compiling -- cargo needs your system cc for
 # linking in cross builds, but doesn't know what you want to use for system cc.
-cat > /root/.cargo/config <<EOF
+cat > "$HOME/.cargo/config" <<EOF
 [target.armv7-unknown-linux-gnueabihf]
 linker = "arm-linux-gnueabihf-gcc"
 

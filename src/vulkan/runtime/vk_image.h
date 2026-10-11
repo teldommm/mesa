@@ -24,14 +24,16 @@
 #define VK_IMAGE_H
 
 #include "vk_object.h"
+#include "vk_util.h"
 
 #include "util/detect_os.h"
 #include "util/u_math.h"
 
-#if DETECT_OS_ANDROID
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
 enum android_buffer_type {
    ANDROID_BUFFER_NONE = 0,
    ANDROID_BUFFER_NATIVE,
+   ANDROID_BUFFER_NATIVE_ALIAS,
    ANDROID_BUFFER_HARDWARE,
 };
 #endif
@@ -43,7 +45,7 @@ extern "C" {
 struct vk_image {
    struct vk_object_base base;
 
-   VkImageCreateFlags create_flags;
+   VkImageCreateFlags2KHR create_flags;
    VkImageType image_type;
 
    /* format is from VkImageCreateInfo::format or
@@ -57,14 +59,14 @@ struct vk_image {
    uint32_t array_layers;
    VkSampleCountFlagBits samples;
    VkImageTiling tiling;
-   VkImageUsageFlags usage;
+   VkImageUsageFlags2KHR usage;
    VkSharingMode sharing_mode;
 
    /* Derived from format */
    VkImageAspectFlags aspects;
 
-   /* VK_EXT_separate_stencil_usage */
-   VkImageUsageFlags stencil_usage;
+   /* VK_EXT_separate_stencil_usage / VK_KHR_extended_flags */
+   VkImageUsageFlags2KHR stencil_usage;
 
    /* VK_KHR_external_memory */
    VkExternalMemoryHandleTypeFlags external_handle_types;
@@ -88,7 +90,7 @@ struct vk_image {
    uint64_t drm_format_mod;
 #endif
 
-#if DETECT_OS_ANDROID
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
    enum android_buffer_type android_buffer_type;
    VkDeviceMemory anb_memory;
 
@@ -98,6 +100,12 @@ struct vk_image {
     * but it may be overridden by the driver as needed.
     */
    uint32_t ahb_format;
+
+   /* Deep-copied and sanitized VkImageCreateInfo for deferred ANB alias
+    * images. Set by vk_android_init_deferred_image() and freed automatically
+    * by vk_image_destroy(). NULL for non-deferred images.
+    */
+   VkImageCreateInfo *android_deferred_create_info;
 #endif
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_image, base, VkImage,
@@ -125,8 +133,8 @@ vk_image_create_get_format_list(struct vk_device *device,
 
 void vk_image_set_format(struct vk_image *image, VkFormat format);
 
-VkImageUsageFlags vk_image_usage(const struct vk_image *image,
-                                 VkImageAspectFlags aspect_mask);
+VkImageUsageFlags2KHR vk_image_usage(const struct vk_image *image,
+                                     VkImageAspectFlags aspect_mask);
 
 VkImageAspectFlags vk_image_expand_aspect_mask(const struct vk_image *image,
                                                VkImageAspectFlags aspect_mask);
@@ -142,6 +150,11 @@ vk_image_mip_level_extent(const struct vk_image *image,
    };
    return extent;
 }
+
+uint32_t
+vk_image_subresource_slice_count(const struct vk_device *device,
+                                 const struct vk_image *image,
+                                 const VkImageSubresourceLayers *range);
 
 /* This is defined as a macro so that it works for both
  * VkImageSubresourceRange and VkImageSubresourceLayers
@@ -170,7 +183,7 @@ vk_image_sanitize_extent(const struct vk_image *image,
    case VK_IMAGE_TYPE_3D:
       return imageExtent;
    default:
-      unreachable("invalid image type");
+      UNREACHABLE("invalid image type");
    }
 }
 
@@ -189,8 +202,32 @@ vk_image_sanitize_offset(const struct vk_image *image,
    case VK_IMAGE_TYPE_3D:
       return imageOffset;
    default:
-      unreachable("invalid image type");
+      UNREACHABLE("invalid image type");
    }
+}
+
+static inline VkImageCreateFlags2KHR
+vk_image_create_flags(const VkImageCreateInfo *info)
+{
+   const VkImageCreateFlags2CreateInfoKHR *flags2 =
+      vk_find_struct_const(info->pNext,
+                           IMAGE_CREATE_FLAGS_2_CREATE_INFO_KHR);
+   if (flags2)
+      return flags2->flags;
+   else
+      return info->flags;
+}
+
+static inline VkImageUsageFlags2KHR
+vk_image_usage_flags(const VkImageCreateInfo *info)
+{
+   const VkImageUsageFlags2CreateInfoKHR *usage2 =
+      vk_find_struct_const(info->pNext,
+                           IMAGE_USAGE_FLAGS_2_CREATE_INFO_KHR);
+   if (usage2)
+      return usage2->usage;
+   else
+      return info->usage;
 }
 
 VkOffset3D
@@ -248,12 +285,18 @@ vk_image_buffer_copy_layout(const struct vk_image *image,
                             const VkBufferImageCopy2* region);
 
 struct vk_image_buffer_layout
+vk_image_memory_copy_layout(const struct vk_image *image,
+                            const VkDeviceMemoryImageCopyKHR* region);
+
+struct vk_image_buffer_layout
 vk_memory_to_image_copy_layout(const struct vk_image *image,
                                const VkMemoryToImageCopyEXT* region);
 
 struct vk_image_buffer_layout
 vk_image_to_memory_copy_layout(const struct vk_image *image,
                                const VkImageToMemoryCopyEXT* region);
+
+bool vk_image_can_be_aliased_to_yuv_plane(const struct vk_image *image);
 
 struct vk_image_view {
    struct vk_object_base base;
@@ -359,19 +402,17 @@ struct vk_image_view {
    VkExtent3D extent;
 
    /* VK_KHR_maintenance2 */
-   VkImageUsageFlags usage;
+   VkImageUsageFlags2KHR usage;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_image_view, base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW);
 
 void vk_image_view_init(struct vk_device *device,
                         struct vk_image_view *image_view,
-                        bool driver_internal,
                         const VkImageViewCreateInfo *pCreateInfo);
 void vk_image_view_finish(struct vk_image_view *image_view);
 
 void *vk_image_view_create(struct vk_device *device,
-                           bool driver_internal,
                            const VkImageViewCreateInfo *pCreateInfo,
                            const VkAllocationCallbacks *alloc,
                            size_t size);
@@ -396,20 +437,28 @@ vk_image_view_subresource_range(const struct vk_image_view *view)
 bool vk_image_layout_is_read_only(VkImageLayout layout,
                                   VkImageAspectFlagBits aspect);
 bool vk_image_layout_is_depth_only(VkImageLayout layout);
+VkImageLayout vk_image_layout_depth_only(VkImageLayout layout);
+VkImageLayout vk_image_layout_stencil_only(VkImageLayout layout);
 
-VkImageUsageFlags vk_image_layout_to_usage_flags(VkImageLayout layout,
-                                                 VkImageAspectFlagBits aspect);
+VkImageUsageFlags2KHR vk_image_layout_to_usage_flags(VkImageLayout layout,
+                                                     VkImageAspectFlagBits aspect);
 
 VkImageLayout vk_att_ref_stencil_layout(const VkAttachmentReference2 *att_ref,
                                         const VkAttachmentDescription2 *attachments);
 VkImageLayout vk_att_desc_stencil_layout(const VkAttachmentDescription2 *att_desc,
                                            bool final);
 
-#if DETECT_OS_ANDROID
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
 static inline bool
 vk_image_is_android_native_buffer(struct vk_image *image)
 {
    return image->android_buffer_type == ANDROID_BUFFER_NATIVE;
+}
+
+static inline bool
+vk_image_is_android_native_buffer_alias(struct vk_image *image)
+{
+   return image->android_buffer_type == ANDROID_BUFFER_NATIVE_ALIAS;
 }
 #else
 static inline bool
@@ -417,9 +466,15 @@ vk_image_is_android_native_buffer(struct vk_image *image)
 {
    return false;
 }
-#endif /* DETECT_OS_ANDROID */
 
-#if DETECT_OS_ANDROID && ANDROID_API_LEVEL >= 26
+static inline bool
+vk_image_is_android_native_buffer_alias(struct vk_image *image)
+{
+   return false;
+}
+#endif /* VK_USE_PLATFORM_ANDROID_KHR */
+
+#if defined(VK_USE_PLATFORM_ANDROID_KHR) && ANDROID_API_LEVEL >= 26
 static inline bool
 vk_image_is_android_hardware_buffer(struct vk_image *image)
 {

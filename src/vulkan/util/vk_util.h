@@ -23,9 +23,12 @@
 #ifndef VK_UTIL_H
 #define VK_UTIL_H
 
+#include "compiler/shader_enums.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
-#include "compiler/shader_enums.h"
+#include "util/stack_array.h"
+#include "c99_compat.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -304,24 +307,52 @@ struct vk_pipeline_cache_header {
 #define VK_ENUM_OFFSET(__enum) \
    ((__enum) >= VK_EXT_OFFSET ? ((__enum) % 1000) : (__enum))
 
-#define typed_memcpy(dest, src, count) do { \
-   STATIC_ASSERT(sizeof(*(src)) == sizeof(*(dest))); \
-   if ((dest) != NULL && (src) != NULL && (count) > 0) { \
-       memcpy((dest), (src), (count) * sizeof(*(src))); \
-   } \
-} while (0)
-
-static inline gl_shader_stage
+static inline mesa_shader_stage
 vk_to_mesa_shader_stage(VkShaderStageFlagBits vk_stage)
 {
    assert(util_bitcount((uint32_t) vk_stage) == 1);
-   return (gl_shader_stage) (ffs((uint32_t) vk_stage) - 1);
+   return (mesa_shader_stage) (ffs((uint32_t) vk_stage) - 1);
 }
 
 static inline VkShaderStageFlagBits
-mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
+mesa_to_vk_shader_stage(mesa_shader_stage mesa_stage)
 {
    return (VkShaderStageFlagBits) (1 << ((uint32_t) mesa_stage));
+}
+
+/* this needs spec fixes */
+#define MESA_VK_SHADER_STAGE_WORKGRAPH_HACK_BIT_FIXME (1<<30)
+
+/* Internal version of VK_SHADER_STAGE_ALL which only includes valid bits. */
+#define MESA_VK_SHADER_STAGE_ALL (VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT |              \
+                                  VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |        \
+                                  VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |      \
+                                  VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CALLABLE_BIT_KHR | \
+                                  VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)
+
+static inline VkShaderStageFlags
+vk_shader_stages_from_bind_point(VkPipelineBindPoint pipelineBindPoint)
+{
+   switch (pipelineBindPoint) {
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+    case VK_PIPELINE_BIND_POINT_EXECUTION_GRAPH_AMDX:
+      return VK_SHADER_STAGE_COMPUTE_BIT | MESA_VK_SHADER_STAGE_WORKGRAPH_HACK_BIT_FIXME;
+#endif
+   case VK_PIPELINE_BIND_POINT_COMPUTE:
+      return VK_SHADER_STAGE_COMPUTE_BIT;
+   case VK_PIPELINE_BIND_POINT_GRAPHICS:
+      return VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT;
+   case VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR:
+      return VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+             VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+             VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+             VK_SHADER_STAGE_MISS_BIT_KHR |
+             VK_SHADER_STAGE_INTERSECTION_BIT_KHR |
+             VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+   default:
+      UNREACHABLE("unknown bind point!");
+   }
+   return 0;
 }
 
 /* iterate over a sequence of indexed multidraws for VK_EXT_multi_draw extension */
@@ -342,24 +373,7 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 struct nir_spirv_specialization;
 
 struct nir_spirv_specialization*
-vk_spec_info_to_nir_spirv(const VkSpecializationInfo *spec_info,
-                          uint32_t *out_num_spec_entries);
-
-#define STACK_ARRAY_SIZE 8
-
-/* Sometimes gcc may claim -Wmaybe-uninitialized for the stack array in some
- * places it can't verify that when size is 0 nobody down the call chain reads
- * the array. Please don't try to fix it by zero-initializing the array here
- * since it's used in a lot of different places. An "if (size == 0) return;"
- * may work for you.
- */
-#define STACK_ARRAY(type, name, size) \
-   type _stack_##name[STACK_ARRAY_SIZE]; \
-   type *const name = \
-     ((size) <= STACK_ARRAY_SIZE ? _stack_##name : (type *)malloc((size) * sizeof(type)))
-
-#define STACK_ARRAY_FINISH(name) \
-   if (name != _stack_##name) free(name)
+vk_spec_info_to_nir_spirv(const VkSpecializationInfo *vk_spec_info);
 
 static inline uint8_t
 vk_index_type_to_bytes(VkIndexType type)
@@ -369,7 +383,7 @@ vk_index_type_to_bytes(VkIndexType type)
    case VK_INDEX_TYPE_UINT8_KHR: return 1;
    case VK_INDEX_TYPE_UINT16:    return 2;
    case VK_INDEX_TYPE_UINT32:    return 4;
-   default:                      unreachable("Invalid index type");
+   default:                      UNREACHABLE("Invalid index type");
    }
 }
 
@@ -380,9 +394,65 @@ vk_index_to_restart(VkIndexType type)
    case VK_INDEX_TYPE_UINT8_KHR: return 0xff;
    case VK_INDEX_TYPE_UINT16:    return 0xffff;
    case VK_INDEX_TYPE_UINT32:    return 0xffffffff;
-   default:                      unreachable("unexpected index type");
+   default:                      UNREACHABLE("unexpected index type");
    }
 }
+
+static inline bool
+vk_descriptor_type_is_dynamic(VkDescriptorType type)
+{
+   switch (type) {
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      return true;
+
+   default:
+      return false;
+   }
+}
+
+enum mesa_prim vk_topology_to_mesa(VkPrimitiveTopology topology);
+
+#define VK_PRINT_STR(field, ...) do {                          \
+   memset(field, 0, sizeof(field));                            \
+   UNUSED int i = snprintf(field, sizeof(field), __VA_ARGS__); \
+   assert(i > 0 && i < sizeof(field));                         \
+} while(0)
+
+#define VK_COPY_STR(field, str) do {                           \
+   int len = strlen(str);                                      \
+   assert(len > 0 && len < sizeof(field));                     \
+   memcpy(field, str, len);                                    \
+   memset(field + len, 0, sizeof(field) - len);                \
+} while(0)
+
+#define vk_add_exec_statistic(out, name_, description_, format_enum,           \
+                              format_member, value_)                           \
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &(out), stat)    \
+   {                                                                           \
+      VK_COPY_STR(stat->name, name_);                                          \
+      VK_COPY_STR(stat->description, description_);                            \
+      stat->format =                                                           \
+         VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_##format_enum##_KHR;          \
+      stat->value.format_member = (value_);                                    \
+   }
+
+#define vk_add_exec_statistic_i64(out, name, description, value)               \
+   vk_add_exec_statistic(out, name, description, INT64, i64, value)
+
+#define vk_add_exec_statistic_u64(out, name, description, value)               \
+   vk_add_exec_statistic(out, name, description, UINT64, u64, value)
+
+#define vk_add_exec_statistic_f64(out, name, description, value)               \
+   vk_add_exec_statistic(out, name, description, FLOAT64, f64, value)
+
+#define vk_add_exec_statistic_bool(out, name, description, value)               \
+   vk_add_exec_statistic(out, name, description, BOOL32, b32, value)
+
+#define vk_add_exec_statistic_str(out, name, description, value)               \
+   do {                                                                        \
+      /* Ignore string statistics in Vulkan drivers, at least for now */       \
+   } while(0)
 
 #ifdef __cplusplus
 }

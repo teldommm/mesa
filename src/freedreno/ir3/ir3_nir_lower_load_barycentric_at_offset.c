@@ -26,15 +26,15 @@ ir3_nir_lower_load_barycentric_at_offset_instr(nir_builder *b, nir_instr *instr,
 
    /* Need helper invocations for our ddx/ddys to work. */
    if (b->shader->info.stage == MESA_SHADER_FRAGMENT)
-      b->shader->info.fs.needs_quad_helper_invocations = true;
+      b->shader->info.fs.needs_coarse_quad_helper_invocations = true;
 
    if (interp_mode != INTERP_MODE_SMOOTH) {
       /* Offset our pixel center ij by the offset argument (units of pixels)
        * times the derivatives of ij in screen space.
        */
       nir_def *new_ij = ij;
-      new_ij = nir_ffma(b, chan(off, 0), nir_ddx(b, ij), new_ij);
-      new_ij = nir_ffma(b, chan(off, 1), nir_ddy(b, ij), new_ij);
+      new_ij = nir_fmad(b, chan(off, 0), nir_ddx(b, ij), new_ij);
+      new_ij = nir_fmad(b, chan(off, 1), nir_ddy(b, ij), new_ij);
 
       return new_ij;
    } else {
@@ -52,8 +52,8 @@ ir3_nir_lower_load_barycentric_at_offset_instr(nir_builder *b, nir_instr *instr,
 
       /* Get the offset value from pixel center for ij, and also for w. */
       nir_def *pos = sij;
-      pos = nir_ffma(b, chan(off, 0), nir_ddx(b, sij), pos);
-      pos = nir_ffma(b, chan(off, 1), nir_ddy(b, sij), pos);
+      pos = nir_fmad(b, chan(off, 0), nir_ddx(b, sij), pos);
+      pos = nir_fmad(b, chan(off, 1), nir_ddy(b, sij), pos);
 
       /* convert back into screen space, dividing by the offset 1/w */
       return nir_fmul(b, nir_trim_vector(b, pos, 2),

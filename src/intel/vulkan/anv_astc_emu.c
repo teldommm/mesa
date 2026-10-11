@@ -5,6 +5,8 @@
 
 #include "anv_private.h"
 
+#include "vk_common_entrypoints.h"
+
 #include "compiler/nir/nir_builder.h"
 
 static void
@@ -96,8 +98,8 @@ astc_emu_init_flush_denorm_shader(nir_builder *b)
 
       coord = nir_vec3(b, nir_channel(b, coord, 0), nir_channel(b, coord, 1),
                        zero);
-      nir_def *val =
-         nir_txf_deref(b, nir_build_deref_var(b, src_var), coord, zero);
+      nir_def *val = nir_txf(b, coord, .lod = zero,
+                             .texture_deref = nir_build_deref_var(b, src_var));
       nir_store_var(b, val_var, val, 0xf);
 
       /* A void-extent block has this layout
@@ -145,6 +147,7 @@ astc_emu_init_flush_denorm_shader(nir_builder *b)
 static VkResult
 astc_emu_init_flush_denorm_pipeline_locked(struct anv_device *device)
 {
+   const struct vk_device_dispatch_table *disp = &device->vk.dispatch_table;
    struct anv_device_astc_emu *astc_emu = &device->astc_emu;
    VkDevice _device = anv_device_to_handle(device);
    VkResult result = VK_SUCCESS;
@@ -152,7 +155,7 @@ astc_emu_init_flush_denorm_pipeline_locked(struct anv_device *device)
    if (astc_emu->ds_layout == VK_NULL_HANDLE) {
       const VkDescriptorSetLayoutCreateInfo ds_layout_create_info = {
          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-         .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+         .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT,
          .bindingCount = 2,
          .pBindings = (VkDescriptorSetLayoutBinding[]){
             {
@@ -169,8 +172,8 @@ astc_emu_init_flush_denorm_pipeline_locked(struct anv_device *device)
             },
          },
       };
-      result = anv_CreateDescriptorSetLayout(_device, &ds_layout_create_info,
-                                             NULL, &astc_emu->ds_layout);
+      result = disp->CreateDescriptorSetLayout(_device, &ds_layout_create_info,
+                                               NULL, &astc_emu->ds_layout);
       if (result != VK_SUCCESS)
          goto out;
    }
@@ -186,15 +189,15 @@ astc_emu_init_flush_denorm_pipeline_locked(struct anv_device *device)
             .size = sizeof(uint32_t) * 4,
          },
       };
-      result = anv_CreatePipelineLayout(_device, &pipeline_layout_create_info,
-                                        NULL, &astc_emu->pipeline_layout);
+      result = disp->CreatePipelineLayout(_device, &pipeline_layout_create_info,
+                                          NULL, &astc_emu->pipeline_layout);
       if (result != VK_SUCCESS)
          goto out;
    }
 
    if (astc_emu->pipeline == VK_NULL_HANDLE) {
       const struct nir_shader_compiler_options *options =
-         device->physical->compiler->nir_options[MESA_SHADER_COMPUTE];
+         &device->physical->compiler->nir_options[MESA_SHADER_COMPUTE];
       nir_builder b = nir_builder_init_simple_shader(
             MESA_SHADER_COMPUTE, options, "astc_emu_flush_denorm");
       astc_emu_init_flush_denorm_shader(&b);
@@ -210,9 +213,9 @@ astc_emu_init_flush_denorm_pipeline_locked(struct anv_device *device)
             },
          .layout = astc_emu->pipeline_layout,
       };
-      result = anv_CreateComputePipelines(_device, VK_NULL_HANDLE, 1,
-                                          &pipeline_create_info, NULL,
-                                          &astc_emu->pipeline);
+      result = disp->CreateComputePipelines(_device, VK_NULL_HANDLE, 1,
+                                            &pipeline_create_info, NULL,
+                                            &astc_emu->pipeline);
       ralloc_free(b.shader);
 
       if (result != VK_SUCCESS)
@@ -292,21 +295,22 @@ astc_emu_flush_denorm_slice(struct anv_cmd_buffer *cmd_buffer,
                                      set_writes);
    VkDescriptorSet set = anv_descriptor_set_to_handle(&push_set.set);
 
-   anv_CmdBindPipeline(cmd_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE,
-                       astc_emu->pipeline);
+   vk_common_CmdBindPipeline(cmd_buffer_,
+                             VK_PIPELINE_BIND_POINT_COMPUTE,
+                             astc_emu->pipeline);
 
-   VkPushConstantsInfoKHR push_info = {
-      .sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO_KHR,
+   VkPushConstantsInfo push_info = {
+      .sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO,
       .layout = astc_emu->pipeline_layout,
       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
       .offset = 0,
       .size = sizeof(push_const),
       .pValues = push_const,
    };
-   anv_CmdPushConstants2KHR(cmd_buffer_, &push_info);
+   anv_CmdPushConstants2(cmd_buffer_, &push_info);
 
-   VkBindDescriptorSetsInfoKHR bind_info = {
-      .sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO_KHR,
+   VkBindDescriptorSetsInfo bind_info = {
+      .sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO,
       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
       .layout = astc_emu->pipeline_layout,
       .firstSet = 0,
@@ -315,7 +319,7 @@ astc_emu_flush_denorm_slice(struct anv_cmd_buffer *cmd_buffer,
       .dynamicOffsetCount = 0,
       .pDynamicOffsets = NULL,
    };
-   anv_CmdBindDescriptorSets2KHR(cmd_buffer_, &bind_info);
+   anv_CmdBindDescriptorSets2(cmd_buffer_, &bind_info);
 
    /* each workgroup processes 8x8 texel blocks */
    rect.extent.width = DIV_ROUND_UP(rect.extent.width, 8);
@@ -350,7 +354,9 @@ astc_emu_decompress_slice(struct anv_cmd_buffer *cmd_buffer,
       return;
    }
 
-   anv_CmdBindPipeline(cmd_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+   vk_common_CmdBindPipeline(cmd_buffer_,
+                             VK_PIPELINE_BIND_POINT_COMPUTE,
+                             pipeline);
 
    struct vk_texcompress_astc_write_descriptor_set writes;
    vk_texcompress_astc_fill_write_descriptor_sets(astc_emu->texcompress,
@@ -365,8 +371,8 @@ astc_emu_decompress_slice(struct anv_cmd_buffer *cmd_buffer,
 
    VkDescriptorSet set = anv_descriptor_set_to_handle(&push_set.set);
 
-   VkBindDescriptorSetsInfoKHR bind_info = {
-      .sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO_KHR,
+   VkBindDescriptorSetsInfo bind_info = {
+      .sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO,
       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
       .layout = astc_emu->texcompress->p_layout,
       .firstSet = 0,
@@ -375,7 +381,7 @@ astc_emu_decompress_slice(struct anv_cmd_buffer *cmd_buffer,
       .dynamicOffsetCount = 0,
       .pDynamicOffsets = NULL,
    };
-   anv_CmdBindDescriptorSets2KHR(cmd_buffer_, &bind_info);
+   anv_CmdBindDescriptorSets2(cmd_buffer_, &bind_info);
 
    const uint32_t push_const[] = {
       rect.offset.x,
@@ -386,15 +392,15 @@ astc_emu_decompress_slice(struct anv_cmd_buffer *cmd_buffer,
          vk_format_get_blockheight(astc_format),
       false, /* we don't use VK_IMAGE_VIEW_TYPE_3D */
    };
-   VkPushConstantsInfoKHR push_info = {
-      .sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO_KHR,
+   VkPushConstantsInfo push_info = {
+      .sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO,
       .layout = astc_emu->texcompress->p_layout,
       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
       .offset = 0,
       .size = sizeof(push_const),
       .pValues = push_const,
    };
-   anv_CmdPushConstants2KHR(cmd_buffer_, &push_info);
+   anv_CmdPushConstants2(cmd_buffer_, &push_info);
 
    /* each workgroup processes 2x2 texel blocks */
    rect.extent.width = DIV_ROUND_UP(rect.extent.width, 2);
@@ -487,9 +493,16 @@ anv_device_init_astc_emu(struct anv_device *device)
       simple_mtx_init(&astc_emu->mutex, mtx_plain);
 
    if (device->physical->emu_astc_ldr) {
-      result = vk_texcompress_astc_init(&device->vk, &device->vk.alloc,
-                                        VK_NULL_HANDLE,
-                                        &astc_emu->texcompress);
+      result = vk_texcompress_astc_init(
+         &device->vk, &device->vk.alloc, VK_NULL_HANDLE,
+         &astc_emu->texcompress,
+         (struct vk_texcompress_astc_params) {
+            .luts_alignment = 64,
+            .luts_memory_flags = (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  (device->physical->has_small_bar ? 0 :
+                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)),
+         });
    }
 
    return result;
@@ -498,14 +511,15 @@ anv_device_init_astc_emu(struct anv_device *device)
 void
 anv_device_finish_astc_emu(struct anv_device *device)
 {
+   const struct vk_device_dispatch_table *disp = &device->vk.dispatch_table;
    struct anv_device_astc_emu *astc_emu = &device->astc_emu;
 
    if (device->physical->flush_astc_ldr_void_extent_denorms) {
       VkDevice _device = anv_device_to_handle(device);
 
-      anv_DestroyPipeline(_device, astc_emu->pipeline, NULL);
-      anv_DestroyPipelineLayout(_device, astc_emu->pipeline_layout, NULL);
-      anv_DestroyDescriptorSetLayout(_device, astc_emu->ds_layout, NULL);
+      disp->DestroyPipeline(_device, astc_emu->pipeline, NULL);
+      disp->DestroyPipelineLayout(_device, astc_emu->pipeline_layout, NULL);
+      disp->DestroyDescriptorSetLayout(_device, astc_emu->ds_layout, NULL);
       simple_mtx_destroy(&astc_emu->mutex);
    }
 

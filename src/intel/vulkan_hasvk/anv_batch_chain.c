@@ -100,8 +100,7 @@ anv_reloc_list_init_clone(struct anv_reloc_list *list,
       list->deps =
          vk_alloc(alloc, list->dep_words * sizeof(BITSET_WORD), 8,
                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-      memcpy(list->deps, other_list->deps,
-             list->dep_words * sizeof(BITSET_WORD));
+      __bitset_copy(list->deps, other_list->deps, list->dep_words);
    } else {
       list->deps = NULL;
    }
@@ -171,8 +170,7 @@ anv_reloc_list_grow_deps(struct anv_reloc_list *list,
    list->deps = new_deps;
 
    /* Zero out the new data */
-   memset(list->deps + list->dep_words, 0,
-          (new_length - list->dep_words) * sizeof(BITSET_WORD));
+   __bitset_zero(list->deps + list->dep_words, new_length - list->dep_words);
    list->dep_words = new_length;
 
    return VK_SUCCESS;
@@ -243,7 +241,7 @@ anv_reloc_list_clear(struct anv_reloc_list *list)
 {
    list->num_relocs = 0;
    if (list->dep_words > 0)
-      memset(list->deps, 0, list->dep_words * sizeof(BITSET_WORD));
+      __bitset_zero(list->deps, list->dep_words);
 }
 
 static VkResult
@@ -1166,7 +1164,7 @@ anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary,
       break;
    }
    default:
-      assert(!"Invalid execution mode");
+      UNREACHABLE("Invalid execution mode");
    }
 
    anv_reloc_list_append(&primary->surface_relocs, &primary->vk.pool->alloc,
@@ -1504,7 +1502,7 @@ execbuf_can_skip_relocations(struct anv_execbuf *exec)
 
    static int userspace_relocs = -1;
    if (userspace_relocs < 0)
-      userspace_relocs = debug_get_bool_option("ANV_USERSPACE_RELOCS", true);
+      userspace_relocs = debug_get_bool_option("HASVK_USERSPACE_RELOCS", true);
    if (!userspace_relocs)
       return false;
 
@@ -1640,27 +1638,16 @@ anv_execbuf_add_sync(struct anv_device *device,
    if ((sync->flags & VK_SYNC_IS_TIMELINE) && value == 0)
       return VK_SUCCESS;
 
-   if (vk_sync_is_anv_bo_sync(sync)) {
-      struct anv_bo_sync *bo_sync =
-         container_of(sync, struct anv_bo_sync, sync);
+   assert(vk_sync_type_is_drm_syncobj(sync->type));
+   struct vk_drm_syncobj *syncobj = vk_sync_as_drm_syncobj(sync);
 
-      assert(is_signal == (bo_sync->state == ANV_BO_SYNC_STATE_RESET));
+   if (!(sync->flags & VK_SYNC_IS_TIMELINE))
+      value = 0;
 
-      return anv_execbuf_add_bo(device, execbuf, bo_sync->bo, NULL,
-                                is_signal ? EXEC_OBJECT_WRITE : 0);
-   } else if (vk_sync_type_is_drm_syncobj(sync->type)) {
-      struct vk_drm_syncobj *syncobj = vk_sync_as_drm_syncobj(sync);
-
-      if (!(sync->flags & VK_SYNC_IS_TIMELINE))
-         value = 0;
-
-      return anv_execbuf_add_syncobj(device, execbuf, syncobj->syncobj,
-                                     is_signal ? I915_EXEC_FENCE_SIGNAL :
-                                                 I915_EXEC_FENCE_WAIT,
-                                     value);
-   }
-
-   unreachable("Invalid sync type");
+   return anv_execbuf_add_syncobj(device, execbuf, syncobj->syncobj,
+                                  is_signal ? I915_EXEC_FENCE_SIGNAL :
+                                              I915_EXEC_FENCE_WAIT,
+                                  value);
 }
 
 static VkResult
@@ -1906,7 +1893,7 @@ setup_execbuf_for_cmd_buffers(struct anv_execbuf *execbuf,
       __builtin_ia32_mfence();
       for (uint32_t i = 0; i < num_cmd_buffers; i++) {
          u_vector_foreach(bbo, &cmd_buffers[i]->seen_bbos) {
-            intel_flush_range_no_fence((*bbo)->bo->map, (*bbo)->length);
+            util_flush_range_no_fence((*bbo)->bo->map, (*bbo)->length);
          }
       }
       __builtin_ia32_mfence();
@@ -1992,7 +1979,7 @@ setup_utrace_execbuf(struct anv_execbuf *execbuf, struct anv_queue *queue,
 
 #ifdef SUPPORT_INTEL_INTEGRATED_GPUS
    if (device->physical->memory.need_flush)
-      intel_flush_range(flush->batch_bo->map, flush->batch_bo->size);
+      util_flush_range(flush->batch_bo->map, flush->batch_bo->size);
 #endif
 
    execbuf->execbuf = (struct drm_i915_gem_execbuffer2) {
@@ -2349,28 +2336,6 @@ anv_queue_submit_locked(struct anv_queue *queue,
          }
       }
    }
-   for (uint32_t i = 0; i < submit->signal_count; i++) {
-      if (!vk_sync_is_anv_bo_sync(submit->signals[i].sync))
-         continue;
-
-      struct anv_bo_sync *bo_sync =
-         container_of(submit->signals[i].sync, struct anv_bo_sync, sync);
-
-      /* Once the execbuf has returned, we need to set the fence state to
-       * SUBMITTED.  We can't do this before calling execbuf because
-       * anv_GetFenceStatus does take the global device lock before checking
-       * fence->state.
-       *
-       * We set the fence state to SUBMITTED regardless of whether or not the
-       * execbuf succeeds because we need to ensure that vkWaitForFences() and
-       * vkGetFenceStatus() return a valid result (VK_ERROR_DEVICE_LOST or
-       * VK_SUCCESS) in a finite amount of time even if execbuf fails.
-       */
-      assert(bo_sync->state == ANV_BO_SYNC_STATE_RESET);
-      bo_sync->state = ANV_BO_SYNC_STATE_SUBMITTED;
-   }
-
-   pthread_cond_broadcast(&queue->device->queue_submit);
 
    return VK_SUCCESS;
 }
@@ -2398,7 +2363,6 @@ anv_queue_submit(struct vk_queue *vk_queue,
 
    pthread_mutex_lock(&device->mutex);
    result = anv_queue_submit_locked(queue, submit);
-   /* Take submission ID under lock */
    pthread_mutex_unlock(&device->mutex);
 
    intel_ds_end_submit(&queue->ds, start_ts);
@@ -2432,7 +2396,7 @@ anv_queue_submit_simple_batch(struct anv_queue *queue,
    memcpy(batch_bo->map, batch->start, batch_size);
 #ifdef SUPPORT_INTEL_INTEGRATED_GPUS
    if (device->physical->memory.need_flush)
-      intel_flush_range(batch_bo->map, batch_size);
+      util_flush_range(batch_bo->map, batch_size);
 #endif
 
    struct anv_execbuf execbuf = {

@@ -10,15 +10,15 @@
 #include "panvk_macros.h"
 #include "panvk_mempool.h"
 
-static inline struct panfrost_ptr
+static inline struct pan_ptr
 panvk_cmd_alloc_from_pool(struct panvk_cmd_buffer *cmdbuf,
                           struct panvk_pool *pool,
                           struct panvk_pool_alloc_info info)
 {
    if (!info.size)
-      return (struct panfrost_ptr){0};
+      return (struct pan_ptr){0};
 
-   struct panfrost_ptr ptr =
+   struct pan_ptr ptr =
       pan_pool_alloc_aligned(&pool->base, info.size, info.alignment);
 
    if (!ptr.gpu) {
@@ -36,6 +36,25 @@ panvk_cmd_alloc_from_pool(struct panvk_cmd_buffer *cmdbuf,
                                 .size = __sz,                                  \
                                 .alignment = __alignment,                      \
                              })
+
+static inline struct pan_ptr
+panvk_cmd_upload_to_pool(struct panvk_cmd_buffer *cmdbuf,
+                         struct panvk_pool *pool,
+                         const void *data,
+                         struct panvk_pool_alloc_info info)
+{
+   struct pan_ptr ptr = panvk_cmd_alloc_from_pool(cmdbuf, pool, info);
+   if (ptr.gpu)
+      memcpy(ptr.cpu, data, info.size);
+   return ptr;
+}
+
+#define panvk_cmd_upload_dev_mem(__cmdbuf, __poolnm, __data, __sz, __alignment)\
+   panvk_cmd_upload_to_pool(__cmdbuf, &(__cmdbuf)->__poolnm##_pool, (__data),  \
+                            (struct panvk_pool_alloc_info){                    \
+                               .size = __sz,                                   \
+                               .alignment = __alignment,                       \
+                            })
 
 #define panvk_cmd_alloc_desc_aggregate(__cmdbuf, ...)                          \
    panvk_cmd_alloc_from_pool(                                                  \

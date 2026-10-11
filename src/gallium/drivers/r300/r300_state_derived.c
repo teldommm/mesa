@@ -35,15 +35,10 @@ enum r300_rs_col_write_type {
 
 static void r300_draw_emit_attrib(struct r300_context* r300,
                                   enum attrib_emit emit,
-                                  int index)
+                                  enum tgsi_semantic sname,
+                                  unsigned sindex)
 {
-    struct r300_vertex_shader_code* vs = r300_vs(r300)->shader;
-    struct tgsi_shader_info* info = &vs->info;
-    int output;
-
-    output = draw_find_shader_output(r300->draw,
-                                     info->output_semantic_name[index],
-                                     info->output_semantic_index[index]);
+    int output = draw_find_shader_output(r300->draw, sname, sindex);
     draw_emit_vertex_attr(&r300->vertex_info, emit, output);
 }
 
@@ -55,27 +50,29 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
 
     /* Position. */
     if (vs_outputs->pos != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->pos);
+        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_POSITION, 0);
     } else {
         assert(0);
     }
 
     /* Point size. */
     if (vs_outputs->psize != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_1F_PSIZE, vs_outputs->psize);
+        r300_draw_emit_attrib(r300, EMIT_1F, TGSI_SEMANTIC_PSIZE, 0);
     }
 
     /* Colors. */
     for (i = 0; i < ATTR_COLOR_COUNT; i++) {
         if (vs_outputs->color[i] != ATTR_UNUSED) {
-            r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->color[i]);
+            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_COLOR, i);
         }
     }
 
-    /* Back-face colors. */
-    for (i = 0; i < ATTR_COLOR_COUNT; i++) {
-        if (vs_outputs->bcolor[i] != ATTR_UNUSED) {
-            r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->bcolor[i]);
+    /* Draw selects the synthetic FACE marker into COLOR0 per primitive. */
+    if (!vs->key.frontface) {
+        for (i = 0; i < ATTR_COLOR_COUNT; i++) {
+            if (vs_outputs->bcolor[i] != ATTR_UNUSED) {
+                r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_BCOLOR, i);
+            }
         }
     }
 
@@ -86,31 +83,31 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
     for (i = 0; i < ATTR_GENERIC_COUNT && gen_count < 8; i++) {
         if (vs_outputs->generic[i] != ATTR_UNUSED &&
             (!(r300->sprite_coord_enable & (1U << i)) || !r300->is_point)) {
-            r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->generic[i]);
-            gen_count++;
-        }
-    }
-
-    /* Texcoords */
-    for (i = 0; i < ATTR_TEXCOORD_COUNT && gen_count < 8; i++) {
-        if (vs_outputs->texcoord[i] != ATTR_UNUSED &&
-            (!(r300->sprite_coord_enable & (1U << i)) || !r300->is_point)) {
-            r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->texcoord[i]);
+            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, i);
             gen_count++;
         }
     }
 
     /* Fog coordinates. */
     if (gen_count < 8 && vs_outputs->fog != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->fog);
+        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_FOG, 0);
         gen_count++;
     }
 
     /* WPOS. */
     if (r300_fs(r300)->shader->inputs.wpos != ATTR_UNUSED && gen_count < 8) {
-        DBG(r300, DBG_SWTCL, "draw_emit_attrib: WPOS, index: %i\n",
-            vs_outputs->wpos);
-        r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->wpos);
+        unsigned wpos_slot = 0;
+
+        for (i = 0; i < ATTR_GENERIC_COUNT; i++) {
+            if (vs_outputs->generic[i] != ATTR_UNUSED)
+                wpos_slot = i + 1;
+        }
+
+        assert(wpos_slot < ATTR_GENERIC_COUNT);
+
+        DBG(r300, DBG_SWTCL, "draw_emit_attrib: WPOS, slot: %u\n",
+            wpos_slot);
+        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, wpos_slot);
     }
 }
 
@@ -307,6 +304,12 @@ static void r300_update_rs_block(struct r300_context *r300)
     void (*rX00_rs_tex_write)(struct r300_rs_block*, int, int);
     bool any_bcolor_used = vs_outputs->bcolor[0] != ATTR_UNUSED ||
                            vs_outputs->bcolor[1] != ATTR_UNUSED;
+    bool frontface_emul = vs->key.frontface;
+    /* Draw resolves the synthetic COLOR0/BCOLOR0 pair, so the hardware must
+     * not perform two-sided color selection again. */
+    bool draw_frontface_emul = frontface_emul && r300->draw;
+    bool hw_two_sided_color = !draw_frontface_emul &&
+                              (r300->two_sided_color || frontface_emul);
     int *stream_loc_notcl = r300->stream_loc_notcl;
     uint32_t stuffing_enable = 0;
 
@@ -335,13 +338,15 @@ static void r300_update_rs_block(struct r300_context *r300)
     /* Set up the point size in VAP. */
     if (vs_outputs->psize != ATTR_UNUSED) {
         rs.vap_out_vtx_fmt[0] |= R300_VAP_OUTPUT_VTX_FMT_0__PT_SIZE_PRESENT;
-        stream_loc_notcl[loc++] = 1;
+        /* Point size is at semantic location 15 in TCL bypass mode. */
+        stream_loc_notcl[loc++] = 15;
     }
 
     /* Set up and rasterize colors. */
     for (i = 0; i < ATTR_COLOR_COUNT; i++) {
-        if (vs_outputs->color[i] != ATTR_UNUSED || any_bcolor_used ||
-            vs_outputs->color[1] != ATTR_UNUSED) {
+        if (vs_outputs->color[i] != ATTR_UNUSED ||
+            (!draw_frontface_emul &&
+             (any_bcolor_used || vs_outputs->color[1] != ATTR_UNUSED))) {
             /* Set up the color in VAP. */
             rs.vap_vsm_vtx_assm |= R300_INPUT_CNTL_COLOR;
             rs.vap_out_vtx_fmt[0] |=
@@ -376,8 +381,8 @@ static void r300_update_rs_block(struct r300_context *r300)
 
     /* Set up back-face colors. The rasterizer will do the color selection
      * automatically. */
-    if (any_bcolor_used) {
-        if (r300->two_sided_color) {
+    if (any_bcolor_used && !draw_frontface_emul) {
+        if (hw_two_sided_color) {
             /* Rasterize as back-face colors. */
             for (i = 0; i < ATTR_COLOR_COUNT; i++) {
                 rs.vap_vsm_vtx_assm |= R300_INPUT_CNTL_COLOR;
@@ -410,8 +415,13 @@ static void r300_update_rs_block(struct r300_context *r300)
      * with shaders 2.0 only, while gl_FrontFacing can be used
      * with shaders 3.0 only. The hardware apparently hasn't been designed
      * to support both at the same time. */
-    if (r300->screen->caps.is_r500 && fs_inputs->face != ATTR_UNUSED &&
-        !(any_bcolor_used && r300->two_sided_color)) {
+    if (frontface_emul && fs_inputs->face != ATTR_UNUSED) {
+        assert(fs_inputs->color[0] == ATTR_UNUSED);
+        rX00_rs_col_write(&rs, 0, fp_offset, WRITE_COLOR);
+        fp_offset++;
+        DBG(r300, DBG_RS, "r300: Rasterized emulated FACE written to FS.\n");
+    } else if (r300->screen->caps.is_r500 && fs_inputs->face != ATTR_UNUSED &&
+        !(any_bcolor_used && hw_two_sided_color)) {
         rX00_rs_col(&rs, col_count, col_count, SWIZ_XYZW);
         rX00_rs_col_write(&rs, col_count, fp_offset, WRITE_FACE);
         fp_offset++;
@@ -422,16 +432,13 @@ static void r300_update_rs_block(struct r300_context *r300)
     }
 
     /* Reuse color varyings for generics if possible.
-     *
      * The colors are interpolated as 20-bit floats (reduced precision),
      * Use this hack only if there are too many generic varyings.
-     * (number of generics + texcoords + fog + wpos + pcoord > 8) */
+     * (number of generic varyings + fog + wpos > 8) */
     if (r300->screen->caps.is_r500 && !any_bcolor_used && !r300->flatshade &&
-        fs_inputs->face == ATTR_UNUSED &&
-        vs_outputs->num_texcoord + vs_outputs->num_generic +
-        (vs_outputs->fog != ATTR_UNUSED) + (fs_inputs->wpos != ATTR_UNUSED) +
-        (vs_outputs->pcoord != ATTR_UNUSED) > 8 &&
-        fs_inputs->num_generic > fs_inputs->num_texcoord) {
+	fs_inputs->face == ATTR_UNUSED &&
+        vs_outputs->num_generic + (vs_outputs->fog != ATTR_UNUSED) +
+        (fs_inputs->wpos != ATTR_UNUSED) > 8) {
 	for (i = 0; i < ATTR_GENERIC_COUNT && col_count < 2; i++) {
 	    /* Cannot use color varyings for sprite coords. */
 	    if (fs_inputs->generic[i] != ATTR_UNUSED &&
@@ -475,7 +482,7 @@ static void r300_update_rs_block(struct r300_context *r300)
 	gen_offset = i;
     }
 
-    /* Rasterize generics. */
+    /* Rasterize texture coordinates. */
     for (i = gen_offset; i < ATTR_GENERIC_COUNT && tex_count < 8; i++) {
 	bool sprite_coord = false;
 
@@ -530,139 +537,6 @@ static void r300_update_rs_block(struct r300_context *r300)
                     "not enough hardware slots (it's not a bug, do not "
                     "report it).\n", i);
         }
-    }
-
-    gen_offset = 0;
-    /* Reuse color varyings for texcoords if possible.
-     *
-     * The colors are interpolated as 20-bit floats (reduced precision),
-     * Use this hack only if there are too many generic varyings.
-     * (number of generics + texcoords + fog + wpos + pcoord > 8) */
-    if (r300->screen->caps.is_r500 && !any_bcolor_used && !r300->flatshade &&
-        fs_inputs->face == ATTR_UNUSED &&
-        vs_outputs->num_texcoord + vs_outputs->num_generic +
-        (vs_outputs->fog != ATTR_UNUSED) + (fs_inputs->wpos != ATTR_UNUSED) +
-        (vs_outputs->pcoord != ATTR_UNUSED) > 8 &&
-        fs_inputs->num_generic <= fs_inputs->num_texcoord) {
-	for (i = 0; i < ATTR_TEXCOORD_COUNT && col_count < 2; i++) {
-	    /* Cannot use color varyings for sprite coords. */
-	    if (fs_inputs->texcoord[i] != ATTR_UNUSED &&
-		(r300->sprite_coord_enable & (1U << i)) && r300->is_point) {
-		break;
-	    }
-
-	    if (vs_outputs->texcoord[i] != ATTR_UNUSED) {
-		/* Set up the color in VAP. */
-		rs.vap_vsm_vtx_assm |= R300_INPUT_CNTL_COLOR;
-		rs.vap_out_vtx_fmt[0] |=
-			R300_VAP_OUTPUT_VTX_FMT_0__COLOR_0_PRESENT << col_count;
-		stream_loc_notcl[loc++] = 2 + col_count;
-
-		/* Rasterize it. */
-		rX00_rs_col(&rs, col_count, col_count, SWIZ_XYZW);
-
-		/* Write it to the FS input register if it's needed by the FS. */
-		if (fs_inputs->texcoord[i] != ATTR_UNUSED) {
-		    rX00_rs_col_write(&rs, col_count, fp_offset, WRITE_COLOR);
-		    fp_offset++;
-
-		    DBG(r300, DBG_RS,
-			"r300: Rasterized texcoord %i redirected to color %i and written to FS.\n",
-		        i, col_count);
-		} else {
-		    DBG(r300, DBG_RS, "r300: Rasterized texcoord %i redirected to color %i unused.\n",
-		        i, col_count);
-		}
-		col_count++;
-	    } else {
-		/* Skip the FS input register, leave it uninitialized. */
-		/* If we try to set it to (0,0,0,1), it will lock up. */
-		if (fs_inputs->texcoord[i] != ATTR_UNUSED) {
-		    fp_offset++;
-
-		    DBG(r300, DBG_RS, "r300: FS input texcoord %i unassigned.\n", i);
-		}
-	    }
-	}
-	gen_offset = i;
-    }
-
-    /* Rasterize texcords. */
-    for (i = gen_offset; i < ATTR_TEXCOORD_COUNT && tex_count < 8; i++) {
-        bool sprite_coord = false;
-
-        if (fs_inputs->texcoord[i] != ATTR_UNUSED) {
-            sprite_coord = !!(r300->sprite_coord_enable & (1 << i)) && r300->is_point;
-        }
-
-        if (vs_outputs->texcoord[i] != ATTR_UNUSED || sprite_coord) {
-            if (!sprite_coord) {
-                /* Set up the texture coordinates in VAP. */
-                rs.vap_vsm_vtx_assm |= (R300_INPUT_CNTL_TC0 << tex_count);
-                rs.vap_out_vtx_fmt[1] |= (4 << (3 * tex_count));
-                stream_loc_notcl[loc++] = 6 + tex_count;
-            } else
-                stuffing_enable |=
-                    R300_GB_TEX_ST << (R300_GB_TEX0_SOURCE_SHIFT + (tex_count*2));
-
-            /* Rasterize it. */
-            rX00_rs_tex(&rs, tex_count, tex_ptr,
-			sprite_coord ? SWIZ_XY01 : SWIZ_XYZW);
-
-            /* Write it to the FS input register if it's needed by the FS. */
-            if (fs_inputs->texcoord[i] != ATTR_UNUSED) {
-                rX00_rs_tex_write(&rs, tex_count, fp_offset);
-                fp_offset++;
-
-                DBG(r300, DBG_RS,
-                    "r300: Rasterized texcoord %i written to FS%s in texcoord %d.\n",
-                    i, sprite_coord ? " (sprite coord)" : "", tex_count);
-            } else {
-                DBG(r300, DBG_RS,
-                    "r300: Rasterized texcoord %i unused%s.\n",
-                    i, sprite_coord ? " (sprite coord)" : "");
-            }
-            tex_count++;
-            tex_ptr += sprite_coord ? 2 : 4;
-        } else {
-            /* Skip the FS input register, leave it uninitialized. */
-            /* If we try to set it to (0,0,0,1), it will lock up. */
-            if (fs_inputs->texcoord[i] != ATTR_UNUSED) {
-                fp_offset++;
-
-                DBG(r300, DBG_RS, "r300: FS input texcoord %i unassigned%s.\n",
-                    i, sprite_coord ? " (sprite coord)" : "");
-            }
-        }
-    }
-
-    for (; i < ATTR_TEXCOORD_COUNT; i++) {
-        if (fs_inputs->texcoord[i] != ATTR_UNUSED) {
-            fprintf(stderr, "r300: ERROR: FS input texcoord %i unassigned, "
-                    "not enough hardware slots (it's not a bug, do not "
-                    "report it).\n", i);
-        }
-    }
-
-    /* Rasterize pointcoord. */
-    if (fs_inputs->pcoord != ATTR_UNUSED && tex_count < 8) {
-
-        stuffing_enable |=
-            R300_GB_TEX_ST << (R300_GB_TEX0_SOURCE_SHIFT + (tex_count*2));
-
-        /* Rasterize it. */
-        rX00_rs_tex(&rs, tex_count, tex_ptr, SWIZ_XY01);
-
-        /* Write it to the FS input register if it's needed by the FS. */
-        rX00_rs_tex_write(&rs, tex_count, fp_offset);
-        fp_offset++;
-
-        DBG(r300, DBG_RS,
-            "r300: Rasterized pointcoord %i written to FS%s in texcoord %d.\n",
-            i, " (sprite coord)", tex_count);
-
-        tex_count++;
-        tex_ptr += 2;
     }
 
     /* Rasterize fog coordinates. */
@@ -752,10 +626,8 @@ static void r300_update_rs_block(struct r300_context *r300)
     rs.inst_count = count - 1;
 
     /* set the GB enable flags */
-    if ((r300->sprite_coord_enable || fs_inputs->pcoord != ATTR_UNUSED) &&
-         r300->is_point) {
+    if (r300->sprite_coord_enable && r300->is_point)
 	stuffing_enable |= R300_GB_POINT_STUFF_ENABLE;
-    }
 
     rs.gb_enable = stuffing_enable;
 
@@ -1190,39 +1062,60 @@ static void r300_validate_fragment_shader(struct r300_context *r300)
     }
 }
 
+static bool r300_need_frontface_emulation(struct r300_context *r300,
+                                          struct r300_vertex_shader *vs,
+                                          struct r300_fragment_shader *fs)
+{
+    if (r300->screen->caps.is_r500 ||
+        fs->shader->inputs.face == ATTR_UNUSED ||
+        !vs->can_emulate_frontface)
+        return false;
+
+    if (fs->shader->inputs.color[0] != ATTR_UNUSED)
+        return false;
+
+    return true;
+}
+
 static void r300_pick_vertex_shader(struct r300_context *r300)
 {
     struct r300_vertex_shader_code *ptr;
     struct r300_vertex_shader *vs = r300_vs(r300);
 
     if (r300->vs_state.state) {
-        bool wpos = r300_fs(r300)->shader->inputs.wpos != ATTR_UNUSED;
+        struct r300_fragment_shader *fs = r300_fs(r300);
 
-        if (!vs->first) {
-            /* Build the vertex shader for the first time. */
-            vs->first = vs->shader = CALLOC_STRUCT(r300_vertex_shader_code);
-            vs->first->wpos = wpos;
-            r300_translate_vertex_shader(r300, vs);
-            if (!vs->first->dummy)
-                r300_mark_atom_dirty(r300, &r300->rs_block_state);
-            return;
-        }
-        /* Pick the vertex shader based on whether we need wpos */
-        if (vs->first->wpos != wpos) {
-            if (vs->first->next && vs->first->next->wpos == wpos) {
-                ptr = vs->first->next;
-                vs->first->next = NULL;
-                ptr->next = vs->first;
-                vs->first = vs->shader = ptr;
+        /* The active FS determines which synthetic VS outputs are required. */
+        struct r300_vertex_shader_key key = {
+            .wpos = fs->shader->inputs.wpos != ATTR_UNUSED,
+            .frontface = r300_need_frontface_emulation(r300, vs, fs),
+        };
+
+        if (memcmp(&vs->shader->key, &key, sizeof(key)) != 0) {
+            /* Search for the requested variant. */
+            ptr = vs->first;
+            while (ptr) {
+                if (memcmp(&ptr->key, &key, sizeof(key)) == 0)
+                    break;
+                ptr = ptr->next;
+            }
+
+            if (ptr) {
+                vs->shader = ptr;
             } else {
                 ptr = CALLOC_STRUCT(r300_vertex_shader_code);
+                ptr->key = key;
                 ptr->next = vs->first;
                 vs->first = vs->shader = ptr;
-                vs->shader->wpos = wpos;
-                r300_translate_vertex_shader(r300, vs);
+                if (r300->screen->caps.has_tcl)
+                    r300_translate_vertex_shader(r300, vs);
+                else
+                    r300_draw_init_vertex_shader(r300, vs);
             }
-            if (!vs->first->dummy)
+            if (!vs->shader->dummy) {
+                r300_bind_vertex_shader_variant(r300);
                 r300_mark_atom_dirty(r300, &r300->rs_block_state);
+            }
         }
     }
 }
@@ -1235,8 +1128,7 @@ void r300_update_derived_state(struct r300_context* r300)
     }
 
     r300_validate_fragment_shader(r300);
-    if (r300->screen->caps.has_tcl)
-        r300_pick_vertex_shader(r300);
+    r300_pick_vertex_shader(r300);
 
     if (r300->rs_block_state.dirty) {
         r300_update_rs_block(r300);

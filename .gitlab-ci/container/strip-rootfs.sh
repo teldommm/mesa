@@ -2,7 +2,10 @@
 # Strip the image to a small minimal system.
 # When changing this file, you need to bump the following
 # .gitlab-ci/image-tags.yml tags:
-# KERNEL_ROOTFS_TAG
+# DEBIAN_TEST_ANDROID_TAG
+# DEBIAN_TEST_GL_TAG
+# DEBIAN_TEST_VIDEO_TAG
+# DEBIAN_TEST_VK_TAG
 set -ex
 
 section_start strip-rootfs "Stripping rootfs"
@@ -35,7 +38,6 @@ UNNEEDED_PACKAGES=(
   udev
   init-system-helpers
   cpio
-  passwd
   libsemanage1 libsemanage-common
   libsepol1
   gpgv
@@ -45,7 +47,7 @@ UNNEEDED_PACKAGES=(
   libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers mesa-vdpau-drivers i965-va-driver
   intel-media-va-driver
   gnupg2
-  software-properties-common
+  qemu-user
 )
 
 # Removing unneeded packages
@@ -111,7 +113,6 @@ directories=(
   /usr/lib/*/libdb-5.3.so # libdb-5.3.so that is only used by this pam module ^
   /usr/lib/*/libnss_hesiod* # remove NSS support for nis, nisplus and hesiod
   /usr/lib/*/libnss_nis*
-  /usr/lib/*/wine # don't need Wine's implementation, using Proton instead
   /usr/local/bin/mold
   /usr/local/bin/bindgen
   /usr/local/bin/cargo*

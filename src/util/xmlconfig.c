@@ -28,6 +28,7 @@
  */
 
 #include "xmlconfig.h"
+#include <ctype.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -69,38 +70,42 @@ static inline void regfree(regex_t* r) {}
 static bool
 be_verbose(void)
 {
-   const char *s = getenv("MESA_DEBUG");
+   const char *s = os_get_option("MESA_DEBUG");
    if (!s)
       return true;
 
    return strstr(s, "silent") == NULL;
 }
 
-/** \brief Locale-independent integer parser.
+/** \brief Locale-independent 64-bit integer parser.
  *
- * Works similar to strtol. Leading space is NOT skipped. The input
- * number may have an optional sign. Radix is specified by base. If
- * base is 0 then decimal is assumed unless the input number is
- * prefixed by 0x or 0X for hexadecimal or 0 for octal. After
- * returning tail points to the first character that is not part of
- * the integer number. If no number was found then tail points to the
- * start of the input string. */
-static int
-strToI(const char *string, const char **tail, int base)
+ * Works similar to strtol. Leading space is NOT skipped. If the sign
+ * argument is non-null, the input number may have an optional sign.
+ * Radix is specified by base. If base is 0 then decimal is assumed
+ * unless the input number is prefixed by 0x or 0X for hexadecimal or
+ * 0 for octal. After returning tail points to the first character
+ * that is not part of the integer number. If no number was found then
+ * tail points to the start of the input string. Out-of-range values
+ * are truncated. */
+static uint64_t
+strToInteger(const char *string, const char **tail, int *sign, int base)
 {
    int radix = base == 0 ? 10 : base;
-   int result = 0;
-   int sign = 1;
+   uint64_t result = 0;
    bool numberFound = false;
    const char *start = string;
 
    assert(radix >= 2 && radix <= 36);
 
-   if (*string == '-') {
-      sign = -1;
-      string++;
-   } else if (*string == '+')
-      string++;
+   if (sign) {
+      *sign = 1;
+      if (*string == '-') {
+         *sign = -1;
+         string++;
+      } else if (*string == '+')
+         string++;
+   }
+
    if (base == 0 && *string == '0') {
       numberFound = true;
       if (*(string+1) == 'x' || *(string+1) == 'X') {
@@ -132,7 +137,28 @@ strToI(const char *string, const char **tail, int base)
          break;
    } while (true);
    *tail = numberFound ? string : start;
+   return result;
+}
+
+/** \brief Locale-independent integer parser.
+ *
+ * Follows the semantics of strToInteger, allowing a sign character. */
+static int
+strToI(const char *string, const char **tail, int base)
+{
+   int sign;
+   int result = strToInteger(string, tail, &sign, base);
    return sign * result;
+}
+
+/** \brief Locale-independent 64-bit unsigned integer parser.
+ *
+ * Follows the semantics of strToInteger, without allowing a sign
+ * character. */
+static uint64_t
+strToU64(const char *string, const char **tail, int base)
+{
+   return strToInteger(string, tail, NULL, base);
 }
 
 /** \brief Locale-independent floating-point parser.
@@ -233,6 +259,9 @@ parseValue(driOptionValue *v, driOptionType type, const char *string)
    case DRI_INT:
       v->_int = strToI(string, &tail, 0);
       break;
+   case DRI_UINT64:
+      v->_uint64 = strToU64(string, &tail, 0);
+      break;
    case DRI_FLOAT:
       v->_float = strToF(string, &tail);
       break;
@@ -241,7 +270,7 @@ parseValue(driOptionValue *v, driOptionType type, const char *string)
       v->_string = strndup(string, STRING_CONF_MAXLEN);
       return true;
    case DRI_SECTION:
-      unreachable("shouldn't be parsing values in section declarations");
+      UNREACHABLE("shouldn't be parsing values in section declarations");
    }
 
    if (tail == string)
@@ -302,6 +331,11 @@ checkValue(const driOptionValue *v, const driOptionInfo *info)
       return (info->range.start._int == info->range.end._int ||
               (v->_int >= info->range.start._int &&
                v->_int <= info->range.end._int));
+
+   case DRI_UINT64:
+      return (info->range.start._uint64 == info->range.end._uint64 ||
+              (v->_uint64 >= info->range.start._uint64 &&
+               v->_uint64 <= info->range.end._uint64));
 
    case DRI_FLOAT:
       return (info->range.start._float == info->range.end._float ||
@@ -368,6 +402,10 @@ driParseOptionInfo(driOptionCache *info,
          optval->_int = opt->value._int;
          break;
 
+      case DRI_UINT64:
+         optval->_uint64 = opt->value._uint64;
+         break;
+
       case DRI_FLOAT:
          optval->_float = opt->value._float;
          break;
@@ -377,7 +415,7 @@ driParseOptionInfo(driOptionCache *info,
          break;
 
       case DRI_SECTION:
-         unreachable("handled above");
+         UNREACHABLE("handled above");
       }
 
       /* Built-in default values should always be valid. */
@@ -437,6 +475,7 @@ driGetOptionsXml(const driOptionDescription *configOptions, unsigned numOptions)
       const char *types[] = {
          [DRI_BOOL] = "bool",
          [DRI_INT] = "int",
+         [DRI_UINT64] = "uint64",
          [DRI_FLOAT] = "float",
          [DRI_ENUM] = "enum",
          [DRI_STRING] = "string",
@@ -470,6 +509,10 @@ driGetOptionsXml(const driOptionDescription *configOptions, unsigned numOptions)
          ralloc_asprintf_append(&str, "%d", opt->value._int);
          break;
 
+      case DRI_UINT64:
+         ralloc_asprintf_append(&str, "%" PRIu64, opt->value._uint64);
+         break;
+
       case DRI_FLOAT:
          ralloc_asprintf_append(&str, "%f", opt->value._float);
          break;
@@ -479,7 +522,7 @@ driGetOptionsXml(const driOptionDescription *configOptions, unsigned numOptions)
          break;
 
       case DRI_SECTION:
-         unreachable("handled above");
+         UNREACHABLE("handled above");
          break;
       }
       ralloc_asprintf_append(&str, "\"");
@@ -492,6 +535,14 @@ driGetOptionsXml(const driOptionDescription *configOptions, unsigned numOptions)
             ralloc_asprintf_append(&str, " valid=\"%d:%d\"",
                                    opt->info.range.start._int,
                                    opt->info.range.end._int);
+         }
+         break;
+
+      case DRI_UINT64:
+         if (opt->info.range.start._uint64 < opt->info.range.end._uint64) {
+            ralloc_asprintf_append(&str, " valid=\"%" PRIu64 ":%" PRIu64 "\"",
+                                   opt->info.range.start._uint64,
+                                   opt->info.range.end._uint64);
          }
          break;
 
@@ -549,7 +600,7 @@ __driUtilMessage(const char *f, ...)
    va_list args;
    const char *libgl_debug;
 
-   libgl_debug=getenv("LIBGL_DEBUG");
+   libgl_debug=os_get_option("LIBGL_DEBUG");
    if (libgl_debug && !strstr(libgl_debug, "quiet")) {
       fprintf(stderr, "libGL: ");
       va_start(args, f);
@@ -603,6 +654,12 @@ struct OptConfData {
    const char *deviceName;
    const char *engineName;
    const char *applicationName;
+   union {
+      blake3_hash blake3;
+      uint64_t    u64;
+   } shaderHash;
+   uint32_t shaderHashSize;
+
    uint32_t engineVersion;
    uint32_t applicationVersion;
    uint32_t ignoringDevice;
@@ -610,7 +667,11 @@ struct OptConfData {
    uint32_t inDriConf;
    uint32_t inDevice;
    uint32_t inApp;
+   uint32_t inShader;
    uint32_t inOption;
+
+   driShaderOptionCallback shaderOptionCallback;
+   void *shaderOptionCallbackData;
 };
 
 /** \brief Parse a list of ranges of type info->type. */
@@ -636,6 +697,11 @@ parseRange(driOptionInfo *info, const char *string)
    }
    if (info->type == DRI_INT &&
        info->range.start._int >= info->range.end._int) {
+      free(cp);
+      return false;
+   }
+   if (info->type == DRI_UINT64 &&
+       info->range.start._uint64 >= info->range.end._uint64) {
       free(cp);
       return false;
    }
@@ -685,7 +751,7 @@ parseAppAttr(struct OptConfData *data, const char **attr)
 {
    uint32_t i;
    const char *exec = NULL;
-   const char *sha1 = NULL;
+   const char *blake3 = NULL;
    const char *exec_regexp = NULL;
    const char *application_name_match = NULL;
    const char *application_versions = NULL;
@@ -697,7 +763,7 @@ parseAppAttr(struct OptConfData *data, const char **attr)
       if (!strcmp(attr[i], "name")) /* not needed here */;
       else if (!strcmp(attr[i], "executable")) exec = attr[i+1];
       else if (!strcmp(attr[i], "executable_regexp")) exec_regexp = attr[i+1];
-      else if (!strcmp(attr[i], "sha1")) sha1 = attr[i+1];
+      else if (!strcmp(attr[i], "blake3")) blake3 = attr[i+1];
       else if (!strcmp(attr[i], "application_name_match"))
          application_name_match = attr[i+1];
       else if (!strcmp(attr[i], "application_versions"))
@@ -715,10 +781,10 @@ parseAppAttr(struct OptConfData *data, const char **attr)
          regfree(&re);
       } else
          XML_WARNING("Invalid executable_regexp=\"%s\".", exec_regexp);
-   } else if (sha1) {
-      /* SHA1_DIGEST_STRING_LENGTH includes terminating null byte */
-      if (strlen(sha1) != (SHA1_DIGEST_STRING_LENGTH - 1)) {
-         XML_WARNING("Incorrect sha1 application attribute");
+   } else if (blake3) {
+      /* BLAKE3_HEX_LEN includes terminating null byte */
+      if (strlen(blake3) != (BLAKE3_HEX_LEN - 1)) {
+         XML_WARNING("Incorrect blake3 application attribute");
          data->ignoringApp = data->inApp;
       } else {
          size_t len;
@@ -726,13 +792,13 @@ parseAppAttr(struct OptConfData *data, const char **attr)
          char path[PATH_MAX];
          if (util_get_process_exec_path(path, ARRAY_SIZE(path)) > 0 &&
              (content = os_read_file(path, &len))) {
-            uint8_t sha1x[SHA1_DIGEST_LENGTH];
-            char sha1s[SHA1_DIGEST_STRING_LENGTH];
-            _mesa_sha1_compute(content, len, sha1x);
-            _mesa_sha1_format((char*) sha1s, sha1x);
+            uint8_t blake3x[BLAKE3_KEY_LEN];
+            char blake3s[BLAKE3_HEX_LEN];
+            _mesa_blake3_compute(content, len, blake3x);
+            _mesa_blake3_format((char*) blake3s, blake3x);
             free(content);
 
-            if (strcmp(sha1, sha1s)) {
+            if (strcmp(blake3, blake3s)) {
                data->ignoringApp = data->inApp;
             }
          } else {
@@ -798,6 +864,42 @@ parseEngineAttr(struct OptConfData *data, const char **attr)
    }
 }
 
+/** \brief Parse attributes of a shader element. */
+static void
+parseShaderAttr(struct OptConfData *data, const char **attr)
+{
+   uint32_t i;
+   const char *type = NULL, *hash = NULL;
+   for (i = 0; attr[i]; i += 2) {
+      if (!strcmp(attr[i], "type")) type = attr[i+1];
+      else if (!strcmp(attr[i], "hash")) hash = attr[i+1];
+      else XML_WARNING("unknown shader attribute: %s.", attr[i]);
+   }
+   if (!type) XML_WARNING1("type attribute missing in shader.");
+   if (!hash) XML_WARNING1("hash attribute missing in shader.");
+
+   if (type && hash) {
+      if (!strcmp(type, "dxbc") || !strcmp(type, "dxil")) {
+         data->shaderHash.u64 = strtoull(hash, NULL, 16);
+         data->shaderHashSize = sizeof(data->shaderHash.u64);
+      } else if (!strcmp(type, "spirv")) {
+         if (strlen(hash) != (BLAKE3_HEX_LEN - 1)) {
+            XML_WARNING("hash attribute value \"%s\" %u/%u not in blake3 format.",
+                        hash, strlen(hash), BLAKE3_HEX_LEN);
+         } else {
+            char blake3_str[BLAKE3_HEX_LEN] = {0};
+            for (unsigned i = 0; i < MIN2(strlen(hash), BLAKE3_HEX_LEN); i++)
+               blake3_str[i] = tolower(hash[i]);
+            _mesa_blake3_hex_to_blake3(data->shaderHash.blake3, blake3_str);
+            data->shaderHashSize = sizeof(data->shaderHash.blake3);
+         }
+      } else {
+         XML_WARNING("type attribute value \"%s\" invalid in shader (valid : spirv, dxbc, dxil).",
+                     type);
+      }
+   }
+}
+
 /** \brief Parse attributes of an option element. */
 static void
 parseOptConfAttr(struct OptConfData *data, const char **attr)
@@ -818,7 +920,7 @@ parseOptConfAttr(struct OptConfData *data, const char **attr)
          /* don't use XML_WARNING, drirc defines options for all drivers,
           * but not all drivers support them */
          return;
-      else if (getenv(cache->info[opt].name)) {
+      else if (os_get_option(cache->info[opt].name)) {
          /* don't use XML_WARNING, we want the user to see this! */
          if (be_verbose()) {
             fprintf(stderr,
@@ -830,11 +932,50 @@ parseOptConfAttr(struct OptConfData *data, const char **attr)
    }
 }
 
+/** \brief Parse attributes of an option element for <shader>. */
+static void
+parseShaderOptConfAttr(struct OptConfData *data, const char **attr)
+{
+   uint32_t i;
+   const char *name = NULL, *value = NULL;
+   for (i = 0; attr[i]; i += 2) {
+      if (!strcmp(attr[i], "name")) name = attr[i+1];
+      else if (!strcmp(attr[i], "value")) value = attr[i+1];
+      else XML_WARNING("unknown option attribute: %s.", attr[i]);
+   }
+   if (!name) XML_WARNING1("name attribute missing in option.");
+   if (!value) XML_WARNING1("value attribute missing in option.");
+   if (name && value && data->shaderHashSize != 0) {
+      driOptionCache *cache = data->cache;
+      uint32_t opt = findOption(cache, name);
+      if (cache->info[opt].name == NULL)
+         /* don't use XML_WARNING, drirc defines options for all drivers,
+          * but not all drivers support them */
+         return;
+      else if (os_get_option(cache->info[opt].name)) {
+         /* don't use XML_WARNING, we want the user to see this! */
+         if (be_verbose()) {
+            fprintf(stderr,
+                    "ATTENTION: option value of option %s ignored.\n",
+                    cache->info[opt].name);
+         }
+      } else if (!parseValue(&cache->values[opt], cache->info[opt].type, value)) {
+         XML_WARNING("illegal option value: %s.", value);
+      } else if (data->shaderOptionCallback != NULL) {
+         data->shaderOptionCallback(&data->shaderHash,
+                                    data->shaderHashSize,
+                                    &cache->info[opt],
+                                    &cache->values[opt],
+                                    data->shaderOptionCallbackData);
+      }
+   }
+}
+
 #if WITH_XMLCONFIG
 
 /** \brief Elements in configuration files. */
 enum OptConfElem {
-   OC_APPLICATION = 0, OC_DEVICE, OC_DRICONF, OC_ENGINE, OC_OPTION, OC_COUNT
+   OC_APPLICATION = 0, OC_DEVICE, OC_DRICONF, OC_ENGINE, OC_OPTION, OC_SHADER, OC_COUNT
 };
 static const char *OptConfElems[] = {
    [OC_APPLICATION]  = "application",
@@ -842,6 +983,7 @@ static const char *OptConfElems[] = {
    [OC_DRICONF] = "driconf",
    [OC_ENGINE]  = "engine",
    [OC_OPTION] = "option",
+   [OC_SHADER] = "shader",
 };
 
 static int compare(const void *a, const void *b) {
@@ -901,14 +1043,27 @@ optConfStartElem(void *userData, const char *name,
       if (!data->ignoringDevice && !data->ignoringApp)
          parseEngineAttr(data, attr);
       break;
-   case OC_OPTION:
+   case OC_SHADER:
       if (!data->inApp)
-         XML_WARNING1("<option> should be inside <application>.");
+         XML_WARNING1("<shader> should be inside <application>.");
+      if (data->inShader)
+         XML_WARNING1("nested <shader> elements.");
+      data->inShader++;
+      if (!data->ignoringDevice && !data->ignoringApp)
+         parseShaderAttr(data, attr);
+      break;
+   case OC_OPTION:
+      if (!data->inApp && !data->inShader)
+         XML_WARNING1("<option> should be inside <application> or <shader>.");
       if (data->inOption)
          XML_WARNING1("nested <option> elements.");
       data->inOption++;
-      if (!data->ignoringDevice && !data->ignoringApp)
-         parseOptConfAttr(data, attr);
+      if (!data->ignoringDevice && !data->ignoringApp) {
+         if (data->inShader)
+            parseShaderOptConfAttr(data, attr);
+         else
+            parseOptConfAttr(data, attr);
+      }
       break;
    default:
       XML_WARNING("unknown element: %s.", name);
@@ -933,6 +1088,10 @@ optConfEndElem(void *userData, const char *name)
    case OC_ENGINE:
       if (data->inApp-- == data->ignoringApp)
          data->ignoringApp = 0;
+      break;
+   case OC_SHADER:
+      data->inShader--;
+      data->shaderHashSize = 0;
       break;
    case OC_OPTION:
       data->inOption--;
@@ -1129,7 +1288,7 @@ parseStaticConfig(struct OptConfData *data)
             "name", a->name,
             "executable", a->executable,
             "executable_regexp", a->executable_regexp,
-            "sha1", a->sha1,
+            "blake3", a->blake3,
             "application_name_match", a->application_name_match,
             "application_versions", a->application_versions,
             NULL
@@ -1175,11 +1334,7 @@ driInjectExecName(const char *exec)
 
 void
 driParseConfigFiles(driOptionCache *cache, const driOptionCache *info,
-                    int screenNum, const char *driverName,
-                    const char *kernelDriverName,
-                    const char *deviceName,
-                    const char *applicationName, uint32_t applicationVersion,
-                    const char *engineName, uint32_t engineVersion)
+                    const driConfigFileParseParams *params)
 {
    initOptionCache(cache, info);
    struct OptConfData userData = {0};
@@ -1190,28 +1345,38 @@ driParseConfigFiles(driOptionCache *cache, const driOptionCache *info,
       execname = util_get_process_name();
 
    userData.cache = cache;
-   userData.screenNum = screenNum;
-   userData.driverName = driverName;
-   userData.kernelDriverName = kernelDriverName;
-   userData.deviceName = deviceName;
-   userData.applicationName = applicationName ? applicationName : "";
-   userData.applicationVersion = applicationVersion;
-   userData.engineName = engineName ? engineName : "";
-   userData.engineVersion = engineVersion;
+   userData.screenNum = params->screenNum;
+   userData.driverName = params->driverName;
+   userData.kernelDriverName = params->kernelDriverName;
+   userData.deviceName = params->deviceName;
+   userData.applicationName = params->applicationName ? params->applicationName : "";
+   userData.applicationVersion = params->applicationVersion;
+   userData.engineName = params->engineName ? params->engineName : "";
+   userData.engineVersion = params->engineVersion;
    userData.execName = execname;
+   userData.shaderOptionCallback = params->shaderOptionCallback;
+   userData.shaderOptionCallbackData = params->shaderOptionCallbackData;
 
 #if WITH_XMLCONFIG
-   char *home, *configdir;
+   const char *configdir;
+   const char *home;
 
    /* parse from either $DRIRC_CONFIGDIR or $datadir/drirc.d */
-   if ((configdir = getenv("DRIRC_CONFIGDIR")))
-      parseConfigDir(&userData, configdir);
-   else {
+   if ((configdir = os_get_option("DRIRC_CONFIGDIR"))) {
+      for (size_t len; len = strcspn(configdir, ":"), *configdir; configdir += MAX2(1, len)) {
+         if (!len)
+            continue;
+
+         char *dir = strndup(configdir, len);
+         parseConfigDir(&userData, dir);
+         free(dir);
+      }
+   } else {
       parseConfigDir(&userData, DATADIR "/drirc.d");
       parseOneConfigFile(&userData, SYSCONFDIR "/drirc");
    }
 
-   if ((home = getenv("HOME"))) {
+   if ((home = os_get_option("HOME"))) {
       char filename[PATH_MAX];
 
       snprintf(filename, PATH_MAX, "%s/.drirc", home);
@@ -1229,9 +1394,7 @@ driDestroyOptionInfo(driOptionCache *info)
    if (info->info) {
       uint32_t i, size = 1 << info->tableSize;
       for (i = 0; i < size; ++i) {
-         if (info->info[i].name) {
-            free(info->info[i].name);
-         }
+         free(info->info[i].name);
       }
       free(info->info);
    }
@@ -1276,6 +1439,16 @@ driQueryOptioni(const driOptionCache *cache, const char *name)
    assert(cache->info[i].name != NULL);
    assert(cache->info[i].type == DRI_INT || cache->info[i].type == DRI_ENUM);
    return cache->values[i]._int;
+}
+
+uint64_t
+driQueryOptionu64(const driOptionCache *cache, const char *name)
+{
+   uint32_t i = findOption(cache, name);
+   /* make sure the option is defined and has the correct type */
+   assert(cache->info[i].name != NULL);
+   assert(cache->info[i].type == DRI_UINT64);
+   return cache->values[i]._uint64;
 }
 
 float

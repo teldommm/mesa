@@ -10,11 +10,14 @@ if dep_libdrm.found()
 endif
 
 if with_wrapper_vk
+  # AHardwareBuffer-backed swapchain images for the Vulkan wrapper
   files_vulkan_wsi += files('wsi_common_android.c')
 endif
 
 if with_platform_x11
   files_vulkan_wsi += files('wsi_common_x11.c')
+  links_vulkan_wsi += libloader_x11
+  links_vulkan_wsi += libloader
 endif
 
 if with_platform_wayland
@@ -26,6 +29,7 @@ if with_platform_wayland
   files_vulkan_wsi += wp_files['tearing-control-v1']
   links_vulkan_wsi += libloader_wayland_helper
   files_vulkan_wsi += wp_files['linux-drm-syncobj-v1']
+  files_vulkan_wsi += wp_files['color-management-v1']
 endif
 
 if with_platform_windows

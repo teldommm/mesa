@@ -23,16 +23,9 @@
 
 #include "dzn_private.h"
 
-#define D3D12_IGNORE_SDK_LAYERS
-#define COBJMACROS
-#include <directx/d3d12.h>
-
-#include <vulkan/vulkan.h>
-
 #include "util/format/u_format.h"
 #include "util/log.h"
 
-#include <directx/d3d12sdklayers.h>
 #include <util/u_dl.h>
 
 static const DXGI_FORMAT formats[PIPE_FORMAT_COUNT] = {
@@ -266,7 +259,7 @@ dzn_translate_compare_op(VkCompareOp in)
    case VK_COMPARE_OP_NOT_EQUAL: return D3D12_COMPARISON_FUNC_NOT_EQUAL;
    case VK_COMPARE_OP_GREATER_OR_EQUAL: return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
    case VK_COMPARE_OP_ALWAYS: return D3D12_COMPARISON_FUNC_ALWAYS;
-   default: unreachable("Invalid compare op");
+   default: UNREACHABLE("Invalid compare op");
    }
 }
 

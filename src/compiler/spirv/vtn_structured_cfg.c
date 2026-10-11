@@ -1,24 +1,6 @@
 /*
  * Copyright © 2015-2023 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "vtn_private.h"
@@ -92,7 +74,7 @@ vtn_construct_type_to_string(enum vtn_construct_type t)
    CASE(case);
    }
 #undef CASE
-   unreachable("invalid construct type");
+   UNREACHABLE("invalid construct type");
    return "";
 }
 
@@ -173,6 +155,7 @@ enum vtn_branch_type {
    vtn_branch_type_terminate_ray,
    vtn_branch_type_emit_mesh_tasks,
    vtn_branch_type_return,
+   vtn_branch_type_abort,
 };
 
 static const char *
@@ -194,9 +177,10 @@ vtn_branch_type_to_string(enum vtn_branch_type t)
    CASE(terminate_ray);
    CASE(emit_mesh_tasks);
    CASE(return);
+   CASE(abort);
    }
 #undef CASE
-   unreachable("unknown branch type");
+   UNREACHABLE("unknown branch type");
    return "";
 }
 
@@ -388,12 +372,13 @@ structured_post_order_traversal(struct vtn_builder *b, struct vtn_block *block)
    case SpvOpReturnValue:
    case SpvOpEmitMeshTasksEXT:
    case SpvOpUnreachable:
+   case SpvOpAbortKHR:
       block->successors_count = 1;
       block->successors = vtn_zalloc(b, struct vtn_successor);
       break;
 
    default:
-      unreachable("invalid branch opcode");
+      UNREACHABLE("invalid branch opcode");
    }
 
    b->func->ordered_blocks[b->func->ordered_blocks_count++] = block;
@@ -504,7 +489,7 @@ pop_construct(struct vtn_construct_stack *stack)
 static inline void
 push_construct(struct vtn_construct_stack *stack, struct vtn_construct *c)
 {
-   util_dynarray_append(&stack->data, struct vtn_construct *, c);
+   util_dynarray_append(&stack->data, c);
 }
 
 static int
@@ -749,7 +734,7 @@ create_constructs(struct vtn_builder *b)
          }
 
          default:
-            unreachable("invalid merge opcode");
+            UNREACHABLE("invalid merge opcode");
          }
       }
 
@@ -976,7 +961,7 @@ branch_type_for_terminator(struct vtn_builder *b, struct vtn_block *block)
    case SpvOpKill:
       return vtn_branch_type_discard;
    case SpvOpTerminateInvocation:
-      if (b->options->lower_terminate_to_discard)
+      if (b->options->workarounds.lower_terminate_to_discard)
          return vtn_branch_type_discard;
       else
          return vtn_branch_type_terminate_invocation;
@@ -990,8 +975,10 @@ branch_type_for_terminator(struct vtn_builder *b, struct vtn_block *block)
    case SpvOpReturnValue:
    case SpvOpUnreachable:
       return vtn_branch_type_return;
+   case SpvOpAbortKHR:
+      return vtn_branch_type_abort;
    default:
-      unreachable("unexpected terminator operation");
+      UNREACHABLE("unexpected terminator operation");
       return vtn_branch_type_none;
    }
 }
@@ -1238,6 +1225,14 @@ vtn_emit_branch(struct vtn_builder *b, const struct vtn_block *block,
       struct vtn_construct *loop = block->parent->innermost_loop;
       vtn_assert(loop);
       vtn_emit_break_for_construct(b, block, loop);
+
+      /* If this is a conditional back-edge, flag this loop as do-while loop.
+       * The same applies to single-block loops.
+       */
+      if (block->parent->type == vtn_construct_type_continue ||
+          vtn_is_single_block_loop(loop)) {
+         loop->nloop->do_while = true;
+      }
       break;
    }
 
@@ -1256,6 +1251,12 @@ vtn_emit_branch(struct vtn_builder *b, const struct vtn_block *block,
       vtn_assert(block);
       vtn_emit_ret_store(b, block);
       nir_jump(&b->nb, nir_jump_return);
+      break;
+
+   case vtn_branch_type_abort:
+      vtn_assert(block);
+      vtn_assert(block->branch);
+      vtn_handle_abort(b, block->branch, block->branch[0] >> SpvWordCountShift);
       break;
 
    case vtn_branch_type_discard:
@@ -1652,7 +1653,7 @@ vtn_emit_cf_func_structured(struct vtn_builder *b, struct vtn_function *func,
 
          switch (next->type) {
          case vtn_construct_type_function:
-            unreachable("should've already entered function construct");
+            UNREACHABLE("should've already entered function construct");
             break;
 
          case vtn_construct_type_selection: {
@@ -1675,6 +1676,9 @@ vtn_emit_cf_func_structured(struct vtn_builder *b, struct vtn_function *func,
             nir_store_var(&b->nb, next->break_var, nir_imm_false(&b->nb), 1);
             next->nloop = nir_push_loop(&b->nb);
             nir_store_var(&b->nb, next->continue_var, nir_imm_false(&b->nb), 1);
+
+            if (!vtn_is_single_block_loop(next))
+               nir_loop_add_continue_construct(next->nloop);
 
             next->nloop->control = vtn_loop_control(b, block->merge[3]);
 

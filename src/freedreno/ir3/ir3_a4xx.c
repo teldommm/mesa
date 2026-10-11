@@ -135,7 +135,7 @@ emit_atomic(struct ir3_builder *b, nir_atomic_op op, struct ir3_instruction *bo,
    case nir_atomic_op_cmpxchg:
       return ir3_ATOMIC_S_CMPXCHG(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
    default:
-      unreachable("boo");
+      UNREACHABLE("boo");
    }
 }
 
@@ -215,7 +215,7 @@ get_image_offset(struct ir3_context *ctx, const nir_intrinsic_instr *instr,
       const struct ir3_const_state *const_state = ir3_const_state(ctx->so);
       assert(const_state->image_dims.mask & (1 << index));
 
-      cb = regid(const_state->offsets.image_dims, 0) +
+      cb = ir3_const_reg(const_state, IR3_CONST_ALLOC_IMAGE_DIMS, 0) +
          const_state->image_dims.off[index];
    } else {
       index += ctx->s->info.num_ssbos;
@@ -380,7 +380,7 @@ emit_intrinsic_atomic_image(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 static struct ir3_instruction *
 emit_intrinsic_atomic_global(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 {
-   unreachable("Global atomic are unimplemented on A5xx");
+   UNREACHABLE("Global atomic are unimplemented on A5xx");
 }
 
 const struct ir3_context_funcs ir3_a4xx_funcs = {
@@ -391,7 +391,5 @@ const struct ir3_context_funcs ir3_a4xx_funcs = {
    .emit_intrinsic_store_image = emit_intrinsic_store_image,
    .emit_intrinsic_atomic_image = emit_intrinsic_atomic_image,
    .emit_intrinsic_image_size = emit_intrinsic_image_size_tex,
-   .emit_intrinsic_load_global_ir3 = NULL,
-   .emit_intrinsic_store_global_ir3 = NULL,
    .emit_intrinsic_atomic_global = emit_intrinsic_atomic_global,
 };

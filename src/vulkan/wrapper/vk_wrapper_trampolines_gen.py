@@ -27,8 +27,12 @@ COPYRIGHT = """\
 
 import argparse
 import os
+import sys
 
 from mako.template import Template
+
+# The generator helpers live in src/vulkan/util
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'util'))
 
 # Mesa-local imports must be declared in meson variable
 # '{file_without_suffix}_depend_files'.

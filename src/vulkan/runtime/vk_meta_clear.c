@@ -96,10 +96,10 @@ get_clear_pipeline_layout(struct vk_device *device,
                           struct vk_meta_device *meta,
                           VkPipelineLayout *layout_out)
 {
-   const char key[] = "vk-meta-clear-pipeline-layout";
+   enum vk_meta_object_key_type key = VK_META_OBJECT_KEY_CLEAR;
 
    VkPipelineLayout from_cache =
-      vk_meta_lookup_pipeline_layout(meta, key, sizeof(key));
+      vk_meta_lookup_pipeline_layout(meta, &key, sizeof(key));
    if (from_cache != VK_NULL_HANDLE) {
       *layout_out = from_cache;
       return VK_SUCCESS;
@@ -118,7 +118,7 @@ get_clear_pipeline_layout(struct vk_device *device,
    };
 
    return vk_meta_create_pipeline_layout(device, meta, &info,
-                                         key, sizeof(key), layout_out);
+                                         &key, sizeof(key), layout_out);
 }
 
 static VkResult
@@ -209,7 +209,7 @@ vk_meta_clear_attachments(struct vk_command_buffer *cmd,
 
    struct vk_meta_clear_key key;
    memset(&key, 0, sizeof(key));
-   key.key_type = VK_META_OBJECT_KEY_CLEAR_PIPELINE;
+   key.key_type = VK_META_OBJECT_KEY_CLEAR;
    vk_meta_rendering_info_copy(&key.render, render);
 
    struct vk_meta_clear_push_data push = {0};
@@ -442,8 +442,18 @@ clear_image_level_layers(struct vk_command_buffer *cmd,
    VkCommandBuffer _cmd = vk_command_buffer_to_handle(cmd);
    VkResult result;
 
+   VkImageViewUsageCreateInfo view_usage = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+   };
+   if (image->aspects == VK_IMAGE_ASPECT_COLOR_BIT)
+      view_usage.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+   if (aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+      view_usage.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
    const VkImageViewCreateInfo view_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .pNext = &view_usage,
+      .flags = VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA,
       .image = vk_image_to_handle(image),
       .viewType = vk_image_render_view_type(image, layer_count),
       .format = format,
@@ -469,8 +479,9 @@ clear_image_level_layers(struct vk_command_buffer *cmd,
       .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
       .imageView = image_view,
       .imageLayout = image_layout,
-      .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .clearValue = *clear_value,
    };
    VkRenderingInfo vk_render = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -480,50 +491,21 @@ clear_image_level_layers(struct vk_command_buffer *cmd,
       },
       .layerCount = layer_count,
    };
-   struct vk_meta_rendering_info meta_render = {
-      .samples = image->samples,
-   };
 
    if (image->aspects == VK_IMAGE_ASPECT_COLOR_BIT) {
       vk_render.colorAttachmentCount = 1;
       vk_render.pColorAttachments = &vk_att;
-      meta_render.color_attachment_count = 1;
-      meta_render.color_attachment_formats[0] = format;
-      meta_render.color_attachment_write_masks[0] =
-         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
    }
 
    if (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) {
       vk_render.pDepthAttachment = &vk_att;
-      meta_render.depth_attachment_format = format;
    }
 
    if (aspects & VK_IMAGE_ASPECT_STENCIL_BIT) {
       vk_render.pStencilAttachment = &vk_att;
-      meta_render.stencil_attachment_format = format;
    }
 
-   const VkClearAttachment clear_att = {
-      .aspectMask = aspects,
-      .colorAttachment = 0,
-      .clearValue = *clear_value,
-   };
-
-   const VkClearRect clear_rect = {
-      .rect = {
-         .offset = { 0, 0 },
-         .extent = { level_extent.width, level_extent.height },
-      },
-      .baseArrayLayer = 0,
-      .layerCount = layer_count,
-   };
-
    disp->CmdBeginRendering(_cmd, &vk_render);
-
-   vk_meta_clear_attachments(cmd, meta, &meta_render,
-                             1, &clear_att, 1, &clear_rect);
-
    disp->CmdEndRendering(_cmd);
 }
 

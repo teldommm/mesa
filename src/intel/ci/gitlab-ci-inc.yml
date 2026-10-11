@@ -1,3 +1,40 @@
+.enforce-hw-jobs-i915g-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|i915g|i915.ko)"/i'
+      when: never
+
+.enforce-hw-jobs-crocus-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|crocus|i915.ko)"/i'
+      when: never
+
+# NOTE: This should have been split into per-driver rules, but this causes excessive complexity.
+# See https://gitlab.freedesktop.org/mupuf/mesa/-/commit/843ba2dcd824b6b17386f258f6eb766a9fae18f0
+.enforce-hw-jobs-iris-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|iris|i915.ko|xe.ko)"/i'
+      when: never
+
+# NOTE: This should have been split into per-driver rules, but this causes excessive complexity.
+# See https://gitlab.freedesktop.org/mupuf/mesa/-/commit/843ba2dcd824b6b17386f258f6eb766a9fae18f0
+.enforce-hw-jobs-anv-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|anv|i915.ko|xe.ko)"/i'
+      when: never
+
+# NOTE: This should have been split into per-driver rules, but this causes excessive complexity.
+# See https://gitlab.freedesktop.org/mupuf/mesa/-/commit/843ba2dcd824b6b17386f258f6eb766a9fae18f0
+.enforce-hw-jobs-anv-iris-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|anv|iris|i915.ko|xe.ko)"/i'
+      when: never
+
+.enforce-hw-jobs-hasvk-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|hasvk|i915.ko)"/i'
+      when: never
+
+
 .intel-common-rules:
   stage: intel
   rules:
@@ -24,10 +61,11 @@
         - src/intel/ci/$GALLIUM_DRIVER-skips.txt
         - src/intel/ci/$DRIVER_NAME-skips.txt
         - src/intel/ci/$PIGLIT_TRACES_FILE
+        - src/intel/ci/$REPLAY_CONFIG
       when: on_success
 
 .intel-common-manual-rules:
-  stage: intel-postmerge
+  stage: intel-nightly
   rules:
     - changes:
         *intel_common_file_list
@@ -36,6 +74,7 @@
 .i915g-rules:
   stage: intel
   rules:
+    - !reference [.enforce-hw-jobs-i915g-rules, rules]
     - !reference [.test, rules]
     - !reference [.ondracka-farm-rules, rules]
     - !reference [.gl-rules, rules]
@@ -51,9 +90,10 @@
       when: on_success
 
 .i915g-manual-rules:
-  stage: intel-postmerge
+  stage: intel-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-i915g-rules, rules]
     - !reference [.test, rules]
     - !reference [.ondracka-farm-manual-rules, rules]
     - !reference [.gl-manual-rules, rules]
@@ -65,6 +105,7 @@
 .crocus-rules:
   stage: intel
   rules:
+    - !reference [.enforce-hw-jobs-crocus-rules, rules]
     - !reference [.test, rules]
     - !reference [.anholt-farm-rules, rules]
     - !reference [.gl-rules, rules]
@@ -75,9 +116,10 @@
       when: on_success
 
 .crocus-manual-rules:
-  stage: intel-postmerge
+  stage: intel-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-crocus-rules, rules]
     - !reference [.test, rules]
     - !reference [.anholt-farm-manual-rules, rules]
     - !reference [.gl-manual-rules, rules]
@@ -89,6 +131,7 @@
 .iris-rules:
   stage: intel
   rules:
+    - !reference [.enforce-hw-jobs-iris-rules, rules]
     - !reference [.test, rules]
     - !reference [.no_scheduled_pipelines-rules, rules]
     - !reference [.collabora-farm-rules, rules]
@@ -100,9 +143,10 @@
       when: on_success
 
 .iris-manual-rules:
-  stage: intel-postmerge
+  stage: intel-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-iris-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
     - !reference [.gl-manual-rules, rules]
@@ -118,6 +162,7 @@
   stage: performance
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-iris-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
     - !reference [.performance-rules, rules]
@@ -125,18 +170,15 @@
     - changes:
         *iris_file_list
       when: manual
-  allow_failure: true # see comment in .performance-rules, which we don't inherit this line from.
-  variables:
-    JOB_PRIORITY: 40
-    LAVA_S3_ARTIFACT_NAME: mesa-x86_64-default-release
-    S3_ARTIFACT_NAME: mesa-python-ci-artifacts
   needs:
-    - kernel+rootfs_x86_64
-    - debian-release
+    - job: debian/x86_64_test-gl
+      optional: true
+    - job: debian-release
 
 .anv-rules:
   stage: intel
   rules:
+    - !reference [.enforce-hw-jobs-anv-rules, rules]
     - !reference [.test, rules]
     - !reference [.no_scheduled_pipelines-rules, rules]
     - !reference [.collabora-farm-rules, rules]
@@ -146,10 +188,19 @@
         - src/intel/vulkan/**/*
       when: on_success
 
+.anv-restricted-rules:
+  stage: intel
+  rules:
+    - !reference [.enforce-hw-jobs-anv-rules, rules]
+    - !reference [.test, rules]
+    - !reference [.restricted-rules, rules]
+    - !reference [.anv-rules, rules]
+
 .anv-manual-rules:
-  stage: intel-postmerge
+  stage: intel-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-anv-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
     - !reference [.vulkan-manual-rules, rules]
@@ -161,6 +212,7 @@
 .hasvk-rules:
   stage: intel
   rules:
+    - !reference [.enforce-hw-jobs-hasvk-rules, rules]
     - !reference [.test, rules]
     - !reference [.anholt-farm-rules, rules]
     - !reference [.vulkan-rules, rules]
@@ -170,9 +222,10 @@
       when: on_success
 
 .hasvk-manual-rules:
-  stage: intel-postmerge
+  stage: intel-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-hasvk-rules, rules]
     - !reference [.test, rules]
     - !reference [.anholt-farm-manual-rules, rules]
     - !reference [.vulkan-manual-rules, rules]
@@ -185,13 +238,16 @@
 .intel-rules:
   stage: intel
   rules:
+    - !reference [.enforce-hw-jobs-anv-iris-rules, rules]
     - !reference [.test, rules]
     - !reference [.iris-rules, rules]
     - !reference [.anv-rules, rules]
 
 .intel-manual-rules:
-  stage: intel-postmerge
+  stage: intel-nightly
+  extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-anv-iris-rules, rules]
     - !reference [.test, rules]
     - !reference [.iris-manual-rules, rules]
     - !reference [.anv-manual-rules, rules]
@@ -203,7 +259,7 @@
     DEVICE_TYPE: acer-cb317-1h-c3z6-dedede
     FARM: collabora
     FDO_CI_CONCURRENT: 3
-    GPU_VERSION: iris-jsl
+    GPU_VERSION: anv-jsl
     HWCI_KERNEL_MODULES: i915
     RUNNER_TAG: mesa-ci-x86-64-lava-acer-cb317-1h-c3z6-dedede
 
@@ -214,8 +270,46 @@
     FARM: collabora
     FDO_CI_CONCURRENT: 9
     GPU_VERSION: anv-adl
-    HWCI_KERNEL_MODULES: i915
+    HWCI_KERNEL_MODULES: xe
     RUNNER_TAG: mesa-ci-x86-64-lava-acer-cbv514-1h-34uz-brya
+    LAVA_CMDLINE: "i915.force_probe=!46b3 xe.force_probe=46b3"
+    INTEL_XE_IGNORE_EXPERIMENTAL_WARNING: 1
+
+# Status: https://lava.collabora.dev/scheduler/device_type/asus-CX3402CVA-brya
+.lava-asus-CX3402CVA-brya:x86_64:
+  variables:
+    DEVICE_TYPE: asus-CX3402CVA-brya
+    FARM: collabora
+    FDO_CI_CONCURRENT: 13
+    GPU_VERSION: anv-rpl
+    HWCI_KERNEL_MODULES: xe
+    RUNNER_TAG: mesa-ci-x86-64-lava-asus-CX3402CVA-brya
+    LAVA_CMDLINE: "i915.force_probe=!a7a1 xe.force_probe=a7a1"
+    INTEL_XE_IGNORE_EXPERIMENTAL_WARNING: 1
+
+# Status: https://lava.collabora.dev/scheduler/device_type/acer-chromebox-cxi5-brask
+.lava-acer-chromebox-cxi5-brask:x86_64:
+  variables:
+    DEVICE_TYPE: acer-chromebox-cxi5-brask
+    FARM: collabora
+    FDO_CI_CONCURRENT: 6
+    GPU_VERSION: anv-adl
+    HWCI_KERNEL_MODULES: xe
+    RUNNER_TAG: mesa-ci-x86-64-lava-acer-chromebox-cxi5-brask
+    LAVA_CMDLINE: "i915.force_probe=!46b3 xe.force_probe=46b3"
+    INTEL_XE_IGNORE_EXPERIMENTAL_WARNING: 1
+
+# Status: https://lava.collabora.dev/scheduler/device_type/acer-n20q11-r856ltn-p1s2-nissa
+.lava-acer-n20q11-r856ltn-p1s2-nissa:x86_64:
+  variables:
+    DEVICE_TYPE: acer-n20q11-r856ltn-p1s2-nissa
+    FARM: collabora
+    FDO_CI_CONCURRENT: 5
+    GPU_VERSION: anv-adl
+    HWCI_KERNEL_MODULES: xe
+    RUNNER_TAG: mesa-ci-x86-64-lava-acer-n20q11-r856ltn-p1s2-nissa
+    LAVA_CMDLINE: "i915.force_probe=!46d0 xe.force_probe=46d0"
+    INTEL_XE_IGNORE_EXPERIMENTAL_WARNING: 1
 
 # Status: https://lava.collabora.dev/scheduler/device_type/asus-C523NA-A20057-coral
 .lava-asus-C523NA-A20057-coral:x86_64:
@@ -240,7 +334,6 @@
 # Status: https://lava.collabora.dev/scheduler/device_type/acer-cp514-2h-1130g7-volteer
 .lava-acer-cp514-2h-1130g7-volteer:x86_64:
   variables:
-    BOOT_METHOD: depthcharge
     DEVICE_TYPE: acer-cp514-2h-1130g7-volteer
     FARM: collabora
     FDO_CI_CONCURRENT: 9
@@ -251,7 +344,6 @@
 # Status: https://lava.collabora.dev/scheduler/device_type/acer-cp514-2h-1160g7-volteer
 .lava-acer-cp514-2h-1160g7-volteer:x86_64:
   variables:
-    BOOT_METHOD: depthcharge
     DEVICE_TYPE: acer-cp514-2h-1160g7-volteer
     FARM: collabora
     FDO_CI_CONCURRENT: 9
@@ -289,36 +381,15 @@
     HWCI_KERNEL_MODULES: i915
     RUNNER_TAG: mesa-ci-x86-64-lava-dell-latitude-5400-8665U-sarien
 
-# Status: https://lava.collabora.dev/scheduler/device_type/asus-C436FA-Flip-hatch
-# Note: Reported they have too often network problems and fail to boot. Puff device is the alternative.
-.lava-asus-C436FA-Flip-hatch:x86_64:
-  variables:
-    DEVICE_TYPE: asus-C436FA-Flip-hatch
-    FARM: collabora
-    FDO_CI_CONCURRENT: 9
-    GPU_VERSION: iris-cml
-    HWCI_KERNEL_MODULES: i915
-    RUNNER_TAG: mesa-ci-x86-64-lava-asus-C436FA-flip-hatch
-
-# Status: https://lava.collabora.dev/scheduler/device_type/acer-chromebox-cxi4-puff
-.lava-acer-chromebox-cxi4-puff:x86_64:
-  variables:
-    DEVICE_TYPE: acer-chromebox-cxi4-puff
-    FDO_CI_CONCURRENT: 9
-    GPU_VERSION: iris-cml
-    HWCI_KERNEL_MODULES: i915
-    RUNNER_TAG: mesa-ci-x86-64-lava-acer-chromebox-cxi4-puff
-
 
 .intel-common-test:
-  extends:
-    - .lava-test-deqp:x86_64
   variables:
     DTB: ""
     BOOT_METHOD: depthcharge
     KERNEL_IMAGE_TYPE: ""
     FLAKES_CHANNEL: "#intel-ci"
     HWCI_FREQ_MAX: "true"
+    LAVA_FIRMWARE: i915
 
 .anv-test:
   extends:
@@ -326,9 +397,13 @@
     - .anv-rules
   variables:
     DRIVER_NAME: anv
+    VK_DRIVER: intel
+    ANV_DEBUG: "video-decode,video-encode"
+    vk_require_astc: 'true'
 
 .iris-test:
   extends:
+    - .lava-x86_64-test-gl
     - .intel-common-test
     - .iris-rules
   variables:
@@ -342,12 +417,13 @@
 ## ANV only
 .anv-angle-test:
   extends:
-    - .anv-test
+    - .lava-x86_64-test-gl
+    - .intel-common-test
+    - .anv-rules
+    - .test-angle
   variables:
     VK_DRIVER: intel
-    USE_ANGLE: 1
-    # ANGLE requires X11 running for some reason.
-    HWCI_START_XORG: 1
+    vk_require_astc: 'true'
 
 ## Iris only
 .iris-apl-test:
@@ -376,12 +452,12 @@
     - .iris-test
     - .lava-dell-latitude-5400-8665U-sarien:x86_64
 
-.iris-cml-test:
+.iris-adl-test:
   extends:
     - .iris-test
-    - .lava-acer-chromebox-cxi4-puff:x86_64
+    - .lava-acer-n20q11-r856ltn-p1s2-nissa:x86_64
   variables:
-    LAVA_FORCE_UART: 1
+    DEQP_SUITE: iris-adl
 
 .iris-whl-deqp:
   extends:
@@ -392,11 +468,9 @@
 
 .iris-traces:
   extends:
-    - .lava-traces-base
+    - .lava-piglit-traces
   variables:
     EGL_PLATFORM: surfaceless
-    PIGLIT_REPLAY_DEVICE_NAME: "gl-${GPU_VERSION}"
-    PIGLIT_RESULTS: "${GPU_VERSION}-${PIGLIT_PROFILES}"
     PIGLIT_TRACES_FILE: traces-iris.yml
 
 .iris-whl-traces:
@@ -410,23 +484,10 @@
   extends:
     - .iris-traces
     - .iris-rules-performance
-  variables:
-    PIGLIT_REPLAY_SUBCOMMAND: "profile"
-    PIGLIT_REPLAY_EXTRA_ARGS: "--db-path ${CI_PROJECT_DIR}/replayer-db/"
-    # More than this can hit OOM due to BOs leaked during the replay of the last frame
-    PIGLIT_REPLAY_LOOP_TIMES: 150
-    # We don't want for more than one workload to be submitted to the GPU at a time
-    FDO_CI_CONCURRENT: 1
-    # Piglit is very sparse in its status output and downloads of big traces can take a while
-    DEVICE_HANGING_TIMEOUT_SEC: 600
-    # So we aren't capped by VSync by the X server
-    EGL_PLATFORM: surfaceless
-    GIT_STRATEGY: none
-    HWCI_FREQ_MAX: "true"
-    LAVA_TAGS: "cbg-0"
-    # Ensure that we are using the release build artifact
-    LAVA_S3_ARTIFACT_NAME: mesa-x86_64-default-release
-    S3_ARTIFACT_NAME: mesa-python-ci-artifacts
+    - .piglit-performance-base
+  rules:
+    - !reference [.piglit-performance-base, rules]
+    - !reference [.iris-rules-performance, rules]
 
 .iris-whl-traces-performance:
   extends:
@@ -435,16 +496,10 @@
   variables:
     GPU_VERSION: intel-whl
 
-.iris-cml-traces-performance:
-  extends:
-    - .iris-cml-test
-    - .profile-traces
-  variables:
-    GPU_VERSION: intel-cml
-
 ## Intel (anv + iris)
 .intel-adl-test:
   extends:
+    - .lava-x86_64-test-gl
     - .anv-test
     - .intel-test
   variables:
@@ -452,6 +507,7 @@
 
 .intel-tgl-test:
   extends:
+    - .lava-x86_64-test-gl
     - .anv-test
     - .intel-test
   variables:
@@ -459,6 +515,7 @@
 
 .intel-whl-test:
   extends:
+    - .lava-x86_64-test-gl
     - .iris-whl-test
     - .intel-test
   variables:

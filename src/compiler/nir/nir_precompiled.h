@@ -6,6 +6,7 @@
 #pragma once
 
 #include <ctype.h>
+#include <inttypes.h>
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_serialize.h"
@@ -104,14 +105,15 @@
  * implement that mechanism, a driver must implement the following function
  * signature:
  *
- *    MESA_DISPATCH_PRECOMP(context, grid, kernel index, argument pointer,
- *                          size of arguments)
+ *    MESA_DISPATCH_PRECOMP(context, grid, barrier, kernel index,
+ *                          argument pointer, size of arguments)
  *
  * The exact types used are determined by the driver. context is something like
- * a Vulkan command buffer. grid represents the 3D dispatch size. kernel index
- * is the index of the precompiled kernel (nir_precomp_index). argument pointer
- * is a host pointer to the sized argument structure, which the driver must
- * upload and bind (e.g. as push constants).
+ * a Vulkan command buffer. grid represents the 3D dispatch size. barrier
+ * describes the synchronization and cache flushing required before and after
+ * the dispatch. kernel index is the index of the precompiled kernel
+ * (nir_precomp_index). argument pointer is a host pointer to the sized argument
+ * structure, which the driver must upload and bind (e.g. as push constants).
  *
  * Because the types are ambiguous here, the same mechanism works for both
  * Gallium and Vulkan drivers.
@@ -261,7 +263,7 @@ nir_precomp_index(const nir_shader *lib, const nir_function *func)
       i += nir_precomp_nr_variants(candidate);
    }
 
-   unreachable("function must be in library");
+   UNREACHABLE("function must be in library");
 }
 
 static inline void
@@ -479,7 +481,7 @@ nir_precomp_print_dispatch_macros(FILE *fp, const struct nir_precomp_opts *opt,
       for (unsigned i = 0; i < 2; ++i) {
          bool is_struct = i == 0;
 
-         fprintf(fp, "#define %s%s(_context, _grid%s", func->name,
+         fprintf(fp, "#define %s%s(_context, _grid, _barrier%s", func->name,
                  is_struct ? "_struct" : "", is_struct ? ", _data" : "");
 
          /* Add the arguments, including variant parameters. For struct macros,
@@ -523,7 +525,7 @@ nir_precomp_print_dispatch_macros(FILE *fp, const struct nir_precomp_opts *opt,
          /* Dispatch via MESA_DISPATCH_PRECOMP, which the driver must #define
           * suitably before #include-ing this file.
           */
-         fprintf(fp, "   MESA_DISPATCH_PRECOMP(_context, _grid, ");
+         fprintf(fp, "   MESA_DISPATCH_PRECOMP(_context, _grid, _barrier, ");
          nir_precomp_print_enum_value(fp, func);
          nir_precomp_print_variant_params(fp, func, false);
          fprintf(fp, ", &_args, sizeof(_args)); \\\n");
@@ -565,8 +567,68 @@ nir_precomp_print_binary_map(FILE *fp, const nir_shader *nir,
    fprintf(fp, "};\n\n");
 }
 
+static inline void
+nir_precomp_print_target_enum_map(FILE *fp_c, FILE *fp_h, const char *prefix, unsigned num_targets, const char **targets, uint64_t *target_ids)
+{
+   /* Generate an enum indexing all devices */
+   fprintf(fp_h, "enum %s_target {\n", prefix);
+   for (unsigned t = 0; t < num_targets; ++t) {
+      fprintf(fp_h, "    ");
+      nir_print_uppercase(fp_h, prefix);
+      fprintf(fp_h, "_TARGET_");
+      nir_print_uppercase(fp_h, targets[t]);
+      fprintf(fp_h, " = %u,\n", t);
+   }
+   fprintf(fp_h, "    ");
+   nir_print_uppercase(fp_h, prefix);
+   fprintf(fp_h, "_NUM_TARGETS,\n");
+   fprintf(fp_h, "};\n");
+
+   if (!target_ids)
+      return;
+
+   fprintf(fp_h, "extern const uint64_t %s_target_id_map[", prefix);
+   nir_print_uppercase(fp_h, prefix);
+   fprintf(fp_h, "_NUM_TARGETS");
+   fprintf(fp_h, "];\n");
+
+   fprintf(fp_c, "const uint64_t %s_target_id_map[", prefix);
+   nir_print_uppercase(fp_c, prefix);
+   fprintf(fp_c, "_NUM_TARGETS");
+   fprintf(fp_c, "] = {\n");
+   for (unsigned t = 0; t < num_targets; ++t) {
+      fprintf(fp_c, "    [");
+      nir_print_uppercase(fp_c, prefix);
+      fprintf(fp_c, "_TARGET_");
+      nir_print_uppercase(fp_c, targets[t]);
+      fprintf(fp_c, "] = 0x%" PRIx64 ",\n", target_ids[t]);
+   }
+   fprintf(fp_c, "};\n\n");
+}
+
+static inline void
+nir_precomp_print_target_binary_map(FILE *fp_c, FILE *fp_h, const char *prefix, unsigned num_targets, const char **targets)
+{
+   fprintf(fp_h, "extern const uint32_t **%s_targets[", prefix);
+   nir_print_uppercase(fp_h, prefix);
+   fprintf(fp_h, "_NUM_TARGETS];\n");
+
+   fprintf(fp_c, "const uint32_t **%s_targets[", prefix);
+   nir_print_uppercase(fp_c, prefix);
+   fprintf(fp_c, "_NUM_TARGETS] = {\n");
+   for (unsigned t = 0; t < num_targets; ++t) {
+      fprintf(fp_c, "    [");
+      nir_print_uppercase(fp_c, prefix);
+      fprintf(fp_c, "_TARGET_");
+      nir_print_uppercase(fp_c, targets[t]);
+      fprintf(fp_c, "] = %s_%s,\n", prefix, targets[t]);
+   }
+   fprintf(fp_c, "};\n\n");
+}
+
 static inline nir_shader *
-nir_precompiled_build_variant(const nir_function *libfunc, unsigned variant,
+nir_precompiled_build_variant(const nir_function *libfunc,
+                              mesa_shader_stage stage, unsigned variant,
                               const nir_shader_compiler_options *opts,
                               const struct nir_precomp_opts *precomp_opt,
                               nir_def *(*load_arg)(nir_builder *b,
@@ -580,16 +642,17 @@ nir_precompiled_build_variant(const nir_function *libfunc, unsigned variant,
 
    nir_builder b;
    if (has_variants) {
-      b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, opts,
+      b = nir_builder_init_simple_shader(stage, opts,
                                          "%s variant %u", libfunc->name,
                                          variant);
    } else {
-      b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, opts, "%s",
+      b = nir_builder_init_simple_shader(stage, opts, "%s",
                                          libfunc->name);
    }
 
    assert(libfunc->workgroup_size[0] != 0 && "must set workgroup size");
 
+   b.shader->info.workgroup_size_variable = false;
    b.shader->info.workgroup_size[0] = libfunc->workgroup_size[0];
    b.shader->info.workgroup_size[1] = libfunc->workgroup_size[1];
    b.shader->info.workgroup_size[2] = libfunc->workgroup_size[2];
@@ -617,9 +680,9 @@ nir_precompiled_build_variant(const nir_function *libfunc, unsigned variant,
 
 static inline void
 nir_precomp_print_blob(FILE *fp, const char *arr_name, const char *suffix,
-                       uint32_t variant, const uint32_t *data, size_t len)
+                       uint32_t variant, const uint32_t *data, size_t len, bool is_static)
 {
-   fprintf(fp, "const uint32_t %s_%u_%s[%zu] = {", arr_name, variant, suffix,
+   fprintf(fp, "%sconst uint32_t %s_%u_%s[%zu] = {", is_static ? "static " : "", arr_name, variant, suffix,
            DIV_ROUND_UP(len, 4));
    for (unsigned i = 0; i < (len / 4); i++) {
       if (i % 4 == 0)
@@ -651,7 +714,7 @@ nir_precomp_print_nir(FILE *fp_c, FILE *fp_h, const nir_shader *nir,
    nir_serialize(&blob, nir, true /* strip */);
 
    nir_precomp_print_blob(fp_c, name, suffix, 0, (const uint32_t *)blob.data,
-                          blob.size);
+                          blob.size, false);
 
    fprintf(fp_h, "extern const uint32_t %s_0_%s[%zu];\n", name, suffix,
            DIV_ROUND_UP(blob.size, 4));

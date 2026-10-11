@@ -25,6 +25,8 @@
 #pragma once
 
 #include "vpe_types.h"
+#include "hw_shared.h"
+#include "color.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,8 +38,6 @@ struct vpe_priv;
 
 /** note: all program_* functions shall return number of config packet created */
 struct cdc_fe_funcs {
-    bool (*check_input_format)(struct cdc_fe *cdc_fe, enum vpe_surface_pixel_format format);
-
     /** non segment specific */
     void (*program_surface_config)(struct cdc_fe *cdc_fe, enum vpe_surface_pixel_format format,
         enum vpe_rotation_angle rotation, bool horizontal_mirror,
@@ -52,14 +52,15 @@ struct cdc_fe_funcs {
         enum vpe_swizzle_mode_values swizzle, const struct vpe_rect *viewport,
         const struct vpe_rect *viewport_c);
 
+    void (*program_3dlut_fl_config)(
+        struct cdc_fe *cdc_fe, enum lut_dimension lut_dimension, struct vpe_3dlut *lut_3d);
     /** segment specific */
     void (*program_viewport)(
         struct cdc_fe *cdc_fe, const struct vpe_rect *viewport, const struct vpe_rect *viewport_c);
 };
 
 struct cdc_be_funcs {
-    bool (*check_output_format)(struct cdc_be *cdc_be, enum vpe_surface_pixel_format format);
-
+    void (*program_cdc_control)(struct cdc_be *cdc_be, uint8_t enable_frod, uint32_t hist_dsets[]);
     void (*program_global_sync)(struct cdc_be *cdc_be, uint32_t vupdate_offset,
         uint32_t vupdate_width, uint32_t vready_offset);
 

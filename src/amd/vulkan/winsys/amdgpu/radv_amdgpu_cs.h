@@ -12,10 +12,8 @@
 #ifndef RADV_AMDGPU_CS_H
 #define RADV_AMDGPU_CS_H
 
-#include <amdgpu.h>
 #include <assert.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "radv_amdgpu_winsys.h"
 #include "radv_radeon_winsys.h"

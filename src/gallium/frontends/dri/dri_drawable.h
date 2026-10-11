@@ -33,6 +33,11 @@
 #include "frontend/api.h"
 #include "dri_util.h"
 
+#ifdef VK_USE_PLATFORM_XCB_KHR
+#include <xcb/xcb.h>
+#endif
+
+struct pipe_context;
 struct dri_context;
 struct dri_screen;
 
@@ -92,6 +97,9 @@ struct dri_drawable
    struct dri_image   *image; //texture_from_pixmap
    bool is_window;
    bool window_valid;
+#ifdef VK_USE_PLATFORM_XCB_KHR
+   xcb_special_event_t *special_event;
+#endif
 
    /* hooks filled in by dri2 & drisw */
    void (*allocate_textures)(struct dri_context *ctx,
@@ -139,6 +147,13 @@ dri_pipe_blit(struct pipe_context *pipe,
               struct pipe_resource *src);
 
 void
+dri_drawable_allocate_msaa_textures(struct dri_context *ctx,
+                                    struct dri_drawable *drawable,
+                                    const enum st_attachment_type *statts,
+                                    unsigned statts_count,
+                                    const struct pipe_resource *templ);
+
+void
 dri_flush(struct dri_context *ctx,
           struct dri_drawable *drawable,
           unsigned flags,
@@ -146,8 +161,6 @@ dri_flush(struct dri_context *ctx,
 
 void
 dri_flush_drawable(struct dri_drawable *dPriv);
-
-extern const __DRItexBufferExtension driTexBufferExtension;
 
 void
 drisw_update_tex_buffer(struct dri_drawable *drawable,
@@ -160,6 +173,8 @@ void
 drisw_init_drawable(struct dri_drawable *drawable, bool isPixmap, int alphaBits);
 void
 dri2_init_drawable(struct dri_drawable *drawable, bool isPixmap, int alphaBits);
+void
+kopper_destroy_drawable(struct dri_drawable *drawable);
 #endif
 
 /* vim: set sw=3 ts=8 sts=3 expandtab: */

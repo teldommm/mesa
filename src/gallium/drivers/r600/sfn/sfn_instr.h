@@ -121,11 +121,13 @@ public:
    virtual void update_indirect_addr(PRegister old_reg, PRegister addr) {
       (void)old_reg;
       (void)addr;
-      unreachable("Instruction type has no indirect address");
+      UNREACHABLE("Instruction type has no indirect address");
    };
    const InstrList& required_instr() const { return m_required_instr; }
 
    virtual AluGroup *as_alu_group() { return nullptr;}
+
+   virtual void pin_registers() {}
 
 protected:
 
@@ -142,7 +144,6 @@ private:
    InstrList m_required_instr;
    InstrList m_dependend_instr;
 
-   int m_use_count;
    int m_block_id;
    int m_index;
    std::bitset<nflags> m_instr_flags{0};
@@ -178,6 +179,10 @@ public:
    const_iterator begin() const { return m_instructions.begin(); }
    const_iterator end() const { return m_instructions.end(); }
 
+   void set_cf_start(ControlFlowInstr *cf) { m_cf_start = cf; }
+   ControlFlowInstr *cf_start() { return m_cf_start; }
+   const ControlFlowInstr *cf_start() const { return m_cf_start; }
+
    bool empty() const { return m_instructions.empty(); }
 
    void erase(iterator node);
@@ -197,8 +202,13 @@ public:
    void set_type(Type t, r600_chip_class chip_class);
    int32_t remaining_slots() const { return m_remaining_slots;}
 
-   bool try_reserve_kcache(const AluGroup& instr);
-   bool try_reserve_kcache(const AluInstr& group);
+   auto try_reserve_kcache(const AluGroup& instr) const
+      -> std::pair<std::array<KCacheLine, 4>, bool>;
+   auto try_reserve_kcache(const AluInstr& group) const
+      -> std::pair<std::array<KCacheLine, 4>, bool>;
+   void commit_kcache_reservation(const std::array<KCacheLine, 4>& kcache);
+   bool update_kcache_reservation(const AluGroup& instr);
+   bool update_kcache_reservation(const AluInstr& instr);
 
    auto last_lds_instr() { return m_last_lds_instr; }
    void set_last_lds_instr(Instr *instr) { m_last_lds_instr = instr; }
@@ -208,8 +218,6 @@ public:
    bool lds_group_active() { return m_lds_group_start != nullptr; }
 
    size_t size() const { return m_instructions.size(); }
-
-   bool kcache_reservation_failed() const { return m_kcache_alloc_failed; }
 
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
 
@@ -221,6 +229,8 @@ public:
    }
 
    static void set_chipclass(r600_chip_class chip_class);
+
+   bool kcache_needs_extended() const;
 
 private:
    bool try_reserve_kcache(const UniformValue& u,
@@ -237,7 +247,6 @@ private:
    uint32_t m_remaining_slots{0xffff};
 
    std::array<KCacheLine, 4> m_kcache;
-   bool m_kcache_alloc_failed{false};
 
    Instr *m_last_lds_instr{nullptr};
 
@@ -246,6 +255,7 @@ private:
    static unsigned s_max_kcache_banks;
    int m_emitted_rat_instr{0};
    uint32_t m_expected_ar_uses{0};
+   ControlFlowInstr *m_cf_start{nullptr};
 };
 
 class Resource {
@@ -303,7 +313,7 @@ public:
       case 2:
          return bim_one;
       default:
-         unreachable("Invalid resource offset, scheduler must substitute registers");
+         UNREACHABLE("Invalid resource offset, scheduler must substitute registers");
       }
    }
 
@@ -338,6 +348,10 @@ public:
    const RegisterVec4& dst() const { return m_dest; }
 
    void update_indirect_addr(PRegister old_reg, PRegister addr) override;
+
+   void pin_registers() override;
+
+   virtual Block::Instructions prepare_instr() const { return Block::Instructions(); }
 
 protected:
    InstrWithVectorResult(const InstrWithVectorResult& orig);

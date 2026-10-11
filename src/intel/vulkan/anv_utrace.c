@@ -79,7 +79,7 @@ command_buffers_count_utraces(struct anv_device *device,
       if (u_trace_has_points(&cmd_buffers[i]->trace)) {
          utraces++;
          if (!(cmd_buffers[i]->usage_flags & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-            *utrace_copies += list_length(&cmd_buffers[i]->trace.trace_chunks);
+            (*utrace_copies)++;
       }
    }
 
@@ -189,9 +189,9 @@ anv_device_utrace_flush_cmd_buffers(struct anv_queue *queue,
    struct anv_batch *batch = &submit->base.batch;
    if (utrace_copies > 0) {
       anv_state_stream_init(&submit->dynamic_state_stream,
-                            &device->dynamic_state_pool, 16384);
+                            anv_device_get_dynamic_state_pool(device), 16384);
       anv_state_stream_init(&submit->general_state_stream,
-                            &device->general_state_pool, 16384);
+                            anv_device_get_general_state_pool(device), 16384);
 
       /* Only engine class where we support timestamp copies
        *
@@ -211,7 +211,7 @@ anv_device_utrace_flush_cmd_buffers(struct anv_queue *queue,
                intel_ds_queue_flush_data(&queue->ds, &cmd_buffers[i]->trace,
                                          &submit->ds, device->vk.current_frame, false);
             } else {
-               num_traces += cmd_buffers[i]->trace.num_traces;
+               num_traces += u_trace_num_events(&cmd_buffers[i]->trace);
                u_trace_clone_append(u_trace_begin_iterator(&cmd_buffers[i]->trace),
                                     u_trace_end_iterator(&cmd_buffers[i]->trace),
                                     &submit->ds.trace,
@@ -219,13 +219,12 @@ anv_device_utrace_flush_cmd_buffers(struct anv_queue *queue,
                                     anv_device_utrace_emit_gfx_copy_buffer);
             }
          }
-         anv_genX(device->info, emit_so_memcpy_fini)(&submit->memcpy_state);
 
          trace_intel_end_trace_copy_cb(&submit->ds.trace, batch, num_traces);
 
          anv_genX(device->info, emit_so_memcpy_end)(&submit->memcpy_state);
       } else {
-         struct anv_shader_bin *copy_kernel;
+         struct anv_shader_internal *copy_kernel;
          VkResult ret =
             anv_device_get_internal_shader(device,
                                            ANV_INTERNAL_KERNEL_MEMCPY_COMPUTE,
@@ -241,18 +240,17 @@ anv_device_utrace_flush_cmd_buffers(struct anv_queue *queue,
             .general_state_stream = &submit->general_state_stream,
             .batch                = batch,
             .kernel               = copy_kernel,
-            .l3_config            = device->internal_kernels_l3_config,
          };
          anv_genX(device->info, emit_simple_shader_init)(&submit->simple_state);
 
          uint32_t num_traces = 0;
          for (uint32_t i = 0; i < cmd_buffer_count; i++) {
-            num_traces += cmd_buffers[i]->trace.num_traces;
+            num_traces += u_trace_num_events(&cmd_buffers[i]->trace);
             if (cmd_buffers[i]->usage_flags & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT) {
                intel_ds_queue_flush_data(&queue->ds, &cmd_buffers[i]->trace,
                                          &submit->ds, device->vk.current_frame, false);
             } else {
-               num_traces += cmd_buffers[i]->trace.num_traces;
+               num_traces += u_trace_num_events(&cmd_buffers[i]->trace);
                u_trace_clone_append(u_trace_begin_iterator(&cmd_buffers[i]->trace),
                                     u_trace_end_iterator(&cmd_buffers[i]->trace),
                                     &submit->ds.trace,
@@ -308,13 +306,6 @@ anv_utrace_create_buffer(struct u_trace_context *utctx, uint64_t size_B)
                         &bo);
    assert(result == VK_SUCCESS);
 
-   memset(bo->map, 0, bo->size);
-#ifdef SUPPORT_INTEL_INTEGRATED_GPUS
-   if (device->physical->memory.need_flush &&
-       anv_bo_needs_host_cache_flush(bo->alloc_flags))
-      intel_flush_range(bo->map, bo->size);
-#endif
-
    return bo;
 }
 
@@ -328,7 +319,7 @@ anv_utrace_destroy_buffer(struct u_trace_context *utctx, void *timestamps)
    anv_bo_pool_free(&device->utrace_bo_pool, bo);
 }
 
-static void
+static bool
 anv_utrace_record_ts(struct u_trace *ut, void *cs,
                      void *timestamps, uint64_t offset_B,
                      uint32_t flags)
@@ -350,21 +341,26 @@ anv_utrace_record_ts(struct u_trace *ut, void *cs,
    /* Is this a end of compute trace point? */
    const bool is_end_compute =
       cs == NULL &&
-      (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE_CS);
-
-   assert(device->info->verx10 < 125 ||
-          !is_end_compute ||
-          cmd_buffer->state.last_indirect_dispatch != NULL ||
-          cmd_buffer->state.last_compute_walker != NULL);
-
-   enum anv_timestamp_capture_type capture_type =
-      (device->info->verx10 >= 125 && is_end_compute) ?
-      (cmd_buffer->state.last_indirect_dispatch != NULL ?
-       ANV_TIMESTAMP_REWRITE_INDIRECT_DISPATCH : ANV_TIMESTAMP_REWRITE_COMPUTE_WALKER) :
-      (flags & (INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE |
-                INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE_CS)) ?
-      ANV_TIMESTAMP_CAPTURE_END_OF_PIPE : ANV_TIMESTAMP_CAPTURE_TOP_OF_PIPE;
-
+      (flags & INTEL_DS_TRACEPOINT_FLAG_END_CS);
+   enum anv_timestamp_capture_type capture_type;
+   if (flags & INTEL_DS_TRACEPOINT_FLAG_REPEAST_LAST) {
+      capture_type = ANV_TIMESTAMP_REPEAT_LAST;
+   } else if (is_end_compute) {
+      assert(device->info->verx10 < 125 ||
+             !is_end_compute ||
+             cmd_buffer->state.last_indirect_dispatch != NULL ||
+             cmd_buffer->state.last_compute_walker != NULL);
+      capture_type =
+         device->info->verx10 >= 125 ?
+         (cmd_buffer->state.last_indirect_dispatch != NULL ?
+          ANV_TIMESTAMP_REWRITE_INDIRECT_DISPATCH :
+          ANV_TIMESTAMP_REWRITE_COMPUTE_WALKER) :
+          ANV_TIMESTAMP_CAPTURE_END_OF_PIPE;
+   } else {
+      capture_type = (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE) ?
+         ANV_TIMESTAMP_CAPTURE_END_OF_PIPE :
+         ANV_TIMESTAMP_CAPTURE_TOP_OF_PIPE;
+   }
 
    void *addr = capture_type ==  ANV_TIMESTAMP_REWRITE_INDIRECT_DISPATCH ?
                 cmd_buffer->state.last_indirect_dispatch :
@@ -378,12 +374,14 @@ anv_utrace_record_ts(struct u_trace *ut, void *cs,
       cmd_buffer->state.last_compute_walker = NULL;
       cmd_buffer->state.last_indirect_dispatch = NULL;
    }
+
+   return true;
 }
 
 static uint64_t
 anv_utrace_read_ts(struct u_trace_context *utctx,
                    void *timestamps, uint64_t offset_B,
-                   void *flush_data)
+                   uint32_t flags, void *flush_data)
 {
    struct anv_device *device =
       container_of(utctx, struct anv_device, ds.trace_context);
@@ -403,6 +401,11 @@ anv_utrace_read_ts(struct u_trace_context *utctx,
       assert(result == VK_SUCCESS);
    }
 
+   if (flags & INTEL_DS_TRACEPOINT_FLAG_REPEAST_LAST) {
+      return intel_device_info_timebase_scale(device->info,
+                                              submit->last_timestamp);
+   }
+
    assert(offset_B % sizeof(union anv_utrace_timestamp) == 0);
    union anv_utrace_timestamp *ts =
       (union anv_utrace_timestamp *)(bo->map + offset_B);
@@ -411,31 +414,32 @@ anv_utrace_read_ts(struct u_trace_context *utctx,
    if (ts->timestamp == U_TRACE_NO_TIMESTAMP)
       return U_TRACE_NO_TIMESTAMP;
 
-   /* Detect a 16/32 bytes timestamp write */
-   if (ts->gfx20_postsync_data[1] != 0 ||
-       ts->gfx20_postsync_data[2] != 0 ||
-       ts->gfx20_postsync_data[3] != 0) {
+   uint64_t timestamp;
+
+   /* Gfx12.5+ use the COMPUTE_WALKER timestamp write which has a different
+    * format than a dummy 64bit timestamp.
+    */
+   if (device->info->verx10 >= 125 && (flags & INTEL_DS_TRACEPOINT_FLAG_END_CS)) {
       if (device->info->ver >= 20) {
-         return intel_device_info_timebase_scale(device->info,
-                                                 ts->gfx20_postsync_data[3]);
+         timestamp = ts->gfx20_postsync_data[3];
+      } else {
+         /* The timestamp written by COMPUTE_WALKER::PostSync only as 32bits.
+          * We need to rebuild the full 64bits using the previous timestamp.
+          * We assume that utrace is reading the timestamp in order. Anyway
+          * timestamp rollover on 32bits in a few minutes so in most cases
+          * that should be correct.
+          */
+         timestamp =
+            (submit->last_full_timestamp & 0xffffffff00000000) |
+            (uint64_t) ts->gfx125_postsync_data[3];
       }
-
-      /* The timestamp written by COMPUTE_WALKER::PostSync only as 32bits. We
-       * need to rebuild the full 64bits using the previous timestamp. We
-       * assume that utrace is reading the timestamp in order. Anyway
-       * timestamp rollover on 32bits in a few minutes so in most cases that
-       * should be correct.
-       */
-      uint64_t timestamp =
-         (submit->last_full_timestamp & 0xffffffff00000000) |
-         (uint64_t) ts->gfx125_postsync_data[3];
-
-      return intel_device_info_timebase_scale(device->info, timestamp);
+   } else {
+      submit->last_full_timestamp = timestamp = ts->timestamp;
    }
 
-   submit->last_full_timestamp = ts->timestamp;
+   submit->last_timestamp = timestamp;
 
-   return intel_device_info_timebase_scale(device->info, ts->timestamp);
+   return intel_device_info_timebase_scale(device->info, timestamp);
 }
 
 static void
@@ -569,11 +573,26 @@ void anv_CmdEndDebugUtilsLabelEXT(VkCommandBuffer _commandBuffer)
          util_dynarray_top_ptr(&cmd_buffer->vk.labels, VkDebugUtilsLabelEXT);
 
       trace_intel_end_cmd_buffer_annotation(&cmd_buffer->trace,
+                                            (uintptr_t)(vk_command_buffer_to_handle(&cmd_buffer->vk)),
                                             strlen(label->pLabelName),
                                             label->pLabelName);
    }
 
    vk_common_CmdEndDebugUtilsLabelEXT(_commandBuffer);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+anv_SetDebugUtilsObjectNameEXT(
+   VkDevice _device,
+   const VkDebugUtilsObjectNameInfoEXT *pNameInfo)
+{
+   VK_FROM_HANDLE(anv_device, device, _device);
+   VkResult result = vk_common_SetDebugUtilsObjectNameEXT(_device, pNameInfo);
+
+   if (result == VK_SUCCESS)
+      intel_ds_perfetto_set_debug_utils_object_name(&device->ds, pNameInfo);
+
+   return result;
 }
 
 void
@@ -648,16 +667,22 @@ anv_QueueBeginDebugUtilsLabelEXT(
 {
    VK_FROM_HANDLE(anv_queue, queue, _queue);
 
-   vk_common_QueueBeginDebugUtilsLabelEXT(_queue, pLabelInfo);
+   vk_queue_lock(&queue->vk);
+
+   vk_queue_begin_debug_utils_label(&queue->vk, pLabelInfo);
 
    anv_queue_trace(queue, pLabelInfo->pLabelName,
                    false /* frame */, true /* begin */);
+
+   vk_queue_unlock(&queue->vk);
 }
 
 void
 anv_QueueEndDebugUtilsLabelEXT(VkQueue _queue)
 {
    VK_FROM_HANDLE(anv_queue, queue, _queue);
+
+   vk_queue_lock(&queue->vk);
 
    if (queue->vk.labels.size > 0) {
       const VkDebugUtilsLabelEXT *label =
@@ -668,5 +693,7 @@ anv_QueueEndDebugUtilsLabelEXT(VkQueue _queue)
       intel_ds_device_process(&queue->device->ds, true);
    }
 
-   vk_common_QueueEndDebugUtilsLabelEXT(_queue);
+   vk_queue_end_debug_utils_label(&queue->vk);
+
+   vk_queue_unlock(&queue->vk);
 }

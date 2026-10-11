@@ -25,17 +25,16 @@ import argparse
 import os
 import re
 import sys
-import threading
 
 from custom_logger import CustomLogger
 from serial_buffer import SerialBuffer
+
 
 class PoERun:
     def __init__(self, args, boot_timeout, test_timeout, logger):
         self.powerup = args.powerup
         self.powerdown = args.powerdown
-        self.ser = SerialBuffer(
-            args.dev, "results/serial-output.txt", ": ")
+        self.ser = SerialBuffer(args.dev, "results/serial-output.txt")
         self.boot_timeout = boot_timeout
         self.test_timeout = test_timeout
         self.logger = logger
@@ -87,12 +86,11 @@ class PoERun:
                 self.print_error("nouveau jetson tk1 network fail, abandoning run.")
                 return 1
 
-            result = re.search(r"hwci: mesa: (\S*), exit_code: (\d+)", line)
+            result = re.search(r"hwci: mesa: exit_code: (\d+)", line)
             if result:
-                status = result.group(1)
-                exit_code = int(result.group(2))
+                exit_code = int(result.group(1))
 
-                if status == "pass":
+                if exit_code == 0:
                     self.logger.update_dut_job("status", "pass")
                 else:
                     self.logger.update_status_fail("test fail")

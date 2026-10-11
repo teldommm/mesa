@@ -4,12 +4,10 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "ac_gpu_info.h"
 #include "ac_nir.h"
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_deref.h"
-#include "radv_constants.h"
 #include "radv_nir.h"
 #include "radv_shader.h"
 #include "radv_shader_args.h"
@@ -18,7 +16,7 @@ typedef struct {
    const struct radv_shader_args *args;
    const struct radv_shader_info *info;
    const struct radv_graphics_state_key *gfx_state;
-   const struct radeon_info *gpu_info;
+   const struct radv_compiler_info *compiler_info;
 } lower_vs_inputs_state;
 
 static nir_def *
@@ -184,27 +182,75 @@ adjust_vertex_fetch_alpha(nir_builder *b, enum ac_vs_input_alpha_adjust alpha_ad
    return alpha;
 }
 
-static nir_def *
-lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs_state *s)
+static enum pipe_format
+adjust_format(const enum pipe_format attrib_format)
+{
+   if (util_format_get_max_channel_size(attrib_format) <= 32)
+      return attrib_format;
+
+   const struct util_format_description *f = util_format_description(attrib_format);
+
+   /* 1x 64-bit channel ~ 2x 32-bit channel */
+   if (f->nr_channels == 1)
+      return PIPE_FORMAT_R32G32_UINT;
+
+   /* 2x 64-bit channel ~ 4x 32-bit channel */
+   return PIPE_FORMAT_R32G32B32A32_UINT;
+}
+
+static bool
+location_is_64bit(const unsigned loc, const lower_vs_inputs_state *const s)
+{
+   if (!(s->gfx_state->vi.attributes_valid & (1 << loc)))
+      return false;
+
+   const enum pipe_format f = s->gfx_state->vi.vertex_attribute_formats[loc];
+   return util_format_get_max_channel_size(f) == 64;
+}
+
+static unsigned
+location_from_intrinsic(nir_intrinsic_instr *intrin, const lower_vs_inputs_state *const s, unsigned *is_high_dvec2)
 {
    nir_src *offset_src = nir_get_io_offset_src(intrin);
    assert(nir_src_is_const(*offset_src));
 
    const nir_io_semantics io_sem = nir_intrinsic_io_semantics(intrin);
    const unsigned base_offset = nir_src_as_uint(*offset_src);
-   const unsigned location = io_sem.location + base_offset - VERT_ATTRIB_GENERIC0;
-   const unsigned bit_size = intrin->def.bit_size;
-   const unsigned dest_num_components = intrin->def.num_components;
+   const unsigned loc = io_sem.location + base_offset - VERT_ATTRIB_GENERIC0;
 
-   /* Convert the component offset to bit_size units.
-    * (Intrinsic component offset is in 32-bit units.)
+   /* Check whether the current slot is the high part of a 64-bit input.
+    * If so, use the low part of the 64-bit input as location.
     *
+    * See VK spec 15.1.5 "Component Assignment":
     * Small bitsize inputs consume the same space as 32-bit inputs,
     * but 64-bit inputs consume twice as many.
     * 64-bit variables must not have a component of 1 or 3.
-    * (See VK spec 15.1.5 "Component Assignment")
     */
-   const unsigned component = nir_intrinsic_component(intrin) / (MAX2(32, bit_size) / 32);
+   if (loc > 0 && location_is_64bit(loc - 1, s)) {
+      *is_high_dvec2 = 1;
+      return loc - 1;
+   }
+
+   *is_high_dvec2 = 0;
+   return loc;
+}
+
+static nir_def *
+lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs_state *s)
+{
+   unsigned high_dvec2 = 0;
+   const unsigned location = location_from_intrinsic(intrin, s, &high_dvec2);
+   const unsigned bit_size = intrin->def.bit_size;
+   assert(bit_size <= 32);
+   const unsigned dest_num_components = intrin->def.num_components;
+
+   if (!(s->gfx_state->vi.attributes_valid & (1 << location))) {
+      /* Return early for unassigned attribute reads. */
+      return nir_imm_zero(b, intrin->def.num_components, intrin->def.bit_size);
+   }
+
+   /* Intrinsic component offset is in 32-bit units. */
+   const unsigned component = nir_intrinsic_component(intrin);
 
    /* Bitmask of components in bit_size units
     * of the current input load that are actually used.
@@ -219,17 +265,18 @@ lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs
 
    const uint32_t attrib_binding = s->gfx_state->vi.vertex_attribute_bindings[location];
    const uint32_t attrib_offset = s->gfx_state->vi.vertex_attribute_offsets[location];
-   const uint32_t attrib_stride = s->gfx_state->vi.vertex_attribute_strides[location];
-   const enum pipe_format attrib_format = s->gfx_state->vi.vertex_attribute_formats[location];
+   const enum pipe_format attrib_format = adjust_format(s->gfx_state->vi.vertex_attribute_formats[location]);
    const struct util_format_description *f = util_format_description(attrib_format);
-   const struct ac_vtx_format_info *vtx_info =
-      ac_get_vtx_format_info(s->gpu_info->gfx_level, s->gpu_info->family, attrib_format);
+   const struct ac_vtx_format_info *vtx_info = ac_get_vtx_format_info(
+      s->compiler_info->ac->gfx_level, s->compiler_info->ac->has_vtx_format_alpha_adjust_bug, attrib_format);
    const unsigned binding_index = s->info->vs.use_per_attribute_vb_descs ? location : attrib_binding;
-   const unsigned desc_index = util_bitcount(s->info->vs.vb_desc_usage_mask & u_bit_consecutive(0, binding_index));
+   const unsigned desc_index = util_bitcount(s->info->vs.vb_desc_usage_mask & BITFIELD_MASK(binding_index));
 
    nir_def *vertex_buffers_arg = ac_nir_load_arg(b, &s->args->ac, s->args->ac.vertex_buffers);
-   nir_def *vertex_buffers = nir_pack_64_2x32_split(b, vertex_buffers_arg, nir_imm_int(b, s->gpu_info->address32_hi));
-   nir_def *descriptor = nir_load_smem_amd(b, 4, vertex_buffers, nir_imm_int(b, desc_index * 16));
+   nir_def *vertex_buffers =
+      nir_pack_64_2x32_split(b, vertex_buffers_arg, nir_imm_int(b, s->compiler_info->hw.address32_hi));
+   nir_def *descriptor =
+      ac_nir_load_smem(b, 4, vertex_buffers, nir_imm_int(b, desc_index * 16), 4, ACCESS_CAN_SPECULATE);
    nir_def *base_index = calc_vs_input_index(b, location, s);
    nir_def *zero = nir_imm_int(b, 0);
 
@@ -249,90 +296,84 @@ lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs
     * Beneficial because the backend may be able to emit fewer HW instructions.
     * Only possible with array formats.
     */
-   const unsigned first_used_channel = first_used_swizzled_channel(f, dest_use_mask, false);
+   const unsigned first_used_channel =
+      needs_swizzle ? first_used_swizzled_channel(f, dest_use_mask, false) : (ffs(dest_use_mask) - 1);
    const unsigned skipped_start = f->is_array ? first_used_channel : 0;
 
    /* Number of channels we actually use and load.
     * Don't shrink the format here because this might allow the backend to
     * emit fewer (but larger than needed) HW instructions.
     */
-   const unsigned first_trailing_unused_channel = first_used_swizzled_channel(f, dest_use_mask, true) + 1;
+   const unsigned first_trailing_unused_channel =
+      needs_swizzle ? (first_used_swizzled_channel(f, dest_use_mask, true) + 1) : util_last_bit(dest_use_mask);
    const unsigned max_loaded_channels = MIN2(first_trailing_unused_channel, f->nr_channels);
    const unsigned fetch_num_channels =
       first_used_channel >= max_loaded_channels ? 0 : max_loaded_channels - skipped_start;
 
    /* Load VS inputs from VRAM.
     *
-    * For the vast majority of cases this will only create 1x load_(typed)_buffer_amd
-    * intrinsic and the backend is responsible for further splitting that
+    * Only create 1x load_(typed)_buffer_amd when necessary.
+    * The backend is responsible for further splitting that
     * to as many HW instructions as needed based on alignment.
-    *
-    * Take care to prevent loaded components from failing the range check,
-    * by emitting several load intrinsics with different index sources.
-    * This is necessary because the backend can't further roll the const offset
-    * into the index source of MUBUF / MTBUF instructions.
     */
-   nir_def *loads[NIR_MAX_VEC_COMPONENTS] = {0};
-   unsigned num_loads = 0;
-   for (unsigned x = 0, channels; x < fetch_num_channels; x += channels) {
-      channels = fetch_num_channels - x;
-      const unsigned start = skipped_start + x;
-      enum pipe_format fetch_format = attrib_format;
-      nir_def *index = base_index;
+   nir_def *load = NULL;
+   enum pipe_format fetch_format = attrib_format;
 
-      /* Add excess constant offset to the index. */
-      unsigned const_off = attrib_offset + count_format_bytes(f, 0, start);
-      if (attrib_stride && const_off >= attrib_stride) {
-         index = nir_iadd_imm(b, base_index, const_off / attrib_stride);
-         const_off %= attrib_stride;
-      }
+   const unsigned base_offset = attrib_offset + high_dvec2 * 16;
+   const unsigned skipped_elements = MIN2(skipped_start, f->nr_channels - 1);
+   const unsigned offset_within_element = count_format_bytes(f, 0, skipped_elements);
 
-      /* Reduce the number of loaded channels until we can pass the range check.
-       * Only for array formats. VK spec mandates proper alignment for packed formats.
-       * Note, NONE seems to occur in real use and is considered an array format.
-       */
-      if (f->is_array && fetch_format != PIPE_FORMAT_NONE) {
-         while (channels > 1 && attrib_stride && (const_off + count_format_bytes(f, start, channels)) > attrib_stride) {
-            channels--;
-         }
+   unsigned inst_offset = 0;
+   nir_def *sgpr_offset = zero;
 
-         /* Keep the fetch format as large as possible to let the backend emit
-          * larger load instructions when it deems them beneficial.
-          */
-         fetch_format = util_format_get_array(f->channel[0].type, f->channel[0].size, f->nr_channels - start,
-                                              f->is_unorm || f->is_snorm, f->channel[0].pure_integer);
-      }
+   /* Bounds checking behaviour:
+    * GFX10+: can select different modes, we use OOB_SELECT_STRUCTURED
+    * GFX8-9: equivalent to OOB_SELECT_STRUCTURED
+    * GFX6-7: equivalent to OOB_SELECT_STRUCTURED_WITH_OFFSET,
+    *         which means we should avoid using the instruction offset
+    *         because it is included in the bounds check
+    */
+   if (s->compiler_info->ac->gfx_level >= GFX8)
+      inst_offset = base_offset + offset_within_element;
+   else
+      sgpr_offset = nir_imm_int(b, base_offset + offset_within_element);
 
-      assert(f->is_array || channels == fetch_num_channels);
+   unsigned align_mul = MAX2(1, s->gfx_state->vi.vertex_binding_align[attrib_binding]);
+   unsigned align_offset = (base_offset + offset_within_element) % align_mul;
 
-      /* Prefer using untyped buffer loads if possible, to avoid potential alignment issues.
-       * Typed loads can cause GPU hangs when used with improper alignment.
-       */
-      if (can_use_untyped_load(f, bit_size)) {
-         loads[num_loads++] = nir_load_buffer_amd(b, channels, bit_size, descriptor, zero, zero, index,
-                                                  .base = const_off, .memory_modes = nir_var_shader_in);
-      } else {
-         const unsigned align_mul = MAX2(1, s->gfx_state->vi.vertex_binding_align[attrib_binding]);
-         const unsigned align_offset = const_off % align_mul;
-
-         loads[num_loads++] = nir_load_typed_buffer_amd(
-            b, channels, bit_size, descriptor, zero, zero, index, .base = const_off, .format = fetch_format,
-            .align_mul = align_mul, .align_offset = align_offset, .memory_modes = nir_var_shader_in);
-      }
+   /* The alignment might be lower than the minimum if it's unknown. */
+   const unsigned min_channel_align = vtx_info->chan_byte_size ? vtx_info->chan_byte_size : vtx_info->element_size;
+   if (nir_combined_align(align_mul, align_offset) < min_channel_align) {
+      align_mul = min_channel_align;
+      align_offset = 0;
    }
 
-   nir_def *load = loads[0];
+   /* Prefer using untyped buffer loads if possible, to avoid potential alignment issues.
+    * Typed loads can cause GPU hangs when used with improper alignment.
+    */
+   if (fetch_num_channels) {
+      if (can_use_untyped_load(f, bit_size)) {
+         load = nir_load_buffer_amd(b, fetch_num_channels, bit_size, descriptor, zero, sgpr_offset, base_index,
+                                    .base = inst_offset, .memory_modes = nir_var_shader_in, .align_mul = align_mul,
+                                    .align_offset = align_offset, .access = ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE);
+      } else {
+         load = nir_load_typed_buffer_amd(b, fetch_num_channels, bit_size, descriptor, zero, sgpr_offset, base_index,
+                                          .base = inst_offset, .format = fetch_format, .align_mul = align_mul,
+                                          .align_offset = align_offset, .memory_modes = nir_var_shader_in,
+                                          .access = ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE);
+      }
+   }
 
    /* Extract the channels we actually need when we couldn't skip starting
     * components or had to emit more than one load intrinsic.
     */
-   if (num_loads > 0 && (first_used_channel > skipped_start || num_loads != 1))
-      load = nir_extract_bits(b, loads, num_loads, (first_used_channel - skipped_start) * bit_size,
+   if (load && (first_used_channel > skipped_start))
+      load = nir_extract_bits(b, &load, 1, (first_used_channel - skipped_start) * bit_size,
                               max_loaded_channels - first_used_channel, bit_size);
 
    /* Return early if possible to avoid generating unnecessary IR. */
-   if (num_loads > 0 && first_used_channel == component && load->num_components == dest_num_components &&
-       !needs_swizzle && alpha_adjust == AC_ALPHA_ADJUST_NONE)
+   if (load && first_used_channel == component && load->num_components == dest_num_components && !needs_swizzle &&
+       alpha_adjust == AC_ALPHA_ADJUST_NONE)
       return load;
 
    /* Fill unused and OOB components.
@@ -393,8 +434,8 @@ lower_vs_input_instr(nir_builder *b, nir_intrinsic_instr *intrin, void *state)
 }
 
 bool
-radv_nir_lower_vs_inputs(nir_shader *shader, const struct radv_shader_stage *vs_stage,
-                         const struct radv_graphics_state_key *gfx_state, const struct radeon_info *gpu_info)
+radv_nir_lower_vs_inputs(nir_shader *shader, const struct radv_compiler_info *compiler_info,
+                         const struct radv_shader_stage *vs_stage, const struct radv_graphics_state_key *gfx_state)
 {
    assert(shader->info.stage == MESA_SHADER_VERTEX);
 
@@ -402,7 +443,7 @@ radv_nir_lower_vs_inputs(nir_shader *shader, const struct radv_shader_stage *vs_
       .info = &vs_stage->info,
       .args = &vs_stage->args,
       .gfx_state = gfx_state,
-      .gpu_info = gpu_info,
+      .compiler_info = compiler_info,
    };
 
    return nir_shader_intrinsics_pass(shader, lower_vs_input_instr, nir_metadata_control_flow, &state);
@@ -434,23 +475,29 @@ opt_vs_input_to_const(nir_builder *b, nir_intrinsic_instr *intrin, void *state)
    const unsigned bit_size = intrin->def.bit_size;
    const unsigned component = var->data.location_frac >> (bit_size == 64 ? 1 : 0);
 
-   const enum pipe_format attrib_format = gfx_state->vi.vertex_attribute_formats[location];
-   const struct util_format_description *f = util_format_description(attrib_format);
-
    b->cursor = nir_after_instr(&intrin->instr);
 
    nir_def *res = &intrin->def;
-   for (unsigned i = 0; i < intrin->def.num_components; i++) {
-      const unsigned c = i + component;
-      if (f->swizzle[c] >= f->nr_channels) {
-         /* Handle input loads that are larger than their format. */
-         nir_def *channel = oob_input_load_value(b, c, bit_size, !is_integer);
-         res = nir_vector_insert_imm(b, res, channel, i);
+
+   if (gfx_state->vi.attributes_valid & (1 << location)) {
+      const enum pipe_format attrib_format = gfx_state->vi.vertex_attribute_formats[location];
+      const struct util_format_description *f = util_format_description(attrib_format);
+
+      for (unsigned i = 0; i < intrin->def.num_components; i++) {
+         const unsigned c = i + component;
+         if (f->swizzle[c] >= f->nr_channels) {
+            /* Handle input loads that are larger than their format. */
+            nir_def *channel = oob_input_load_value(b, c, bit_size, !is_integer);
+            res = nir_vector_insert_imm(b, res, channel, i);
+         }
       }
+   } else {
+      /* Use (0,0,0,0) for unassigned attribute reads. */
+      res = nir_imm_zero(b, intrin->def.num_components, intrin->def.bit_size);
    }
 
    if (res != &intrin->def) {
-      nir_def_rewrite_uses_after(&intrin->def, res, res->parent_instr);
+      nir_def_rewrite_uses_after(&intrin->def, res);
       return true;
    } else {
       return false;

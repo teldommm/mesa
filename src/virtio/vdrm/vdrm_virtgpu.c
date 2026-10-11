@@ -153,12 +153,14 @@ virtgpu_handle_to_res_id(struct vdrm_device *vdev, uint32_t handle)
 
 static uint32_t
 virtgpu_bo_create(struct vdrm_device *vdev, size_t size, uint32_t blob_flags,
-                  uint64_t blob_id, struct vdrm_ccmd_req *req)
+                  uint64_t blob_id, uint32_t blob_hints,
+                  struct vdrm_ccmd_req *req)
 {
    struct virtgpu_device *vgdev = to_virtgpu_device(vdev);
    struct drm_virtgpu_resource_create_blob args = {
          .blob_mem   = VIRTGPU_BLOB_MEM_HOST3D,
          .blob_flags = blob_flags,
+         .blob_hints = blob_hints,
          .size       = size,
          .cmd_size   = req->len,
          .cmd        = (uintptr_t)req,
@@ -290,7 +292,7 @@ static int
 get_capset(int fd, struct virgl_renderer_capset_drm *caps)
 {
    struct drm_virtgpu_get_caps args = {
-         .cap_set_id = VIRGL_RENDERER_CAPSET_DRM,
+         .cap_set_id = VIRTGPU_DRM_CAPSET_DRM,
          .cap_set_ver = 0,
          .addr = (uintptr_t)caps,
          .size = sizeof(*caps),
@@ -305,7 +307,7 @@ static int
 set_context(int fd)
 {
    struct drm_virtgpu_context_set_param params[] = {
-         { VIRTGPU_CONTEXT_PARAM_CAPSET_ID, VIRGL_RENDERER_CAPSET_DRM },
+         { VIRTGPU_CONTEXT_PARAM_CAPSET_ID, VIRTGPU_DRM_CAPSET_DRM },
          { VIRTGPU_CONTEXT_PARAM_NUM_RINGS, 64 },
    };
    struct drm_virtgpu_context_init args = {

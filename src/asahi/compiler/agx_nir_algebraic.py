@@ -23,6 +23,41 @@ for s in [8, 16, 32, 64]:
         lower_sm5_shift += [((shift, f'a@{s}', b),
                              (shift, a, ('iand', b, s - 1)))]
 
+    for shift in ["imadshl_agx", "imsubshl_agx"]:
+        lower_sm5_shift += [((shift, f'a@{s}', b, c, d),
+                             (shift, a, b, c, ('iand', d, s - 1)))]
+
+    # bitfield_extracts do a shift internally, so we need to mask the offset parameter
+    lower_sm5_shift += [
+        # These are based on the lowerings from nir_opt_algebraic, but conditioned
+        # on the number of bits not being constant. If the bit count is constant
+        # (the happy path) we can use our native instruction instead.
+        (('ibitfield_extract', f'value@{s}', 'offset', 'bits(is_not_const)'),
+         ('bcsel', ('ieq', 0, 'bits'),
+          0,
+          ('ishr',
+           ('ishl', 'value', ('isub', ('isub', 32, 'bits'), ('iand', 'offset', s - 1))),
+           ('isub', 32, 'bits')))),
+ 
+        (('ubitfield_extract', f'value@{s}', 'offset', 'bits(is_not_const)'),
+         ('iand',
+          ('ushr', 'value', ('iand', 'offset', s - 1)),
+          ('bcsel', ('ieq', 'bits', 32),
+           0xffffffff,
+           ('isub', ('ishl', 1, 'bits'), 1)))),
+
+        # At this point, bitfield extracts are constant. We can only do constant
+        # unsigned bitfield extract, so lower signed to unsigned + sign extend.
+        (('ibitfield_extract', f'a@{s}', b, '#bits'),
+         ('ishr', ('ishl', ('ubitfield_extract', a, ('iand', b, s - 1), 'bits'), ('isub', 32, 'bits')),
+          ('isub', 32, 'bits'))),
+
+        (("ibitfield_extract", f'a@{s}', 'offset', '#bits'),
+         ("ibitfield_extract", a, ('iand', 'offset', s - 1), 'bits')),
+        (("ubitfield_extract", f'value@{s}', 'offset', '#bits'),
+         ("ubitfield_extract", 'value', ('iand', 'offset', s - 1), 'bits'))
+    ]
+
 lower_pack = [
     (('pack_half_2x16_split', a, b),
      ('pack_32_2x16_split', ('f2f16', a), ('f2f16', b))),
@@ -33,9 +68,6 @@ lower_pack = [
     (('pack_32_4x8_split', a, b, c, d),
      ('pack_32_2x16_split', ('ior', ('u2u16', a), ('ishl', ('u2u16', b), 8)),
                             ('ior', ('u2u16', c), ('ishl', ('u2u16', d), 8)))),
-
-    (('unpack_half_2x16_split_x', a), ('f2f32', ('unpack_32_2x16_split_x', a))),
-    (('unpack_half_2x16_split_y', a), ('f2f32', ('unpack_32_2x16_split_y', a))),
 
     (('extract_u16', 'a@32', 0), ('u2u32', ('unpack_32_2x16_split_x', a))),
     (('extract_u16', 'a@32', 1), ('u2u32', ('unpack_32_2x16_split_y', a))),
@@ -60,38 +92,15 @@ lower_pack = [
      ('bcsel', ('flt', ('fabs', a), ('fabs', ('f2f32', ('f2f16_rtne', a)))),
       ('isub', ('f2f16_rtne', a), 1), ('f2f16_rtne', a))),
 
-    # These are based on the lowerings from nir_opt_algebraic, but conditioned
-    # on the number of bits not being constant. If the bit count is constant
-    # (the happy path) we can use our native instruction instead.
-    (('ibitfield_extract', 'value', 'offset', 'bits(is_not_const)'),
-     ('bcsel', ('ieq', 0, 'bits'),
-      0,
-      ('ishr',
-       ('ishl', 'value', ('isub', ('isub', 32, 'bits'), 'offset')),
-       ('isub', 32, 'bits')))),
-
-    (('ubitfield_extract', 'value', 'offset', 'bits(is_not_const)'),
-     ('iand',
-      ('ushr', 'value', 'offset'),
-      ('bcsel', ('ieq', 'bits', 32),
-       0xffffffff,
-       ('isub', ('ishl', 1, 'bits'), 1)))),
-
     # Codegen depends on this trivial case being optimized out.
     (('ubitfield_extract', 'value', 'offset', 0), 0),
     (('ibitfield_extract', 'value', 'offset', 0), 0),
-
-    # At this point, bitfield extracts are constant. We can only do constant
-    # unsigned bitfield extract, so lower signed to unsigned + sign extend.
-    (('ibitfield_extract', a, b, '#bits'),
-     ('ishr', ('ishl', ('ubitfield_extract', a, b, 'bits'), ('isub', 32, 'bits')),
-      ('isub', 32, 'bits'))),
 ]
 
 lower_selects = []
 for T, sizes, one in [('f', [16, 32], 1.0),
                       ('i', [8, 16, 32], 1),
-                      ('b', [16, 32], -1)]:
+                      ('b', [32], -1)]:
     for size in sizes:
         lower_selects.extend([
             ((f'b2{T}{size}', ('inot', 'a@1')), ('bcsel', a, 0, one)),
@@ -105,8 +114,14 @@ for T, sizes, one in [('f', [16, 32], 1.0),
 # This needs to be a separate pass that runs after lower_selects, in order to
 # pick up patterns like b2f32(iand(...))
 opt_selects = [
+        (('bcsel', ('ior(is_used_once)', ('inot', a), b), c, d),
+         ('bcsel', a, ('bcsel', b, c, d), c)),
+
         (('bcsel', ('ior(is_used_once)', a, b), c, d),
          ('bcsel', a, c, ('bcsel', b, c, d))),
+
+        (('bcsel', ('iand(is_used_once)', ('inot', a), b), c, d),
+         ('bcsel', a, d, ('bcsel', b, c, d))),
 
         (('bcsel', ('iand(is_used_once)', a, b), c, d),
          ('bcsel', a, ('bcsel', b, c, d), d)),
@@ -119,6 +134,16 @@ opt_selects.extend([
 
         (('ior', ('inot', 'a@1'), b), ('bcsel', a, b, True)),
         (('ior', 'a@1', b), ('bcsel', a, True, b)),
+])
+
+# Rewriting fneg to ixor costs a uniform but lets us CSE the bcsel if this is
+# applied to a whole vector, hence the has_multiple_uses heuristic.
+opt_selects.extend([
+        (('bcsel', 'a(has_multiple_uses)', ('fneg(is_used_once)', 'b@32'), b),
+         ('ixor', b, ('bcsel', a, 1 << 31, 0))),
+
+        (('bcsel', 'a(has_multiple_uses)', b, ('fneg(is_used_once)', 'b@32')),
+         ('ixor', b, ('bcsel', a, 0, 1 << 31))),
 ])
 
 fuse_extr = []
@@ -210,6 +235,14 @@ ixor_bcsel = [
 cleanup_amul = [
    # Neither operation overflows so we can keep the amul.
    (('amul', ('amul', a, '#b'), '#c'), ('amul', a, ('imul', b, c))),
+
+   # Result of u2u64 has zero in upper half, so the shift doesn't overflow, so
+   # neither multiplication overflows.
+   (('amul', ('ishl', ('u2u64', 'a@32'), '#b(is_ult_32)'), '#c'),
+    ('amul', ('u2u64', a), ('ishl', c, b))),
+
+   # We depending on simplifying this.
+   (('iadd', a, 0), a),
 ]
 
 fuse_lea = []
@@ -292,6 +325,11 @@ for s_ in range(1, 5):
 fuse_lea += [
     (('iadd', a, ('u2u64', 'b@32')), ('ulea_agx', a, b, 0)),
     (('iadd', a, ('i2i64', 'b@32')), ('ilea_agx', a, b, 0)),
+
+    (('iadd', a, ('iadd', ('u2u64', 'b@32'), c)),
+     ('ulea_agx', ('iadd', a, c), b, 0)),
+    (('iadd', a, ('iadd', ('i2i64', 'b@32'), c)),
+     ('ilea_agx', ('iadd', a, c), b, 0)),
 ]
 
 # After lowering address arithmetic, the various address arithmetic opcodes are

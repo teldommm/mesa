@@ -29,42 +29,11 @@
 #include <c11/threads.h>
 #include "util/format/u_formats.h"
 
-#ifdef HAVE_X11_PLATFORM
-#include <xcb/xcb.h>
-#include <xcb/dri3.h>
-#include <xcb/present.h>
-
-struct loader_crtc_info {
-   xcb_randr_crtc_t id;
-   xcb_timestamp_t timestamp;
-
-   int16_t x, y;
-   uint16_t width, height;
-
-   unsigned refresh_numerator;
-   unsigned refresh_denominator;
-};
-
-struct loader_screen_resources {
-   mtx_t mtx;
-
-   xcb_connection_t *conn;
-   xcb_screen_t *screen;
-
-   xcb_timestamp_t config_timestamp;
-
-   /* Number of CRTCs with an active mode set */
-   unsigned num_crtcs;
-   struct loader_crtc_info *crtcs;
-};
-#endif
-
+#include "loader_dri_helper_screen.h"
 
 /**
- * These formats correspond to the similarly named MESA_FORMAT_*
- * tokens, except in the native endian of the CPU.  For example, on
- * little endian __DRI_IMAGE_FORMAT_XRGB8888 corresponds to
- * MESA_FORMAT_XRGB8888, but MESA_FORMAT_XRGB8888_REV on big endian.
+ * These formats are endian independent they result in the same layout
+ * regradless of a big or little endian cpu.
  *
  * __DRI_IMAGE_FORMAT_NONE is for images that aren't directly usable
  * by the driver (YUV planar formats) but serve as a base image for
@@ -75,25 +44,27 @@ struct loader_screen_resources {
  * createImageFromNames (NONE, see above) and fromPlane (R8 & GR88).
  */
 #define __DRI_IMAGE_FORMAT_RGB565       PIPE_FORMAT_B5G6R5_UNORM
-#define __DRI_IMAGE_FORMAT_XRGB8888     PIPE_FORMAT_BGRX8888_UNORM
-#define __DRI_IMAGE_FORMAT_ARGB8888     PIPE_FORMAT_BGRA8888_UNORM
-#define __DRI_IMAGE_FORMAT_ABGR8888     PIPE_FORMAT_RGBA8888_UNORM
-#define __DRI_IMAGE_FORMAT_XBGR8888     PIPE_FORMAT_RGBX8888_UNORM
+#define __DRI_IMAGE_FORMAT_XRGB8888     PIPE_FORMAT_B8G8R8X8_UNORM
+#define __DRI_IMAGE_FORMAT_ARGB8888     PIPE_FORMAT_B8G8R8A8_UNORM
+#define __DRI_IMAGE_FORMAT_ABGR8888     PIPE_FORMAT_R8G8B8A8_UNORM
+#define __DRI_IMAGE_FORMAT_XBGR8888     PIPE_FORMAT_R8G8B8X8_UNORM
+#define __DRI_IMAGE_FORMAT_RGB888       PIPE_FORMAT_B8G8R8_UNORM
+#define __DRI_IMAGE_FORMAT_BGR888       PIPE_FORMAT_R8G8B8_UNORM
 #define __DRI_IMAGE_FORMAT_R8           PIPE_FORMAT_R8_UNORM
-#define __DRI_IMAGE_FORMAT_GR88         PIPE_FORMAT_RG88_UNORM
+#define __DRI_IMAGE_FORMAT_GR88         PIPE_FORMAT_R8G8_UNORM
 #define __DRI_IMAGE_FORMAT_NONE         PIPE_FORMAT_NONE
 #define __DRI_IMAGE_FORMAT_XRGB2101010  PIPE_FORMAT_B10G10R10X2_UNORM
 #define __DRI_IMAGE_FORMAT_ARGB2101010  PIPE_FORMAT_B10G10R10A2_UNORM
-#define __DRI_IMAGE_FORMAT_SARGB8       PIPE_FORMAT_BGRA8888_SRGB
+#define __DRI_IMAGE_FORMAT_SARGB8       PIPE_FORMAT_B8G8R8A8_SRGB
 #define __DRI_IMAGE_FORMAT_ARGB1555     PIPE_FORMAT_B5G5R5A1_UNORM
 #define __DRI_IMAGE_FORMAT_R16          PIPE_FORMAT_R16_UNORM
-#define __DRI_IMAGE_FORMAT_GR1616       PIPE_FORMAT_RG1616_UNORM
+#define __DRI_IMAGE_FORMAT_GR1616       PIPE_FORMAT_R16G16_UNORM
 #define __DRI_IMAGE_FORMAT_XBGR2101010  PIPE_FORMAT_R10G10B10X2_UNORM
 #define __DRI_IMAGE_FORMAT_ABGR2101010  PIPE_FORMAT_R10G10B10A2_UNORM
-#define __DRI_IMAGE_FORMAT_SABGR8       PIPE_FORMAT_RGBA8888_SRGB
+#define __DRI_IMAGE_FORMAT_SABGR8       PIPE_FORMAT_R8G8B8A8_SRGB
 #define __DRI_IMAGE_FORMAT_XBGR16161616F PIPE_FORMAT_R16G16B16X16_FLOAT
 #define __DRI_IMAGE_FORMAT_ABGR16161616F PIPE_FORMAT_R16G16B16A16_FLOAT
-#define __DRI_IMAGE_FORMAT_SXRGB8       PIPE_FORMAT_BGRX8888_SRGB
+#define __DRI_IMAGE_FORMAT_SXRGB8       PIPE_FORMAT_B8G8R8X8_SRGB
 #define __DRI_IMAGE_FORMAT_ABGR16161616 PIPE_FORMAT_R16G16B16A16_UNORM
 #define __DRI_IMAGE_FORMAT_XBGR16161616 PIPE_FORMAT_R16G16B16X16_UNORM
 #define __DRI_IMAGE_FORMAT_ARGB4444	PIPE_FORMAT_B4G4R4A4_UNORM
@@ -104,22 +75,10 @@ struct loader_screen_resources {
 #define __DRI_IMAGE_FORMAT_ABGR1555	PIPE_FORMAT_R5G5B5A1_UNORM
 #define __DRI_IMAGE_FORMAT_XBGR1555	PIPE_FORMAT_R5G5B5X1_UNORM
 
-int
-loader_image_format_to_fourcc(int format);
+uint32_t
+loader_pipe_format_to_fourcc(enum pipe_format pipe);
 
-int
-loader_fourcc_to_image_format(int format);
-
-#ifdef HAVE_X11_PLATFORM
-void
-loader_init_screen_resources(struct loader_screen_resources *res,
-                             xcb_connection_t *conn,
-                             xcb_screen_t *screen);
-bool
-loader_update_screen_resources(struct loader_screen_resources *res);
-
-void
-loader_destroy_screen_resources(struct loader_screen_resources *res);
-#endif
+enum pipe_format
+loader_fourcc_to_pipe_format(uint32_t fourcc);
 
 #endif /* LOADER_DRI_HELPER_H */

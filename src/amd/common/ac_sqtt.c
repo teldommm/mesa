@@ -27,8 +27,8 @@ ac_sqtt_get_data_offset(const struct radeon_info *rad_info, const struct ac_sqtt
    unsigned max_se = rad_info->max_se;
    uint64_t data_offset;
 
-   data_offset = align64(sizeof(struct ac_sqtt_data_info) * max_se, 1 << SQTT_BUFFER_ALIGN_SHIFT);
-   data_offset += data->buffer_size * se;
+   data_offset = align64(sizeof(struct ac_sqtt_data_info) * max_se, 1ull << SQTT_BUFFER_ALIGN_SHIFT);
+   data_offset += (size_t)data->buffer_size * se;
 
    return data_offset;
 }
@@ -49,6 +49,8 @@ ac_sqtt_get_data_va(const struct radeon_info *rad_info, const struct ac_sqtt *da
 void
 ac_sqtt_init(struct ac_sqtt *data)
 {
+   simple_mtx_init(&data->lock, mtx_plain);
+
    list_inithead(&data->rgp_pso_correlation.record);
    simple_mtx_init(&data->rgp_pso_correlation.lock, mtx_plain);
 
@@ -71,6 +73,8 @@ ac_sqtt_init(struct ac_sqtt *data)
 void
 ac_sqtt_finish(struct ac_sqtt *data)
 {
+   simple_mtx_destroy(&data->lock);
+
    assert(data->rgp_pso_correlation.record_count == 0);
    simple_mtx_destroy(&data->rgp_pso_correlation.lock);
 
@@ -111,17 +115,6 @@ ac_is_sqtt_complete(const struct radeon_info *rad_info, const struct ac_sqtt *da
     * of written bytes.
     */
    return info->cur_offset == info->gfx9_write_counter;
-}
-
-uint32_t
-ac_get_expected_buffer_size(struct radeon_info *rad_info, const struct ac_sqtt_data_info *info)
-{
-   if (rad_info->gfx_level >= GFX10) {
-      uint32_t dropped_cntr_per_se = info->gfx10_dropped_cntr / rad_info->max_se;
-      return ((info->cur_offset * 32) + dropped_cntr_per_se) / 1024;
-   }
-
-   return (info->gfx9_write_counter * 32) / 1024;
 }
 
 bool
@@ -194,6 +187,15 @@ ac_sqtt_add_clock_calibration(struct ac_sqtt *sqtt, uint64_t cpu_timestamp, uint
    return true;
 }
 
+void
+ac_sqtt_set_gpu_trace_clocks(struct ac_sqtt *sqtt,
+                             uint32_t trace_shader_core_clock,
+                             uint32_t trace_memory_clock)
+{
+   sqtt->trace_shader_core_clock = trace_shader_core_clock;
+   sqtt->trace_memory_clock = trace_memory_clock;
+}
+
 /* See https://gitlab.freedesktop.org/mesa/mesa/-/issues/5260
  * On some HW SQTT can hang if we're not in one of the profiling pstates. */
 bool
@@ -242,7 +244,9 @@ ac_sqtt_get_active_cu(const struct radeon_info *info, unsigned se)
 {
    uint32_t cu_index;
 
-   if (info->gfx_level >= GFX11) {
+   if (info->gfx_level >= GFX12) {
+      cu_index = 0;
+   }else if (info->gfx_level >= GFX11) {
       /* GFX11 seems to operate on the last active CU. */
       cu_index = util_last_bit(info->cu_mask[se][0]) - 1;
    } else {
@@ -295,6 +299,16 @@ ac_sqtt_get_trace(struct ac_sqtt *data, const struct radeon_info *info,
    sqtt_trace->rgp_queue_event = &data->rgp_queue_event;
    sqtt_trace->rgp_clock_calibration = &data->rgp_clock_calibration;
 
+   sqtt_trace->trace_shader_core_clock = data->trace_shader_core_clock;
+   sqtt_trace->trace_memory_clock = data->trace_memory_clock;
+   sqtt_trace->instruction_timing_se_mask = data->instruction_timing_se_mask;
+
+   /* Use maximum clocks when they aren't sampled. */
+   if (!sqtt_trace->trace_shader_core_clock)
+      sqtt_trace->trace_shader_core_clock = info->max_gpu_freq_mhz;
+   if (!sqtt_trace->trace_memory_clock)
+      sqtt_trace->trace_memory_clock = info->memory_freq_mhz;
+
    return true;
 }
 
@@ -305,10 +319,15 @@ ac_sqtt_get_ctrl(const struct radeon_info *info, bool enable)
    uint32_t ctrl;
 
    if (info->gfx_level >= GFX11) {
-      ctrl = S_0367B0_MODE(enable) | S_0367B0_HIWATER(5) |
-             S_0367B0_UTIL_TIMER_GFX11(1) | S_0367B0_RT_FREQ(2) | /* 4096 clk */
-             S_0367B0_DRAW_EVENT_EN(1) | S_0367B0_SPI_STALL_EN(1) |
-             S_0367B0_SQ_STALL_EN(1) | S_0367B0_REG_AT_HWM(2);
+      if (info->gfx_level >= GFX12) {
+         ctrl = S_0367B0_UTIL_TIMER_GFX12(1) | S_0367B0_LOWATER_OFFSET(4);
+      } else {
+         ctrl = S_0367B0_UTIL_TIMER_GFX11(1) | S_0367B0_RT_FREQ(2); /* 4096 clk */
+      }
+
+      ctrl |= S_0367B0_MODE(enable) | S_0367B0_HIWATER(5) |
+              S_0367B0_DRAW_EVENT_EN(1) | S_0367B0_SPI_STALL_EN(1) |
+              S_0367B0_SQ_STALL_EN(1) | S_0367B0_REG_AT_HWM(2);
    } else {
       assert(info->gfx_level >= GFX10);
 
@@ -356,16 +375,29 @@ ac_sqtt_emit_start(const struct radeon_info *info, struct ac_pm4_state *pm4,
       if (ac_sqtt_se_is_disabled(info, se))
          continue;
 
+      const bool instruction_timing_enabled =
+         sqtt->instruction_timing_enabled && (sqtt->instruction_timing_se_mask & (1u << se));
+
       /* Target SEx and SH0. */
       ac_pm4_set_reg(pm4, R_030800_GRBM_GFX_INDEX, S_030800_SE_INDEX(se) |
                      S_030800_SH_INDEX(0) | S_030800_INSTANCE_BROADCAST_WRITES(1));
 
       if (info->gfx_level >= GFX11) {
          /* Order seems important for the following 2 registers. */
-         ac_pm4_set_reg(pm4, R_0367A4_SQ_THREAD_TRACE_BUF0_SIZE,
-                        S_0367A4_SIZE(shifted_size) | S_0367A4_BASE_HI(shifted_va >> 32));
+         if (info->gfx_level >= GFX12) {
+            ac_pm4_set_reg(pm4, R_036798_SQ_THREAD_TRACE_BUF0_SIZE,
+                           S_036798_SIZE(shifted_size));
 
-         ac_pm4_set_reg(pm4, R_0367A0_SQ_THREAD_TRACE_BUF0_BASE, shifted_va);
+            ac_pm4_set_reg(pm4, R_03679C_SQ_THREAD_TRACE_BUF0_BASE_LO, shifted_va);
+            ac_pm4_set_reg(pm4, R_0367A0_SQ_THREAD_TRACE_BUF0_BASE_HI, S_0367A0_BASE_HI(shifted_va >> 32));
+
+            ac_pm4_set_reg(pm4, R_0367BC_SQ_THREAD_TRACE_WPTR, 0);
+         } else {
+            ac_pm4_set_reg(pm4, R_0367A4_SQ_THREAD_TRACE_BUF0_SIZE,
+                           S_0367A4_SIZE(shifted_size) | S_0367A4_BASE_HI(shifted_va >> 32));
+
+            ac_pm4_set_reg(pm4, R_0367A0_SQ_THREAD_TRACE_BUF0_BASE, shifted_va);
+         }
 
          ac_pm4_set_reg(pm4, R_0367B4_SQ_THREAD_TRACE_MASK,
                         S_0367B4_WTYPE_INCLUDE(shader_mask) | S_0367B4_SA_SEL(0) |
@@ -376,15 +408,26 @@ ac_sqtt_emit_start(const struct radeon_info *info, struct ac_pm4_state *pm4,
                                                          V_0367B8_REG_INCLUDE_CONTEXT | V_0367B8_REG_INCLUDE_CONFIG);
 
          /* Performance counters with SQTT are considered deprecated. */
-         uint32_t token_exclude = V_0367B8_TOKEN_EXCLUDE_PERF;
+         uint32_t token_exclude = 0;
 
-         if (!sqtt->instruction_timing_enabled) {
+         if (!instruction_timing_enabled) {
             /* Reduce SQTT traffic when instruction timing isn't enabled. */
             token_exclude |= V_0367B8_TOKEN_EXCLUDE_VMEMEXEC | V_0367B8_TOKEN_EXCLUDE_ALUEXEC |
                              V_0367B8_TOKEN_EXCLUDE_VALUINST | V_0367B8_TOKEN_EXCLUDE_IMMEDIATE |
                              V_0367B8_TOKEN_EXCLUDE_INST;
          }
-         sqtt_token_mask |= S_0367B8_TOKEN_EXCLUDE_GFX11(token_exclude) | S_0367B8_BOP_EVENTS_TOKEN_INCLUDE_GFX11(1);
+
+         if (info->gfx_level >= GFX12) {
+            sqtt_token_mask |= S_0367B8_TOKEN_EXCLUDE_GFX12(token_exclude) |
+                               S_0367B8_BOP_EVENTS_TOKEN_INCLUDE_GFX12(1) |
+                               S_0367B8_EXCLUDE_BARRIER_WAIT(1) |
+                               S_0367B8_REG_EXCLUDE(2); /* CP_ME_MC_RADDR */
+         } else {
+            /* Performance counters with SQTT are considered deprecated. */
+            token_exclude |= V_0367B8_TOKEN_EXCLUDE_PERF;
+
+            sqtt_token_mask |= S_0367B8_TOKEN_EXCLUDE_GFX11(token_exclude) | S_0367B8_BOP_EVENTS_TOKEN_INCLUDE_GFX11(1);
+         }
 
          ac_pm4_set_reg(pm4, R_0367B8_SQ_THREAD_TRACE_TOKEN_MASK, sqtt_token_mask);
 
@@ -408,7 +451,7 @@ ac_sqtt_emit_start(const struct radeon_info *info, struct ac_pm4_state *pm4,
          /* Performance counters with SQTT are considered deprecated. */
          uint32_t token_exclude = V_008D18_TOKEN_EXCLUDE_PERF;
 
-         if (!sqtt->instruction_timing_enabled) {
+         if (!instruction_timing_enabled) {
             /* Reduce SQTT traffic when instruction timing isn't enabled. */
             token_exclude |= V_008D18_TOKEN_EXCLUDE_VMEMEXEC | V_008D18_TOKEN_EXCLUDE_ALUEXEC |
                              V_008D18_TOKEN_EXCLUDE_VALUINST | V_008D18_TOKEN_EXCLUDE_IMMEDIATE |
@@ -555,7 +598,7 @@ ac_sqtt_copy_info_regs(const struct radeon_info *info, struct ac_pm4_state *pm4,
       uint32_t init_wptr_value = shifted_data_va & 0x1fffffff;
 
       ac_pm4_cmd_add(pm4, PKT3(PKT3_ATOMIC_MEM, 7, 0));
-      ac_pm4_cmd_add(pm4, ATOMIC_OP(TC_OP_ATOMIC_SUB_32));
+      ac_pm4_cmd_add(pm4, S_1E1_ATOMIC(V_1E1_GL2_OP_ATOMIC_SUB_RTN_32));
       ac_pm4_cmd_add(pm4, info_va);         /* addr lo */
       ac_pm4_cmd_add(pm4, info_va >> 32);   /* addr hi */
       ac_pm4_cmd_add(pm4, init_wptr_value); /* data lo */
@@ -660,4 +703,56 @@ ac_sqtt_emit_wait(const struct radeon_info *info, struct ac_pm4_state *pm4,
    /* Restore global broadcasting. */
    ac_pm4_set_reg(pm4, R_030800_GRBM_GFX_INDEX, S_030800_SE_BROADCAST_WRITES(1) |
                   S_030800_SH_BROADCAST_WRITES(1) | S_030800_INSTANCE_BROADCAST_WRITES(1));
+}
+
+bool ac_sqtt_update_bo_size(struct ac_sqtt *sqtt, const char *env_var_prefix)
+{
+   if (strlen(env_var_prefix) > 4)
+      return false;
+
+   if (sqtt->buffer_size == 0) {
+      char envvar[sizeof("xxxx_THREAD_TRACE_BUFFER_SIZE")];
+      const uint32_t max_size = UINT32_MAX & ~((1u << SQTT_BUFFER_ALIGN_SHIFT) - 1);
+
+      sprintf(envvar, "%s_THREAD_TRACE_BUFFER_SIZE", env_var_prefix);
+
+      /* Default buffer size set to 32MB per SE. */
+      uint64_t s = debug_get_num_option(envvar, 32 * 1024 * 1024);
+
+      /* Validate before aligning (0-sized buffer hangs the GPU). */
+      if (s == 0 || s > max_size) {
+         fprintf(stderr,
+                 "Invalid %s value (must be > 0 and <= %u).\n",
+                 envvar, max_size);
+         return false;
+      }
+
+      /* The buffer size needs to be aligned in HW regs, so align it here to
+       * do all the allocation & addressing correctly. Resizing the buffer
+       * doubles it, which preserves the alignment.
+       */
+      sqtt->buffer_size = align64(s, 1ull << SQTT_BUFFER_ALIGN_SHIFT);
+
+      return true;
+   }
+   if (sqtt->buffer_size < UINT32_MAX / 2) {
+      /* Double the size of the thread trace buffer per SE. */
+      sqtt->buffer_size *= 2;
+      fprintf(stderr,
+              "Failed to get the thread trace because the buffer "
+              "was too small, resizing to %u kB per se\n",
+              sqtt->buffer_size / 1024);
+   } else {
+      fprintf(stderr,
+              "Failed to get the thread trace because the buffer "
+              "was too small (%u kB per se). Cancelling trace capture.\n",
+               sqtt->buffer_size / 1024);
+      if (sqtt->instruction_timing_enabled)
+         fprintf(stderr,
+                 "Try again with %s_THREAD_TRACE_INSTRUCTION_TIMING=false"
+                 " to reduce the size of the captured data.\n",
+                 env_var_prefix);
+      return false;
+   }
+   return true;
 }

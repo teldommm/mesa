@@ -38,7 +38,15 @@
 #define VMW_MAX_BUFFER_SIZE (512*1024*1024)
 
 struct pb_manager;
-struct vmw_region;
+struct vmw_region
+{
+   uint32_t handle;
+   uint64_t map_handle;
+   void *data;
+   uint32_t map_count;
+   int drm_fd;
+   uint32_t size;
+};
 
 struct vmw_cap_3d {
    bool has_cap;
@@ -66,6 +74,7 @@ struct vmw_winsys_screen
       bool have_drm_2_18;
       bool have_drm_2_19;
       bool have_drm_2_20;
+      bool have_drm_2_21;
    } ioctl;
 
    struct {
@@ -209,12 +218,12 @@ vmw_ioctl_fence_signalled(struct vmw_winsys_screen *vws,
 
 void
 vmw_ioctl_fence_unref(struct vmw_winsys_screen *vws,
-		      uint32_t handle);
+                      uint32_t handle);
 
 uint32
 vmw_ioctl_shader_create(struct vmw_winsys_screen *vws,
-			SVGA3dShaderType type,
-			uint32 code_len);
+                        SVGA3dShaderType type,
+                        uint32 code_len);
 void
 vmw_ioctl_shader_destroy(struct vmw_winsys_screen *vws, uint32 shid);
 
@@ -240,11 +249,11 @@ void vmw_pools_cleanup(struct vmw_winsys_screen *vws);
 struct vmw_winsys_screen *vmw_winsys_create(int fd);
 void vmw_winsys_destroy(struct vmw_winsys_screen *sws);
 void vmw_winsys_screen_set_throttling(struct pipe_screen *screen,
-				      uint32_t throttle_us);
+                                      uint32_t throttle_us);
 
 struct pb_manager *
 simple_fenced_bufmgr_create(struct pb_manager *provider,
-			    struct pb_fence_ops *ops);
+                            struct pb_fence_ops *ops);
 void
 vmw_fences_signal(struct pb_fence_ops *fence_ops,
                   uint32_t signaled,
@@ -253,12 +262,12 @@ vmw_fences_signal(struct pb_fence_ops *fence_ops,
 
 struct svga_winsys_gb_shader *
 vmw_svga_winsys_shader_create(struct svga_winsys_screen *sws,
-			      SVGA3dShaderType type,
-			      const uint32 *bytecode,
-			      uint32 bytecodeLen);
+                              SVGA3dShaderType type,
+                              const uint32 *bytecode,
+                              uint32 bytecodeLen);
 void
 vmw_svga_winsys_shader_destroy(struct svga_winsys_screen *sws,
-			       struct svga_winsys_gb_shader *shader);
+                               struct svga_winsys_gb_shader *shader);
 
 size_t
 vmw_svga_winsys_stats_len(void);

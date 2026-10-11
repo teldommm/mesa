@@ -28,9 +28,7 @@ EPHEMERAL=(
 )
 
 DEPS=(
-    bindgen
     bison
-    cbindgen
     ccache
     clang-devel
     flex
@@ -40,6 +38,7 @@ DEPS=(
     gettext
     glslang
     kernel-headers
+    libstdc++-static
     llvm-devel
     ninja-build
     "pkgconfig(LLVMSPIRVLib)"
@@ -53,7 +52,6 @@ DEPS=(
     "pkgconfig(libglvnd)"
     "pkgconfig(libva)"
     "pkgconfig(pciaccess)"
-    "pkgconfig(vdpau)"
     "pkgconfig(vulkan)"
     "pkgconfig(x11)"
     "pkgconfig(x11-xcb)"
@@ -70,7 +68,6 @@ DEPS=(
     "pkgconfig(xfixes)"
     "pkgconfig(xrandr)"
     "pkgconfig(xshmfence)"
-    "pkgconfig(xtensor)"
     "pkgconfig(xxf86vm)"
     "pkgconfig(zlib)"
     procps-ng
@@ -81,10 +78,11 @@ DEPS=(
     python3-ply
     python3-pycparser
     python3-yaml
-    rust-packaging
-    vulkan-headers
+    SDL3-devel
     spirv-tools-devel
     spirv-llvm-translator-devel
+    vulkan-headers
+    which
 )
 
 dnf install -y --setopt=install_weak_deps=False "${DEPS[@]}" "${EPHEMERAL[@]}"
@@ -105,6 +103,10 @@ cd $XORGMACROS_VERSION; ./configure; make install; cd ..
 rm -rf $XORGMACROS_VERSION
 
 . .gitlab-ci/container/install-meson.sh
+
+. .gitlab-ci/container/build-rust.sh build
+
+. .gitlab-ci/container/build-bindgen.sh
 
 . .gitlab-ci/container/build-mold.sh
 

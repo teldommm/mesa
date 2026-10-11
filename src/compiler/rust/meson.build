@@ -5,10 +5,16 @@ _compiler_rs_sources = [
   'as_slice.rs',
   'bitset.rs',
   'cfg.rs',
+  'dataflow.rs',
+  'depth_first_search.rs',
+  'enum_as_u8.rs',
+  'float16.rs',
+  'lower_bounded.rs',
   'memstream.rs',
   'nir_instr_printer.rs',
   'nir.rs',
   'smallvec.rs',
+  'vec_pair.rs',
 ]
 
 _compiler_binding_types = [
@@ -19,34 +25,60 @@ _compiler_binding_types = [
   'gl_access_qualifier',
   'gl_frag_result',
   'gl_interp_mode',
-  'gl_shader_stage',
+  'mesa_shader_stage',
   'gl_subgroup_size',
   'gl_system_value',
   'gl_tess_spacing',
   'gl_varying_slot',
   'gl_vert_attrib',
+  'glsl_sampler_dim',
   'glsl_type',
+  'glsl_matrix_layout',
   'nir_.*',
   'mesa_scope',
   'mesa_prim',
-  'pipe_shader_type',
+  'mesa_shader_stage',
   'shader_info',
   'tess_primitive_mode',
+  'u_printf_info',
+  'util_dynarray',
+]
+
+_compiler_rust_args = [
+  rust_global_args,
+  rust_2024_lint_args,
+  '-Aclippy::identity_op',
+  '-Aclippy::len_zero',
+  '-Aclippy::manual_range_contains',
+  # normally this is a good one, but we use it where the "better" code is worse
+  '-Aclippy::needless_range_loop',
+  '-Aclippy::redundant_field_names',
+  '-Aclippy::upper_case_acronyms',
+  '-Aclippy::vec_box',
+  '-Aclippy::write_with_newline',
+  # warns about public function might dereference a raw pointer, but nothing is
+  # actually public here
+  '-Aclippy::not_unsafe_ptr_arg_deref',
+  '-Anon_snake_case',
 ]
 
 _compiler_bindgen_args = [
-  '--raw-line', '#![allow(non_camel_case_types)]',
-  '--raw-line', '#![allow(non_snake_case)]',
-  '--raw-line', '#![allow(non_upper_case_globals)]',
+  bindgen_output_args,
+  '--allowlist-var', 'NIR_.*',
   '--allowlist-var', 'nir_.*_infos',
   '--allowlist-var', 'rust_.*',
   '--allowlist-function', 'glsl_.*',
   '--allowlist-function', '_mesa_shader_stage_to_string',
+  '--allowlist-function', '_mesa_.*half.*',
+  '--allowlist-function', '_mesa_.*float16.*',
   '--allowlist-function', 'nir_.*',
   '--allowlist-function', 'compiler_rs.*',
   '--allowlist-function', 'u_memstream.*',
+  '--allowlist-function', 'util_dynarray.*',
   '--allowlist-type', 'u_memstream',
   '--no-prepend-enum-name',
+  '--with-derive-default',
+  '--wrap-static-fns-suffix', '_compiler_rs_extern'
 ]
 
 foreach type : _compiler_binding_types
@@ -71,10 +103,28 @@ _idep_libcompiler_c = declare_dependency(
 _compiler_bindings_rs = rust.bindgen(
   input : ['bindings.h'],
   output : 'bindings.rs',
+  output_inline_wrapper : 'bindings.c',
   c_args : [
     pre_args,
   ],
   args : _compiler_bindgen_args,
+  dependencies : [
+    idep_nir_headers,
+    idep_mesautil,
+  ],
+)
+
+_libcompiler_bindings = static_library(
+  'compiler_bindings',
+  ['bindings.h', _compiler_bindings_rs[1]],
+  gnu_symbol_visibility : 'hidden',
+  include_directories : [
+    fs.relative_to(meson.project_build_root(), meson.current_source_dir()),
+  ],
+  c_args : [
+    pre_args,
+    cc.get_supported_arguments('-Wno-missing-prototypes'),
+  ],
   dependencies : [
     idep_nir_headers,
     idep_mesautil,
@@ -99,6 +149,8 @@ _libcompiler_rs = static_library(
   gnu_symbol_visibility : 'hidden',
   rust_abi : 'rust',
   dependencies: [_idep_libcompiler_c],
+  link_with: [_libcompiler_bindings],
+  rust_args: _compiler_rust_args,
 )
 
 # TODO: Linking Rust executables (such as unit tests) doesn't play nicely
@@ -106,7 +158,7 @@ _libcompiler_rs = static_library(
 # Rust linker.  See also https://github.com/mesonbuild/meson/issues/11741
 if with_tests and get_option('b_sanitize') == 'none'
   rust.test(
-    'compiler',
+    'compiler_test',
     _libcompiler_rs,
     suite : ['compiler', 'rs'],
     dependencies : [
@@ -114,9 +166,24 @@ if with_tests and get_option('b_sanitize') == 'none'
     ],
     # This is needed to ensure we link against glibc
     # See also https://gitlab.freedesktop.org/mesa/mesa/-/issues/11632
-    rust_args: ['-C', 'default-linker-libraries'],
+    rust_args: [
+      _compiler_rust_args,
+      '-C', 'default-linker-libraries',
+    ],
   )
 endif
+
+_libacorn_rs = static_library(
+  'acorn',
+  files('acorn/lib.rs'),
+  gnu_symbol_visibility : 'hidden',
+  rust_abi : 'rust',
+  rust_args : _compiler_rust_args,
+)
+
+idep_acorn_rs = declare_dependency(
+  link_with : _libacorn_rs,
+)
 
 idep_compiler_rs = declare_dependency(
   link_with : _libcompiler_rs,
@@ -124,7 +191,7 @@ idep_compiler_rs = declare_dependency(
 
 dep_syn = dependency('syn',
   version : '>= 2.0.15',
-  fallback : ['syn', 'dep_syn'],
+  fallback : ['syn-2-rs', 'dep_syn'],
   required : true,
 )
 
@@ -134,6 +201,7 @@ _libcompiler_proc_rs = static_library(
   gnu_symbol_visibility : 'hidden',
   dependencies : [dep_syn],
   rust_abi : 'rust',
+  rust_args : rust_global_args,
   native : true,
 )
 

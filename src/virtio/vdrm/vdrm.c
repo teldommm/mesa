@@ -9,14 +9,19 @@
 #include "vdrm.h"
 
 struct vdrm_device * vdrm_virtgpu_connect(int fd, uint32_t context_type);
+struct vdrm_device * vdrm_vpipe_connect(uint32_t context_type);
 
 struct vdrm_device *
 vdrm_device_connect(int fd, uint32_t context_type)
 {
    struct vdrm_device *vdev;
 
-   // TODO vtest vs virtio..
-   vdev = vdrm_virtgpu_connect(fd, context_type);
+   if (fd >= 0) {
+      vdev = vdrm_virtgpu_connect(fd, context_type);
+   } else {
+      vdev = vdrm_vpipe_connect(context_type);
+   }
+
    if (!vdev)
       return NULL;
 
@@ -35,7 +40,8 @@ vdrm_device_close(struct vdrm_device *vdev)
 
 uint32_t
 vdrm_bo_create(struct vdrm_device *vdev, size_t size, uint32_t blob_flags,
-               uint64_t blob_id, struct vdrm_ccmd_req *req)
+               uint64_t blob_id, uint32_t blob_hints,
+               struct vdrm_ccmd_req *req)
 {
    uint32_t handle;
 
@@ -48,7 +54,8 @@ vdrm_bo_create(struct vdrm_device *vdev, size_t size, uint32_t blob_flags,
 
    req->seqno = ++vdev->next_seqno;
 
-   handle = vdev->funcs->bo_create(vdev, size, blob_flags, blob_id, req);
+   handle = vdev->funcs->bo_create(vdev, size, blob_flags, blob_id,
+                                   blob_hints, req);
 
    simple_mtx_unlock(&vdev->eb_lock);
 

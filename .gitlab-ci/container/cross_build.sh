@@ -8,7 +8,7 @@ set -e
 set -o xtrace
 
 export DEBIAN_FRONTEND=noninteractive
-export LLVM_VERSION="${LLVM_VERSION:=15}"
+: "${LLVM_VERSION:?llvm version not set!}"
 
 # Ephemeral packages (installed for this script and removed again at the end)
 EPHEMERAL=(
@@ -25,6 +25,12 @@ DEPS=(
     "libpciaccess-dev:$arch"
     "libstdc++6:$arch"
     "libvulkan-dev:$arch"
+    "libwayland-client0:$arch"
+    "libwayland-cursor0:$arch"
+    "libwayland-dev:$arch"
+    "libwayland-egl1:$arch"
+    "libwayland-egl-backend-dev:$arch"
+    "libwayland-server0:$arch"
     "libx11-dev:$arch"
     "libx11-xcb-dev:$arch"
     "libxcb-dri2-0-dev:$arch"
@@ -39,7 +45,7 @@ DEPS=(
     "libxrandr-dev:$arch"
     "libxshmfence-dev:$arch"
     "libxxf86vm-dev:$arch"
-    "libwayland-dev:$arch"
+    "wayland-protocols:$arch"
 )
 
 dpkg --add-architecture $arch
@@ -79,8 +85,6 @@ fi
 # dependencies where we want a specific version
 MULTIARCH_PATH=$(dpkg-architecture -A $arch -qDEB_TARGET_MULTIARCH)
 export EXTRA_MESON_ARGS="--cross-file=/cross_file-${arch}.txt -D libdir=lib/${MULTIARCH_PATH}"
-. .gitlab-ci/container/build-wayland.sh
-
 . .gitlab-ci/container/build-directx-headers.sh
 
 apt-get purge -y "${EPHEMERAL[@]}"

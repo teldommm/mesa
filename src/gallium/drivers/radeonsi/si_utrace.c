@@ -12,7 +12,7 @@
 #include "util/hash_table.h"
 
 
-static void si_utrace_record_ts(struct u_trace *trace, void *cs, void *timestamps,
+static bool si_utrace_record_ts(struct u_trace *trace, void *cs, void *timestamps,
                                 uint64_t offset_B, uint32_t flags)
 {
    struct si_context *ctx = container_of(trace, struct si_context, trace);
@@ -21,23 +21,25 @@ static void si_utrace_record_ts(struct u_trace *trace, void *cs, void *timestamp
 
    if (ctx->gfx_cs.current.buf == ctx->last_timestamp_cmd &&
        ctx->gfx_cs.current.cdw == ctx->last_timestamp_cmd_cdw) {
-      uint64_t *ts = si_buffer_map(ctx, ts_bo, PIPE_MAP_READ) + offset_B;
+      uint64_t *ts = (uint64_t *)((char *)si_buffer_map(ctx, ts_bo, PIPE_MAP_READ) + offset_B);
       *ts = U_TRACE_NO_TIMESTAMP;
-      return;
+      return true;
    }
 
    si_emit_ts(ctx, ts_bo, offset_B);
    ctx->last_timestamp_cmd = ctx->gfx_cs.current.buf;
    ctx->last_timestamp_cmd_cdw = ctx->gfx_cs.current.cdw;
+
+   return true;
 }
 
 static uint64_t si_utrace_read_ts(struct u_trace_context *utctx, void *timestamps,
-                                  uint64_t offset_B, void *flush_data)
+                                  uint64_t offset_B, uint32_t flags, void *flush_data)
 {
    struct si_context *ctx = container_of(utctx, struct si_context, ds.trace_context);
    struct pipe_resource *buffer = timestamps;
 
-   uint64_t *ts = si_buffer_map(ctx, si_resource(buffer), PIPE_MAP_READ) + offset_B;
+   uint64_t *ts = (uint64_t *)((char *)si_buffer_map(ctx, si_resource(buffer), PIPE_MAP_READ) + offset_B);
 
    /* Don't translate the no-timestamp marker: */
    if (*ts == U_TRACE_NO_TIMESTAMP)
@@ -71,6 +73,7 @@ void si_utrace_init(struct si_context *sctx)
 void si_utrace_fini(struct si_context *sctx)
 {
    si_ds_device_fini(&sctx->ds);
+   u_trace_fini(&sctx->trace);
 }
 
 void si_utrace_flush(struct si_context *sctx, uint64_t submission_id)

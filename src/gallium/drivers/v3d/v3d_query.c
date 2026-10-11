@@ -22,6 +22,8 @@
  */
 
 #include "v3d_query.h"
+#include "broadcom/common/v3d_submit_util.h"
+#include "util/ralloc.h"
 
 int
 v3d_get_driver_query_group_info(struct pipe_screen *pscreen, unsigned index,
@@ -67,6 +69,7 @@ v3d_get_driver_query_info(struct pipe_screen *pscreen, unsigned index,
         info->query_type = PIPE_QUERY_DRIVER_SPECIFIC + index;
         info->result_type = PIPE_DRIVER_QUERY_RESULT_TYPE_CUMULATIVE;
         info->type = PIPE_DRIVER_QUERY_TYPE_UINT64;
+        info->max_value.u64 = 0;
         info->flags = PIPE_DRIVER_QUERY_FLAG_BATCH;
 
         return 1;
@@ -149,6 +152,108 @@ v3d_render_condition(struct pipe_context *pipe,
         v3d->cond_mode = mode;
 }
 
+/* helpers for multisync common code */
+static void *
+multisync_zalloc(void *mem_ctx, size_t size)
+{
+        struct v3d_context *v3d = mem_ctx;
+        return rzalloc_size(v3d, size);
+}
+
+static void
+multisync_free(void *mem_ctx, void *ptr)
+{
+        ralloc_free(ptr);
+}
+
+static bool
+multisync_set(struct v3d_context *v3d, struct v3d_multisync *ms,
+              struct v3d_submit_sync_info *sync_info,
+              struct drm_v3d_extension *next, enum v3d_queue wait_stage)
+{
+        assert(ms);
+        ms->ops.zalloc = multisync_zalloc;
+        ms->ops.free = multisync_free;
+        ms->ops.mem_ctx = NULL;
+
+        bool ret = v3d_multisync_init(ms, wait_stage,
+                                      sync_info->waits,
+                                      sync_info->wait_count,
+                                      sync_info->signals,
+                                      sync_info->signal_count,
+                                      next);
+
+        if (!ret)
+                mesa_loge("Multisync Set Failed");
+
+        return ret;
+}
+
+uint64_t
+v3d_get_timestamp(struct pipe_context *pctx)
+{
+        /* Calling glGetInteger64v with GL_TIMESTAMP will return the GPU
+         * timestamp when all previously given commands have issued, but not
+         * necessarily completed
+         */
+        v3d_flush(pctx);
+
+        /* Use os_time_get_nano as all of our timestamps come from the CPU clock */
+        return os_time_get_nano();
+}
+
+int
+v3d_submit_timestamp_query(struct pipe_context *pctx, struct v3d_bo *bo,
+                           uint32_t sync, uint32_t offset)
+{
+        struct v3d_context *v3d = v3d_context(pctx);
+        struct v3d_screen *screen = v3d->screen;
+        int ret;
+
+        /* check for multisync support */
+        assert(screen->has_multisync);
+
+        /* check for a valid bo to store the timestamp result */
+        assert(bo);
+
+        /* check for a valid syncobj */
+        assert(sync);
+
+        struct drm_v3d_timestamp_query timestamp = {0};
+
+        v3d_submit_ext_set(&timestamp.base, NULL, DRM_V3D_EXT_ID_CPU_TIMESTAMP_QUERY, 0);
+
+        timestamp.count = 1;
+        timestamp.offsets = (uintptr_t)(void *)&offset;
+        timestamp.syncs = (uintptr_t)(void *)&sync;
+
+        struct v3d_submit_sync_info sync_info = {
+           .wait_count = 1,
+           .waits = &v3d->out_sync,
+           .signal_count = 1,
+           .signals = &v3d->out_sync,
+        };
+
+        struct v3d_multisync ms = {0};
+
+        if (!multisync_set(v3d, &ms, &sync_info, (void *)&timestamp, V3D_CPU))
+           return -ENOMEM;
+
+        struct drm_v3d_submit_cpu submit = {0};
+
+        submit.bo_handle_count = 1;
+        submit.bo_handles = (uintptr_t)(void *)&bo->handle;
+        submit.flags |= DRM_V3D_SUBMIT_EXTENSION;
+        submit.extensions = (uintptr_t)(void *)&ms.ext;
+
+        ret = v3d_ioctl(screen->fd, DRM_IOCTL_V3D_SUBMIT_CPU, &submit);
+        if (ret)
+           mesa_loge("Failed to submit cpu job: %s", strerror(errno));
+
+        v3d_multisync_free(&ms);
+        return ret;
+}
+
 void
 v3d_query_init(struct pipe_context *pctx)
 {
@@ -160,4 +265,5 @@ v3d_query_init(struct pipe_context *pctx)
         pctx->get_query_result = v3d_get_query_result;
         pctx->set_active_query_state = v3d_set_active_query_state;
         pctx->render_condition = v3d_render_condition;
+        pctx->get_timestamp = v3d_get_timestamp;
 }

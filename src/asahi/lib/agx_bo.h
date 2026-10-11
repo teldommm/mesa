@@ -88,6 +88,11 @@ struct agx_bo {
    /* Process-local index */
    uint32_t handle;
 
+   /* Handle to refer to this BO in uAPI calls. This is either the GEM handle
+    * on native Linux, or the virtio resource ID with virtgpu.
+    */
+   uint32_t uapi_handle;
+
    /* DMA-BUF fd clone for adding fences to imports/exports */
    int prime_fd;
 
@@ -99,10 +104,6 @@ struct agx_bo {
 
    /* For debugging */
    const char *label;
-
-   /* virtio blob_id */
-   uint32_t blob_id;
-   uint32_t vbo_res_id;
 };
 
 static inline uint32_t
@@ -131,6 +132,7 @@ void agx_bo_reference(struct agx_bo *bo);
 void agx_bo_unreference(struct agx_device *dev, struct agx_bo *bo);
 struct agx_bo *agx_bo_import(struct agx_device *dev, int fd);
 int agx_bo_export(struct agx_device *dev, struct agx_bo *bo);
+void agx_bo_make_shared(struct agx_device *dev, struct agx_bo *bo);
 
 void agx_bo_free(struct agx_device *dev, struct agx_bo *bo);
 struct agx_bo *agx_bo_cache_fetch(struct agx_device *dev, size_t size,

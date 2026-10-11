@@ -41,11 +41,7 @@ bool dxil_nir_flatten_var_arrays(nir_shader *shader, nir_variable_mode modes);
 bool dxil_nir_lower_var_bit_size(nir_shader *shader, nir_variable_mode modes,
                                  unsigned min_bit_size, unsigned max_bit_size);
 bool dxil_nir_remove_oob_array_accesses(nir_shader *shader);
-struct dxil_nir_lower_loads_stores_options {
-   bool use_16bit_ssbo;
-};
-bool dxil_nir_lower_loads_stores_to_dxil(nir_shader *shader,
-                                         const struct dxil_nir_lower_loads_stores_options *options);
+bool dxil_nir_scratch_and_shared_to_dxil(nir_shader *shader);
 bool dxil_nir_lower_deref_ssbo(nir_shader *shader);
 bool dxil_nir_opt_alu_deref_srcs(nir_shader *shader);
 bool dxil_nir_lower_upcast_phis(nir_shader *shader, unsigned min_bit_size);
@@ -69,7 +65,7 @@ void
 dxil_reassign_driver_locations(nir_shader* s, nir_variable_mode modes,
    uint64_t other_stage_mask, const BITSET_WORD *other_stage_frac_mask);
 
-void dxil_nir_split_tess_ctrl(nir_shader *nir, nir_function **patch_const_func);
+bool dxil_nir_split_tess_ctrl(nir_shader *nir, nir_function **patch_const_func);
 bool dxil_nir_fixup_tess_level_for_domain(nir_shader *nir);
 bool dxil_nir_set_tcs_patches_in(nir_shader *nir, unsigned num_control_points);
 bool dxil_nir_lower_ubo_array_one_to_static(nir_shader *s);
@@ -93,6 +89,12 @@ bool dxil_nir_kill_undefined_varyings(nir_shader *shader, uint64_t prev_stage_wr
                                       uint32_t prev_stage_patch_written_mask, const BITSET_WORD *prev_stage_frac_output_mask);
 bool dxil_nir_kill_unused_outputs(nir_shader *shader, uint64_t next_stage_read_mask,
                                   uint32_t next_stage_patch_read_mask, const BITSET_WORD *next_stage_frac_input_mask);
+void dxil_nir_propagate_interp_to_outputs(nir_shader *prev_stage_nir,
+                                          const nir_shader *fs_nir);
+
+/* Synthesize placeholder TES inputs mirroring TCS outputs the consumer
+ * doesn't already declare, so DXIL signature shapes match. */
+bool dxil_nir_pad_tes_input_signature(nir_shader *tes, const nir_shader *tcs);
 
 #ifdef __cplusplus
 }

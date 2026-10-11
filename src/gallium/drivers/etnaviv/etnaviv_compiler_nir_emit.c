@@ -50,7 +50,7 @@ static const struct etna_op_info etna_ops[] = {
 #define IOP(nir, op) IOPC(nir, op, TRUE)
 #define UOP(nir, op) UOPC(nir, op, TRUE)
    OP(mov, MOV), OP(fneg, MOV), OP(fabs, MOV), OP(fsat, MOV),
-   OP(fmul, MUL), OP(fadd, ADD), OP(ffma, MAD),
+   OP(fmul, MUL), OP(fadd, ADD), OP(fmad, MAD),
    OP(fdot2, DP2), OP(fdot3, DP3), OP(fdot4, DP4),
    OPC(fmin, SELECT, GT), OPC(fmax, SELECT, LT),
    OP(ffract, FRC), OP(frcp, RCP), OP(frsq, RSQ),
@@ -64,18 +64,20 @@ static const struct etna_op_info etna_ops[] = {
    /* type convert */
    IOP(i2f32, I2F),
    IOP(i2i32, I2I),
-   OPCT(i2i16, I2I, TRUE, S16),
-   OPCT(i2i8,  I2I, TRUE, S8),
+   IOP(i2i16, I2I),
+   IOP(i2i8,  I2I),
    UOP(u2f32, I2F),
    UOP(u2u32, I2I),
-   OPCT(u2u16, I2I, TRUE, U16),
-   OPCT(u2u8,  I2I, TRUE, U8),
+   UOP(u2u16, I2I),
+   UOP(u2u8,  I2I),
    IOP(f2i32, F2I),
    OPCT(f2i16, F2I, TRUE, S16),
    OPCT(f2i8,  F2I, TRUE, S8),
    UOP(f2u32, F2I),
    OPCT(f2u16, F2I, TRUE, U16),
    OPCT(f2u8,  F2I, TRUE, U8),
+   OPCT(f2f16, CONV, TRUE, F16),
+   OPCT(f2f32, CONV, TRUE, F32),
    UOP(b2f32, AND), /* AND with fui(1.0f) */
    UOP(b2i32, AND), /* AND with 1 */
    UOP(b2i8, AND),  /* AND with 1 */
@@ -116,12 +118,44 @@ static const struct etna_op_info etna_ops[] = {
    IOP(ishr, RSHIFT),
    UOP(ushr, RSHIFT),
    UOP(uclz, LEADZERO),
+   UOP(bitfield_reverse, BIT_REV),
+   UOP(bit_count, POPCOUNT),
+   UOP(ubitfield_extract, BIT_EXTRACT),
+   IOP(ibitfield_extract, BIT_EXTRACT),
+   IOP(bitfield_insert_etna, BIT_INSERT),
 };
 
-void
-etna_emit_alu(struct etna_compile *c, nir_op op, struct etna_inst_dst dst,
-              struct etna_inst_src src[3], bool saturate)
+static enum isa_type
+i2i_type(unsigned bit_size, bool is_signed)
 {
+   switch (bit_size) {
+   case 32: return is_signed ? ISA_TYPE_S32 : ISA_TYPE_U32;
+   case 16: return is_signed ? ISA_TYPE_S16 : ISA_TYPE_U16;
+   case 8:  return is_signed ? ISA_TYPE_S8 : ISA_TYPE_U8;
+   default: UNREACHABLE("unsupported i2i width");
+   }
+}
+
+static struct etna_inst_src
+i2i_dst_type(unsigned bit_size, bool is_signed)
+{
+   unsigned code;
+
+   switch (bit_size) {
+   case 32: code = is_signed ? 2 : 5; break;
+   case 16: code = is_signed ? 3 : 6; break;
+   case 8:  code = is_signed ? 4 : 7; break;
+   default: UNREACHABLE("unsupported i2i width");
+   }
+
+   return etna_immediate_int(code << 4);
+}
+
+void
+etna_emit_alu(struct etna_compile *c, nir_alu_instr *alu, struct etna_inst_dst dst,
+              struct etna_inst_src src[3])
+{
+   nir_op op = alu->op;
    struct etna_op_info ei = etna_ops[op];
    unsigned swiz_scalar = INST_SWIZ_BROADCAST(ffs(dst.write_mask) - 1);
 
@@ -133,7 +167,7 @@ etna_emit_alu(struct etna_compile *c, nir_op op, struct etna_inst_dst dst,
       .type = ei.type,
       .cond = ei.cond,
       .dst = dst,
-      .sat = saturate,
+      .sat = op == nir_op_fsat,
       .src[0] = src[0],
       .src[1] = src[1],
       .src[2] = src[2],
@@ -172,6 +206,24 @@ etna_emit_alu(struct etna_compile *c, nir_op op, struct etna_inst_dst dst,
    case nir_op_b2i32:
       inst.src[1] = etna_immediate_int(1);
       break;
+   case nir_op_f2f16:
+      inst.src[1] = etna_immediate_int(0);
+      break;
+   case nir_op_f2f32:
+      inst.src[1] = etna_immediate_int(1);
+      break;
+   case nir_op_i2i32:
+   case nir_op_i2i16:
+   case nir_op_i2i8:
+      inst.type = i2i_type(alu->src[0].src.ssa->bit_size, true);
+      inst.src[1] = i2i_dst_type(alu->def.bit_size, true);
+      break;
+   case nir_op_u2u32:
+   case nir_op_u2u16:
+   case nir_op_u2u8:
+      inst.type = i2i_type(alu->src[0].src.ssa->bit_size, false);
+      inst.src[1] = i2i_dst_type(alu->def.bit_size, false);
+      break;
    case nir_op_ineg:
       /* ADD 0, -x */
       inst.src[0] = etna_immediate_int(0);
@@ -190,13 +242,19 @@ etna_emit_alu(struct etna_compile *c, nir_op op, struct etna_inst_dst dst,
 }
 
 void
-etna_emit_tex(struct etna_compile *c, nir_texop op, unsigned texid, unsigned dst_swiz,
+etna_emit_tex(struct etna_compile *c, nir_tex_instr * tex, unsigned dst_swiz,
               struct etna_inst_dst dst, struct etna_inst_src coord,
               struct etna_inst_src src1, struct etna_inst_src src2)
 {
+   /* With unified samplers the VS sampler index is 0-based and the per-stage
+    * base comes from VS_SAMPLER_BASE at draw time.
+    */
+   unsigned sampler_base = (is_fs(c) || c->specs->unified_samplers)
+                           ? 0 : c->specs->vertex_sampler_offset;
+
    struct etna_inst inst = {
       .dst = dst,
-      .tex.id = texid + (is_fs(c) ? 0 : c->specs->vertex_sampler_offset),
+      .tex.id = tex->sampler_index + sampler_base,
       .tex.swiz = dst_swiz,
       .src[0] = coord,
    };
@@ -207,13 +265,21 @@ etna_emit_tex(struct etna_compile *c, nir_texop op, unsigned texid, unsigned dst
    if (src2.use)
       inst.src[2] = src2;
 
-   switch (op) {
+   switch (tex->op) {
    case nir_texop_tex: inst.opcode = ISA_OPC_TEXLD; break;
    case nir_texop_txb: inst.opcode = ISA_OPC_TEXLDB; break;
-   case nir_texop_txd: inst.opcode = ISA_OPC_TEXLDD; break;
-   case nir_texop_txl: inst.opcode = ISA_OPC_TEXLDL; break;
+   case nir_texop_txd: inst.opcode = tex->is_shadow ? ISA_OPC_TEXLDGPCF : ISA_OPC_TEXLDD; break;
+   case nir_texop_txl: inst.opcode = tex->is_shadow ? ISA_OPC_TEXLDLPCF : ISA_OPC_TEXLDL; break;
+   case nir_texop_txf:
+      inst.opcode = ISA_OPC_TXF;
+      inst.src[2] = etna_immediate_int(0x1100);
+      break;
+   case nir_texop_tg4:
+      inst.opcode = ISA_OPC_TG4;
+      inst.src[1] = etna_immediate_int(tex->component);
+      break;
    default:
-      compile_error(c, "Unhandled NIR tex type: %d\n", op);
+      compile_error(c, "Unhandled NIR tex type: %d\n", tex->op);
    }
 
    emit_inst(c, &inst);
@@ -247,7 +313,7 @@ etna_emit_discard(struct etna_compile *c, struct etna_inst_src condition)
    }
 
    struct etna_inst inst = {
-      .opcode = ISA_OPC_TEXKILL,
+      .opcode = ISA_OPC_TEXKILL_UNARY,
       .cond = ISA_COND_NZ,
       .type = (c->info->halti < 2) ? ISA_TYPE_F32 : ISA_TYPE_U32,
       .src[0] = condition,

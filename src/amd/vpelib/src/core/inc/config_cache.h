@@ -74,13 +74,13 @@ struct config_cache {
     bool     cached;
 };
 
-/* A macro that helps cache the config packet, it won't cache if it is in bypass mode
+/* A macro that helps cache the config packet, it will not cache if it is in bypass mode
  * as bypass mode is not heavy lifting programming.
  *
  * /param   obj_cache           an object that has the config cache member
  * /param   ctx                 an input/output context that contains the configs vector
  * /param   disable_cache       a flag that controls a caching is needed
- * /param   is_bypass           if it is in bypass, it doesn't cache the bypass config
+ * /param   is_bypass           if it is in bypass, it does not cache the bypass config
  * /param   program_func_call   the program call that generate config packet content
  * /param   inst                index to address the config_cache array
  */
@@ -91,7 +91,7 @@ struct config_cache {
         if ((obj_cache) && !disable_cache && (obj_cache)->config_cache[inst].p_buffer &&           \
             (obj_cache)->config_cache[inst].cached && !((obj_cache)->dirty[inst]) && !is_bypass) { \
             /* make sure it opens a new config packet */                                           \
-            config_writer_force_new_with_type(config_writer, CONFIG_TYPE_DIRECT);                  \
+            config_writer_force_new_with_type(config_writer, CONFIG_TYPE_DIRECT, inst);            \
                                                                                                    \
             /* reuse the cache */                                                                  \
             if (config_writer->buf->size >= (obj_cache)->config_cache[inst].size) {                \
@@ -114,8 +114,8 @@ struct config_cache {
                                                                                                    \
             if (!is_bypass) {                                                                      \
                 /* make sure it opens a new config packet so we can cache a complete new config */ \
-                /* for bypass we don't do caching, so no need to open a new desc */                \
-                config_writer_force_new_with_type(config_writer, CONFIG_TYPE_DIRECT);              \
+                /* for bypass we do not do caching, so no need to open a new desc */               \
+                config_writer_force_new_with_type(config_writer, CONFIG_TYPE_DIRECT, inst);        \
             }                                                                                      \
                                                                                                    \
             start = config_writer->base_cpu_va;                                                    \
@@ -132,7 +132,8 @@ struct config_cache {
                             if ((obj_cache)->config_cache[inst].p_buffer)                          \
                                 vpe_free((obj_cache)->config_cache[inst].p_buffer);                \
                                                                                                    \
-                            (obj_cache)->config_cache[inst].p_buffer = vpe_zalloc((size_t)size);   \
+                            (obj_cache)->config_cache[inst].p_buffer =                             \
+                                (uint8_t *)vpe_zalloc((size_t)size);                               \
                             if ((obj_cache)->config_cache[inst].p_buffer) {                        \
                                 memcpy((obj_cache)->config_cache[inst].p_buffer,                   \
                                     (void *)(uintptr_t)start, (size_t)size);                       \

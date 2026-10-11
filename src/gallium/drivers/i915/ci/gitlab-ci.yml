@@ -1,23 +1,12 @@
 include:
   - local: 'src/intel/ci/gitlab-ci-inc.yml'
+  - local: 'src/gallium/drivers/i915/ci/gitlab-ci-inc.yml'
 
-# Manual test rules for using g33 in ondracka r300 farm.
-.ondracka-g33-test:
-  extends:
-    - .b2c-x86_64-test-gl
-    - .i915g-manual-rules
-  tags:
-    - intelgpu:codename:G33
-  variables:
-    FDO_CI_CONCURRENT: 2
-    GPU_VERSION: i915-g33
-    B2C_INITRAMFS_URL: https://gitlab.freedesktop.org/gfx-ci/boot2container/-/releases/v0.9.12.3/downloads/initramfs.linux_amd64.cpio.xz
-    B2C_KERNEL_URL: https://gitlab.freedesktop.org/gfx-ci/boot2container/-/releases/v0.9.12.3/downloads/linux-x86_64
 
 i915-g33:
   extends:
     - .ondracka-g33-test
-    - .b2c-deqp-test
+    - .test-piglit
   variables:
     DEQP_SUITE: i915g
     PIGLIT_PLATFORM: gbm

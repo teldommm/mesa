@@ -89,7 +89,7 @@ nir_def *
 ir3_nir_try_propagate_bit_shift(nir_builder *b, nir_def *offset,
                                 int32_t shift)
 {
-   nir_instr *offset_instr = offset->parent_instr;
+   nir_instr *offset_instr = nir_def_instr(offset);
    if (offset_instr->type != nir_instr_type_alu)
       return NULL;
 
@@ -126,37 +126,41 @@ ir3_nir_try_propagate_bit_shift(nir_builder *b, nir_def *offset,
    return new_offset;
 }
 
-static nir_def *
-create_shift(nir_builder *b, nir_def *offset, int shift)
+/* isam doesn't have an "untyped" field, so it can only load 1 component at a
+ * time because our storage buffer descriptors use a 1-component format.
+ * Therefore we need to scalarize any loads that would use isam.
+ */
+static void
+scalarize_load(nir_intrinsic_instr *intrinsic, nir_builder *b)
 {
-   /* If the offset to be shifted has the form "iadd constant, foo" don't shift
-    * the result but transform it to "iadd constant>>shift, (ushr foo, shift)".
-    * This ensures nir_opt_offsets (which only looks for iadds) can fold the
-    * constant into the immediate offset.
-    */
-   if (offset->parent_instr->type == nir_instr_type_alu) {
-      nir_alu_instr *offset_instr = nir_instr_as_alu(offset->parent_instr);
+   struct nir_def *results[NIR_MAX_VEC_COMPONENTS];
 
-      if (offset_instr->op == nir_op_iadd &&
-          nir_src_is_const(offset_instr->src[0].src)) {
-         nir_def *new_shift = ir3_nir_try_propagate_bit_shift(
-            b, offset_instr->src[1].src.ssa, -shift);
+   nir_def *descriptor = intrinsic->src[0].ssa;
+   nir_def *offset = intrinsic->src[1].ssa;
+   nir_def *record = nir_channel(b, offset, 0);
+   nir_def *record_offset = nir_channel(b, offset, 1);
 
-         if (!new_shift)
-            new_shift = nir_ushr_imm(b, offset_instr->src[1].src.ssa, shift);
-
-         return nir_iadd_imm(
-            b, new_shift,
-            nir_src_as_const_value(offset_instr->src[0].src)->u32 >> shift);
-      }
+   for (unsigned i = 0; i < intrinsic->def.num_components; i++) {
+      results[i] =
+         nir_load_uav_ir3(b, 1, intrinsic->def.bit_size, descriptor,
+                          nir_vec2(b, record, 
+                                   nir_iadd_imm(b, record_offset, i)),
+                          .access = nir_intrinsic_access(intrinsic),
+                          .align_mul = nir_intrinsic_align_mul(intrinsic),
+                          .align_offset = nir_intrinsic_align_offset(intrinsic));
    }
 
-   return nir_ushr_imm(b, offset, shift);
+   nir_def *result = nir_vec(b, results, intrinsic->def.num_components);
+
+   nir_def_rewrite_uses(&intrinsic->def, result);
+
+   nir_instr_remove(&intrinsic->instr);
 }
 
 static bool
 lower_offset_for_ssbo(nir_intrinsic_instr *intrinsic, nir_builder *b,
-                      unsigned ir3_ssbo_opcode, uint8_t offset_src_idx)
+                      unsigned ir3_ssbo_opcode, uint8_t offset_src_idx,
+                      struct ir3_compiler *c)
 {
    unsigned num_srcs = nir_intrinsic_infos[intrinsic->intrinsic].num_srcs;
    int shift = 2;
@@ -176,7 +180,11 @@ lower_offset_for_ssbo(nir_intrinsic_instr *intrinsic, nir_builder *b,
 
    if ((has_dest && intrinsic->def.bit_size == 64) ||
        (!has_dest && intrinsic->src[0].ssa->bit_size == 64)) {
-      shift = 1;
+      /* a7xx quirk, 64b atomics against a 16b raw buffer have offset
+       * in units of 16b instead of dword:
+       */
+      if (c->gen == 7)
+         shift = 1;
    }
 
    /* Here we create a new intrinsic and copy over all contents from the old
@@ -191,16 +199,6 @@ lower_offset_for_ssbo(nir_intrinsic_instr *intrinsic, nir_builder *b,
    new_intrinsic = nir_intrinsic_instr_create(b->shader, ir3_ssbo_opcode);
 
    nir_def *offset = intrinsic->src[offset_src_idx].ssa;
-
-   /* Since we don't have value range checking, we first try to propagate
-    * the division by 4 ('offset >> 2') into another bit-shift instruction that
-    * possibly defines the offset. If that's the case, we emit a similar
-    * instructions adjusting (merging) the shift value.
-    *
-    * Here we use the convention that shifting right is negative while shifting
-    * left is positive. So 'x / 4' ~ 'x >> 2' or 'x << -2'.
-    */
-   nir_def *new_offset = ir3_nir_try_propagate_bit_shift(b, offset, -shift);
 
    /* The new source that will hold the dword-offset is always the last
     * one for every intrinsic.
@@ -220,23 +218,37 @@ lower_offset_for_ssbo(nir_intrinsic_instr *intrinsic, nir_builder *b,
 
    nir_intrinsic_copy_const_indices(new_intrinsic, intrinsic);
 
-   new_intrinsic->num_components = intrinsic->num_components;
+   if (ir3_ssbo_opcode == nir_intrinsic_ssbo_atomic_ir3 ||
+       ir3_ssbo_opcode == nir_intrinsic_ssbo_atomic_swap_ir3) {
+      assert(intrinsic->num_components == 1);
+      new_intrinsic->num_components = 0;
+   } else {
+      new_intrinsic->num_components = intrinsic->num_components;
+   }
+   int cur_shift = nir_intrinsic_offset_shift(intrinsic);
+   int extra_shift = shift - cur_shift;
 
-   /* If we managed to propagate the division by 4, just use the new offset
-    * register and don't emit the SHR.
+   /* TODO if the intrinsic has a BASE, we have to be careful when inserting a
+    * right shift as the offset may be negative. So we'd have to add the BASE to
+    * the offset before shifting. For now, as our input intrinsics don't support
+    * BASE, we don't have to implement this yet.
     */
-   if (new_offset)
-      offset = new_offset;
-   else
-      offset = create_shift(b, offset, shift);
+   assert(!nir_intrinsic_has_base(intrinsic));
+
+   if (extra_shift > 0) {
+      offset = nir_ushr_imm(b, offset, extra_shift);
+   } else {
+      offset = nir_ishl_imm(b, offset, -extra_shift);
+   }
 
    /* Insert the new intrinsic right before the old one. */
    nir_builder_instr_insert(b, &new_intrinsic->instr);
 
    /* Replace the last source of the new intrinsic by the result of
-    * the offset divided by 4.
+    * the offset shifted to the correct unit.
     */
    nir_src_rewrite(target_src, offset);
+   nir_intrinsic_set_offset_shift(new_intrinsic, shift);
 
    if (has_dest) {
       /* Replace the uses of the original destination by that
@@ -251,8 +263,55 @@ lower_offset_for_ssbo(nir_intrinsic_instr *intrinsic, nir_builder *b,
    return true;
 }
 
+/* On a6xx, global memory is accessed in units of the type size. Legalize
+ * offset_shift to correspond to this.
+ */
 static bool
-lower_io_offsets_block(nir_block *block, nir_builder *b, void *mem_ctx)
+lower_offset_for_global(nir_builder *b, nir_intrinsic_instr *intr,
+                        struct ir3_compiler *compiler)
+{
+   if (compiler->gen >= 7) {
+      assert(nir_intrinsic_offset_shift(intr) == 0);
+      return false;
+   }
+
+   unsigned bit_size = intr->intrinsic == nir_intrinsic_load_global_offset
+                          ? intr->def.bit_size
+                          : intr->src[0].ssa->bit_size;
+
+   assert(bit_size < 64);
+
+   int shift = ffs(bit_size / 8) - 1;
+   int cur_shift = nir_intrinsic_offset_shift(intr);
+   int extra_shift = shift - cur_shift;
+
+   if (extra_shift == 0) {
+      return false;
+   }
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   nir_src *offset_src = nir_get_io_offset_src(intr);
+   nir_io_offset new_offset = {
+      .def = ir3_nir_try_propagate_bit_shift(b, offset_src->ssa, -extra_shift),
+      .shift = shift,
+   };
+
+   if (!new_offset.def) {
+      if (extra_shift > 0) {
+         new_offset.def = nir_ushr_imm(b, offset_src->ssa, extra_shift);
+      } else {
+         new_offset.def = nir_ishl_imm(b, offset_src->ssa, -extra_shift);
+      }
+   }
+
+   nir_set_io_offset(intr, new_offset);
+   return true;
+}
+
+static bool
+lower_io_offsets_block(nir_block *block, nir_builder *b, void *mem_ctx,
+                       struct ir3_compiler *c)
 {
    bool progress = false;
 
@@ -269,7 +328,21 @@ lower_io_offsets_block(nir_block *block, nir_builder *b, void *mem_ctx)
          get_ir3_intrinsic_for_ssbo_intrinsic(intr->intrinsic, &offset_src_idx);
       if (ir3_intrinsic != -1) {
          progress |= lower_offset_for_ssbo(intr, b, (unsigned)ir3_intrinsic,
-                                           offset_src_idx);
+                                           offset_src_idx, c);
+      }
+
+      if (intr->intrinsic == nir_intrinsic_load_uav_ir3 &&
+          (nir_intrinsic_access(intr) & ACCESS_CAN_REORDER) &&
+          ir3_bindless_resource(intr->src[0]) &&
+          intr->num_components > 1) {
+         b->cursor = nir_before_instr(instr);
+         scalarize_load(intr, b);
+         progress = true;
+      }
+
+      if (intr->intrinsic == nir_intrinsic_load_global_offset ||
+          intr->intrinsic == nir_intrinsic_store_global_offset) {
+         progress |= lower_offset_for_global(b, intr, c);
       }
    }
 
@@ -277,32 +350,27 @@ lower_io_offsets_block(nir_block *block, nir_builder *b, void *mem_ctx)
 }
 
 static bool
-lower_io_offsets_func(nir_function_impl *impl)
+lower_io_offsets_func(nir_function_impl *impl, struct ir3_compiler *c)
 {
    void *mem_ctx = ralloc_parent(impl);
    nir_builder b = nir_builder_create(impl);
 
    bool progress = false;
    nir_foreach_block_safe (block, impl) {
-      progress |= lower_io_offsets_block(block, &b, mem_ctx);
+      progress |= lower_io_offsets_block(block, &b, mem_ctx, c);
    }
 
-   if (progress) {
-      nir_metadata_preserve(impl,
-                            nir_metadata_control_flow);
-   }
-
-   return progress;
+   return nir_progress(progress, impl, nir_metadata_control_flow);
 }
 
 bool
-ir3_nir_lower_io_offsets(nir_shader *shader)
+ir3_nir_lower_io_offsets(nir_shader *shader, struct ir3_compiler *c)
 {
    bool progress = false;
 
    nir_foreach_function (function, shader) {
       if (function->impl)
-         progress |= lower_io_offsets_func(function->impl);
+         progress |= lower_io_offsets_func(function->impl, c);
    }
 
    return progress;
@@ -313,17 +381,73 @@ ir3_nir_max_imm_offset(nir_intrinsic_instr *intrin, const void *data)
 {
    const struct ir3_compiler *compiler = data;
 
-   if (!compiler->has_ssbo_imm_offsets)
-      return 0;
-
    switch (intrin->intrinsic) {
    case nir_intrinsic_load_ssbo_ir3:
+      if (!compiler->info->props.has_ssbo_imm_offsets)
+         return 0;
       if ((nir_intrinsic_access(intrin) & ACCESS_CAN_REORDER) &&
           !(compiler->options.storage_8bit && intrin->def.bit_size == 8))
          return 255; /* isam.v */
       return 127;    /* ldib.b */
    case nir_intrinsic_store_ssbo_ir3:
+      if (!compiler->info->props.has_ssbo_imm_offsets)
+         return 0;
       return 127; /* stib.b */
+   case nir_intrinsic_load_global_offset:
+   case nir_intrinsic_store_global_offset:
+      /* The immediate offset field is larger for ldg/stg than for their .a
+       * versions. Return the max for .a. If the offset src itself turns out to
+       * be constant and doesn't fit in BASE, but does fit in ldg/stg, we can
+       * detect this when emitting the ir3 instruction.
+       */
+      if (compiler->gen >= 7)
+         return 255;
+      return 3;
+   default:
+      return 0;
+   }
+}
+
+bool
+ir3_nir_allow_base_offset_wrap(nir_intrinsic_instr *intrin, const void *data)
+{
+   switch (intrin->intrinsic) {
+   case nir_intrinsic_load_global_offset:
+   case nir_intrinsic_store_global_offset:
+      return false;
+   default:
+      return true;
+   }
+}
+
+unsigned
+ir3_nir_max_offset_shift(nir_intrinsic_instr *intr, const void *data)
+{
+   const struct ir3_compiler *compiler = data;
+   nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+   assert(util_bitcount(deref->modes) == 1);
+
+   switch (deref->modes) {
+   case nir_var_mem_ssbo:
+      /* pre-a6xx ldgb/stgb derive a byte address from this source */
+      if (compiler->gen < 6)
+         return 0;
+
+      /* SSBO accesses can be up to dword shifted for 32-bit accesses. Request
+       * that we always try to align up to that, so that vectorization can try
+       * to build accesses across bit sizes.  We'll legalize the shift for the
+       * actual access size at the end.
+       */
+      return 2;
+
+   case nir_var_mem_global:
+      if (compiler->gen >= 7 || intr->intrinsic == nir_intrinsic_deref_atomic ||
+          intr->intrinsic == nir_intrinsic_deref_atomic_swap) {
+         return 0;
+      }
+
+      return 2;
+
    default:
       return 0;
    }

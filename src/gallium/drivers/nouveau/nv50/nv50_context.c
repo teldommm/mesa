@@ -36,7 +36,8 @@ nv50_flush(struct pipe_context *pipe,
    struct nouveau_context *context = nouveau_context(pipe);
 
    if (fence)
-      nouveau_fence_ref(context->fence, (struct nouveau_fence **)fence);
+      nouveau_fence_ref(context->fence, (struct nouveau_fence **)fence,
+                        context->screen);
 
    PUSH_KICK(context->pushbuf);
 
@@ -131,14 +132,17 @@ nv50_emit_string_marker(struct pipe_context *pipe, const char *str, int len)
    }
 }
 
-void
+bool
 nv50_default_kick_notify(struct nouveau_context *context)
 {
    struct nv50_context *nv50 = nv50_context(&context->pipe);
 
-   _nouveau_fence_next(context);
+   if (!_nouveau_fence_next(context))
+      return false;
+
    _nouveau_fence_update(context->screen, true);
    nv50->state.flushed = true;
+   return true;
 }
 
 static void
@@ -150,6 +154,7 @@ nv50_context_unreference_resources(struct nv50_context *nv50)
    nouveau_bufctx_del(&nv50->bufctx);
    nouveau_bufctx_del(&nv50->bufctx_cp);
 
+   nv50_framebuffer_init(&nv50->base.pipe, NULL, nv50->fb_cbufs, &nv50->fb_zsbuf);
    util_unreference_framebuffer_state(&nv50->framebuffer);
 
    assert(nv50->num_vtxbufs <= PIPE_MAX_ATTRIBS);
@@ -214,8 +219,7 @@ nv50_invalidate_resource_storage(struct nouveau_context *ctx,
    if (bind & PIPE_BIND_RENDER_TARGET) {
       assert(nv50->framebuffer.nr_cbufs <= PIPE_MAX_COLOR_BUFS);
       for (i = 0; i < nv50->framebuffer.nr_cbufs; ++i) {
-         if (nv50->framebuffer.cbufs[i] &&
-             nv50->framebuffer.cbufs[i]->texture == res) {
+         if (nv50->framebuffer.cbufs[i].texture == res) {
             nv50->dirty_3d |= NV50_NEW_3D_FRAMEBUFFER;
             nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_FB);
             if (!--ref)
@@ -224,8 +228,7 @@ nv50_invalidate_resource_storage(struct nouveau_context *ctx,
       }
    }
    if (bind & PIPE_BIND_DEPTH_STENCIL) {
-      if (nv50->framebuffer.zsbuf &&
-          nv50->framebuffer.zsbuf->texture == res) {
+      if (nv50->framebuffer.zsbuf.texture == res) {
          nv50->dirty_3d |= NV50_NEW_3D_FRAMEBUFFER;
          nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_FB);
          if (!--ref)
@@ -335,6 +338,10 @@ nv50_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    pipe->stream_uploader = u_upload_create_default(pipe);
    if (!pipe->stream_uploader)
       goto out_err;
+
+   if (!nouveau_fence_new(&nv50->base, &nv50->base.fence))
+      goto out_err;
+
    pipe->const_uploader = pipe->stream_uploader;
 
    pipe->destroy = nv50_destroy;
@@ -408,7 +415,7 @@ nv50_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
 
    nv50->base.scratch.bo_size = 2 << 20;
 
-   util_dynarray_init(&nv50->global_residents, NULL);
+   nv50->global_residents = UTIL_DYNARRAY_INIT;
 
    // Make sure that the first TSC entry has SRGB conversion bit set, since we
    // use it as a fallback.
@@ -418,8 +425,6 @@ nv50_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    // And mark samplers as dirty so that the first slot would get bound to the
    // zero entry if it's not otherwise set.
    nv50->dirty_3d |= NV50_NEW_3D_SAMPLERS;
-
-   nouveau_fence_new(&nv50->base, &nv50->base.fence);
 
    return pipe;
 

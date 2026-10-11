@@ -9,6 +9,17 @@
 #include "tu_rmv.h"
 #include "tu_suballoc.h"
 
+uint32_t tu_cs_fail_sink[TU_CS_FAIL_SINK_SIZE];
+
+/* There is a limit to IB size supported by HW,
+ * which appears to be 0x0fffff.
+ */
+inline uint32_t
+tu_sanitize_ib_size(uint32_t size)
+{
+   return MIN2(size, 0x0fffff);
+}
+
 /**
  * Initialize a command stream.
  */
@@ -112,13 +123,17 @@ tu_cs_get_offset(const struct tu_cs *cs)
    return (cs->refcount_bo || bos->bo_count != 0) ? cs->start - (uint32_t *) tu_cs_current_bo(cs)->map : 0;
 }
 
-/* Get the iova for the next dword to be emitted. Useful after
+/**
+ * Get the iova for the next dword to be emitted. Useful after
  * tu_cs_reserve_space() to create a patch point that can be overwritten on
  * the GPU.
  */
 uint64_t
 tu_cs_get_cur_iova(const struct tu_cs *cs)
 {
+   if (unlikely(cs->status != VK_SUCCESS))
+      return 0;
+
    if (cs->mode == TU_CS_MODE_EXTERNAL)
       return cs->external_iova + ((char *) cs->cur - (char *) cs->start);
    return tu_cs_current_bo(cs)->iova + ((char *) cs->cur - (char *) tu_cs_current_bo(cs)->map);
@@ -176,7 +191,7 @@ tu_cs_add_bo(struct tu_cs *cs, uint32_t size)
    bos->bos[bos->bo_count++] = new_bo;
 
    cs->start = cs->cur = cs->reserved_end = (uint32_t *) new_bo->map;
-   cs->end = cs->start + new_bo->size / sizeof(uint32_t);
+   cs->end = cs->start + size;
 
    return VK_SUCCESS;
 }
@@ -268,7 +283,7 @@ void
 tu_cs_begin(struct tu_cs *cs)
 {
    assert(cs->mode != TU_CS_MODE_SUB_STREAM);
-   assert(tu_cs_is_empty(cs));
+   assert(tu_cs_is_empty(cs) || cs->status != VK_SUCCESS);
 }
 
 /**
@@ -280,6 +295,9 @@ tu_cs_end(struct tu_cs *cs)
 {
    assert(cs->mode != TU_CS_MODE_SUB_STREAM);
 
+   if (unlikely(cs->status != VK_SUCCESS))
+      return;
+
    if (cs->mode == TU_CS_MODE_GROW && !tu_cs_is_empty(cs))
       tu_cs_add_entry(cs);
 }
@@ -289,7 +307,11 @@ tu_cs_set_writeable(struct tu_cs *cs, bool writeable)
 {
    assert(cs->mode == TU_CS_MODE_GROW || cs->mode == TU_CS_MODE_SUB_STREAM);
 
+   if (unlikely(cs->status != VK_SUCCESS))
+      return;
+
    if (cs->writeable != writeable) {
+      assert(!cs->cond_stack_depth);
       if (cs->mode == TU_CS_MODE_GROW && !tu_cs_is_empty(cs))
          tu_cs_add_entry(cs);
       struct tu_bo_array *old_bos = cs->writeable ? &cs->read_write : &cs->read_only;
@@ -299,7 +321,8 @@ tu_cs_set_writeable(struct tu_cs *cs, bool writeable)
       cs->start = cs->cur = cs->reserved_end = new_bos->start;
       if (new_bos->bo_count) {
          struct tu_bo *bo = new_bos->bos[new_bos->bo_count - 1];
-         cs->end = (uint32_t *)bo->map + bo->size / sizeof(uint32_t);
+         cs->end = (uint32_t *) bo->map +
+                   tu_sanitize_ib_size(bo->size / sizeof(uint32_t));
       } else {
          cs->end = NULL;
       }
@@ -333,16 +356,19 @@ tu_cs_begin_sub_stream_aligned(struct tu_cs *cs, uint32_t count,
       result = tu_cs_reserve_space(cs, count * size + (size - tu_cs_get_offset(cs)) % size);
       cs->start += (size - tu_cs_get_offset(cs)) % size;
    }
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      /* Freshly declared, nothing owned yet so safe to zero. */
+      memset(sub_cs, 0, sizeof(*sub_cs));
+      tu_cs_fail(sub_cs, result);
       return result;
+   }
 
    cs->cur = cs->start;
 
    tu_cs_init_external(sub_cs, cs->device, cs->cur, cs->reserved_end,
                        tu_cs_get_cur_iova(cs), cs->writeable);
    tu_cs_begin(sub_cs);
-   result = tu_cs_reserve_space(sub_cs, count * size);
-   assert(result == VK_SUCCESS);
+   tu_cs_reserve_space(sub_cs, count * size);
 
    return VK_SUCCESS;
 }
@@ -367,6 +393,7 @@ tu_cs_alloc(struct tu_cs *cs,
        */
       memory->map = NULL;
       memory->iova = 0xdead0000;
+      memory->writeable = false;
       return VK_SUCCESS;
    }
 
@@ -399,6 +426,14 @@ struct tu_cs_entry
 tu_cs_end_sub_stream(struct tu_cs *cs, struct tu_cs *sub_cs)
 {
    assert(cs->mode == TU_CS_MODE_SUB_STREAM);
+
+   /* Most callers of tu_cs_begin_sub_stream() don't check its VkResult and
+    * call us unconditionally afterwards. So, we need to handle the case 
+    * where cs/sub_cs is invalid due to a prior failure.
+    */
+   if (unlikely(cs->status != VK_SUCCESS || sub_cs->status != VK_SUCCESS))
+      return (struct tu_cs_entry) {};
+
    assert(sub_cs->start == cs->cur && sub_cs->end == cs->reserved_end);
    tu_cs_sanity_check(sub_cs);
 
@@ -424,10 +459,14 @@ tu_cs_end_sub_stream(struct tu_cs *cs, struct tu_cs *sub_cs)
 VkResult
 tu_cs_reserve_space(struct tu_cs *cs, uint32_t reserved_size)
 {
+   if (unlikely(cs->status != VK_SUCCESS))
+      return cs->status;
+
    if (tu_cs_get_space(cs) < reserved_size) {
       if (cs->mode == TU_CS_MODE_EXTERNAL) {
-         unreachable("cannot grow external buffer");
-         return VK_ERROR_OUT_OF_HOST_MEMORY;
+         UNREACHABLE("cannot grow external buffer");
+         cs->status = VK_ERROR_OUT_OF_HOST_MEMORY;
+         return cs->status;
       }
 
       /* add an entry for the exiting command packets */
@@ -449,8 +488,10 @@ tu_cs_reserve_space(struct tu_cs *cs, uint32_t reserved_size)
       /* switch to a new BO */
       uint32_t new_size = MAX2(cs->next_bo_size, reserved_size);
       VkResult result = tu_cs_add_bo(cs, new_size);
-      if (result != VK_SUCCESS)
-         return result;
+      if (result != VK_SUCCESS) {
+         tu_cs_fail(cs, result);
+         return cs->status;
+      }
 
       if (cs->cond_stack_depth) {
          cs->reserved_end = cs->cur + reserved_size;
@@ -467,10 +508,8 @@ tu_cs_reserve_space(struct tu_cs *cs, uint32_t reserved_size)
          tu_cs_emit(cs, RENDER_MODE_CP_COND_REG_EXEC_1_DWORDS(0));
       }
 
-      /* double the size for the next bo, also there is an upper
-       * bound on IB size, which appears to be 0x0fffff
-       */
-      new_size = MIN2(new_size << 1, 0x0fffff);
+      /* Double the size for the next bo. */
+      new_size = tu_sanitize_ib_size(new_size << 1);
       if (cs->next_bo_size < new_size)
          cs->next_bo_size = new_size;
    }
@@ -480,7 +519,10 @@ tu_cs_reserve_space(struct tu_cs *cs, uint32_t reserved_size)
 
    if (cs->mode == TU_CS_MODE_GROW) {
       /* reserve an entry for the next call to this function or tu_cs_end */
-      return tu_cs_reserve_entry(cs);
+      VkResult result = tu_cs_reserve_entry(cs);
+      if (result != VK_SUCCESS)
+         tu_cs_fail(cs, result);
+      return cs->status;
    }
 
    return VK_SUCCESS;
@@ -493,6 +535,8 @@ tu_cs_reserve_space(struct tu_cs *cs, uint32_t reserved_size)
 void
 tu_cs_reset(struct tu_cs *cs)
 {
+   cs->status = VK_SUCCESS;
+
    if (cs->mode == TU_CS_MODE_EXTERNAL) {
       assert(!cs->read_only.bo_count && !cs->read_write.bo_count &&
              !cs->refcount_bo && !cs->entry_count);
@@ -510,19 +554,22 @@ tu_cs_reset(struct tu_cs *cs)
       tu_bo_finish(cs->device, cs->read_write.bos[i]);
    }
 
-   cs->writeable = false;
+   assert(!cs->writeable);
 
    if (cs->read_only.bo_count) {
       cs->read_only.bos[0] = cs->read_only.bos[cs->read_only.bo_count - 1];
       cs->read_only.bo_count = 1;
 
       cs->start = cs->cur = cs->reserved_end = (uint32_t *) cs->read_only.bos[0]->map;
-      cs->end = cs->start + cs->read_only.bos[0]->size / sizeof(uint32_t);
+      cs->end = cs->start + tu_sanitize_ib_size(cs->read_only.bos[0]->size /
+                                                sizeof(uint32_t));
    }
 
    if (cs->read_write.bo_count) {
       cs->read_write.bos[0] = cs->read_write.bos[cs->read_write.bo_count - 1];
       cs->read_write.bo_count = 1;
+
+      cs->read_write.start = (uint32_t *) cs->read_write.bos[0]->map;
    }
 
    cs->entry_count = 0;
@@ -534,6 +581,9 @@ tu_cs_emit_data_nop(struct tu_cs *cs,
                     uint32_t size,
                     uint32_t align_dwords)
 {
+   if (unlikely(cs->status != VK_SUCCESS))
+      return 0;
+
    uint32_t total_size = size + (align_dwords - 1);
    tu_cs_emit_pkt7(cs, CP_NOP, total_size);
 
@@ -617,4 +667,19 @@ tu_cs_trace_end(struct u_trace_context *utctx, void *cs, const char *fmt, ...)
    va_start(args, fmt);
    tu_cs_emit_debug_magic_strv((struct tu_cs *) cs, CP_NOP_END, fmt, args);
    va_end(args);
+}
+
+void
+tu_cs_trace_singular(struct u_trace_context *utctx, void *cs, const char *fmt, ...)
+{
+   va_list args;
+   va_start(args, fmt);
+   tu_cs_emit_debug_magic_strv((struct tu_cs *) cs, CP_NOP_MESG, fmt, args);
+   va_end(args);
+}
+
+tu_crb
+tu_cs::crb(uint32_t nregs)
+{
+   return tu_crb(this, nregs);
 }

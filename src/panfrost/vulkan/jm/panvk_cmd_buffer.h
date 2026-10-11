@@ -38,7 +38,7 @@ struct panvk_batch {
    struct pan_jc vtc_jc;
    struct pan_jc frag_jc;
    struct {
-      struct panfrost_ptr desc;
+      struct pan_ptr desc;
       uint32_t desc_stride;
       uint32_t bo_count;
 
@@ -49,11 +49,11 @@ struct panvk_batch {
    struct {
       struct pan_kmod_bo *src, *dst;
    } blit;
-   struct panfrost_ptr tls;
+   struct pan_ptr tls;
    struct {
       struct pan_tiler_context ctx;
-      struct panfrost_ptr heap_desc;
-      struct panfrost_ptr ctx_descs;
+      struct pan_ptr heap_desc;
+      struct pan_ptr ctx_descs;
       struct mali_tiler_heap_packed heap_templ;
       struct mali_tiler_context_packed ctx_templ;
    } tiler;
@@ -144,12 +144,9 @@ VkResult
    panvk_per_arch(cmd_prepare_tiler_context)(struct panvk_cmd_buffer *cmdbuf,
                                              uint32_t layer_idx);
 
-void panvk_per_arch(cmd_preload_fb_after_batch_split)(
-   struct panvk_cmd_buffer *cmdbuf);
-
 void panvk_per_arch(cmd_bind_shaders)(struct vk_command_buffer *vk_cmd,
                                       uint32_t stage_count,
-                                      const gl_shader_stage *stages,
+                                      const mesa_shader_stage *stages,
                                       struct vk_shader **const shaders);
 
 #endif

@@ -111,9 +111,6 @@ _mesa_ClearStencil( GLint s )
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glClearStencil(%d)\n", s);
-
    ctx->PopAttribState |= GL_STENCIL_BUFFER_BIT;
    ctx->Stencil.Clear = (GLuint) s;
 }
@@ -138,9 +135,6 @@ _mesa_StencilFuncSeparateATI( GLenum frontfunc, GLenum backfunc, GLint ref, GLui
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glStencilFuncSeparateATI()\n");
-
    if (!validate_stencil_func(ctx, frontfunc)) {
       _mesa_error(ctx, GL_INVALID_ENUM,
                   "glStencilFuncSeparateATI(frontfunc)");
@@ -161,7 +155,7 @@ _mesa_StencilFuncSeparateATI( GLenum frontfunc, GLenum backfunc, GLint ref, GLui
        ctx->Stencil.Ref[1] == ref)
       return;
    FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-   ctx->NewDriverState |= ST_NEW_DSA;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
    ctx->Stencil.Function[0]  = frontfunc;
    ctx->Stencil.Function[1]  = backfunc;
    ctx->Stencil.Ref[0]       = ctx->Stencil.Ref[1]       = ref;
@@ -193,7 +187,7 @@ stencil_func(struct gl_context *ctx, GLenum func, GLint ref, GLuint mask)
           ctx->Stencil.Ref[face] == ref)
          return;
       FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-      ctx->NewDriverState |= ST_NEW_DSA;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
       ctx->Stencil.Function[face] = func;
       ctx->Stencil.Ref[face] = ref;
       ctx->Stencil.ValueMask[face] = mask;
@@ -208,7 +202,7 @@ stencil_func(struct gl_context *ctx, GLenum func, GLint ref, GLuint mask)
           ctx->Stencil.Ref[1] == ref)
          return;
       FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-      ctx->NewDriverState |= ST_NEW_DSA;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
       ctx->Stencil.Function[0]  = ctx->Stencil.Function[1]  = func;
       ctx->Stencil.Ref[0]       = ctx->Stencil.Ref[1]       = ref;
       ctx->Stencil.ValueMask[0] = ctx->Stencil.ValueMask[1] = mask;
@@ -228,9 +222,6 @@ void GLAPIENTRY
 _mesa_StencilFunc(GLenum func, GLint ref, GLuint mask)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glStencilFunc()\n");
 
    if (!validate_stencil_func(ctx, func)) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glStencilFunc(func)");
@@ -258,16 +249,13 @@ _mesa_StencilMask( GLuint mask )
    GET_CURRENT_CONTEXT(ctx);
    const GLint face = ctx->Stencil.ActiveFace;
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glStencilMask()\n");
-
    if (face != 0) {
       /* Only modify the EXT_stencil_two_side back-face state.
        */
       if (ctx->Stencil.WriteMask[face] == mask)
          return;
       FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-      ctx->NewDriverState |= ST_NEW_DSA;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
       ctx->Stencil.WriteMask[face] = mask;
    }
    else {
@@ -276,7 +264,7 @@ _mesa_StencilMask( GLuint mask )
           ctx->Stencil.WriteMask[1] == mask)
          return;
       FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-      ctx->NewDriverState |= ST_NEW_DSA;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
       ctx->Stencil.WriteMask[0] = ctx->Stencil.WriteMask[1] = mask;
    }
 }
@@ -308,7 +296,7 @@ stencil_op(struct gl_context *ctx, GLenum fail, GLenum zfail, GLenum zpass)
           ctx->Stencil.FailFunc[face] == fail)
          return;
       FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-      ctx->NewDriverState |= ST_NEW_DSA;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
       ctx->Stencil.ZFailFunc[face] = zfail;
       ctx->Stencil.ZPassFunc[face] = zpass;
       ctx->Stencil.FailFunc[face] = fail;
@@ -323,7 +311,7 @@ stencil_op(struct gl_context *ctx, GLenum fail, GLenum zfail, GLenum zpass)
           ctx->Stencil.FailFunc[1] == fail)
          return;
       FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-      ctx->NewDriverState |= ST_NEW_DSA;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
       ctx->Stencil.ZFailFunc[0] = ctx->Stencil.ZFailFunc[1] = zfail;
       ctx->Stencil.ZPassFunc[0] = ctx->Stencil.ZPassFunc[1] = zpass;
       ctx->Stencil.FailFunc[0]  = ctx->Stencil.FailFunc[1]  = fail;
@@ -343,9 +331,6 @@ void GLAPIENTRY
 _mesa_StencilOp(GLenum fail, GLenum zfail, GLenum zpass)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glStencilOp()\n");
 
    if (!validate_stencil_op(ctx, fail)) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glStencilOp(sfail)");
@@ -372,9 +357,6 @@ _mesa_ActiveStencilFaceEXT(GLenum face)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glActiveStencilFaceEXT()\n");
-
    if (!ctx->Extensions.EXT_stencil_two_side) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "glActiveStencilFaceEXT");
       return;
@@ -399,7 +381,7 @@ stencil_op_separate(struct gl_context *ctx, GLenum face, GLenum sfail,
           ctx->Stencil.ZPassFunc[0] != zpass ||
           ctx->Stencil.FailFunc[0] != sfail){
          FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-         ctx->NewDriverState |= ST_NEW_DSA;
+         ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
          ctx->Stencil.ZFailFunc[0] = zfail;
          ctx->Stencil.ZPassFunc[0] = zpass;
          ctx->Stencil.FailFunc[0] = sfail;
@@ -412,7 +394,7 @@ stencil_op_separate(struct gl_context *ctx, GLenum face, GLenum sfail,
           ctx->Stencil.ZPassFunc[1] != zpass ||
           ctx->Stencil.FailFunc[1] != sfail) {
          FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-         ctx->NewDriverState |= ST_NEW_DSA;
+         ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
          ctx->Stencil.ZFailFunc[1] = zfail;
          ctx->Stencil.ZPassFunc[1] = zpass;
          ctx->Stencil.FailFunc[1] = sfail;
@@ -434,9 +416,6 @@ void GLAPIENTRY
 _mesa_StencilOpSeparate(GLenum face, GLenum sfail, GLenum zfail, GLenum zpass)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glStencilOpSeparate()\n");
 
    if (!validate_stencil_op(ctx, sfail)) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glStencilOpSeparate(sfail)");
@@ -467,7 +446,7 @@ stencil_func_separate(struct gl_context *ctx, GLenum face, GLenum func,
                       GLint ref, GLuint mask)
 {
    FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-   ctx->NewDriverState |= ST_NEW_DSA;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
 
    if (face != GL_BACK) {
       /* set front */
@@ -500,9 +479,6 @@ _mesa_StencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glStencilFuncSeparate()\n");
-
    if (face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glStencilFuncSeparate(face)");
       return;
@@ -521,7 +497,7 @@ static void
 stencil_mask_separate(struct gl_context *ctx, GLenum face, GLuint mask)
 {
    FLUSH_VERTICES(ctx, 0, GL_STENCIL_BUFFER_BIT);
-   ctx->NewDriverState |= ST_NEW_DSA;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_DSA);
 
    if (face != GL_BACK) {
       ctx->Stencil.WriteMask[0] = mask;
@@ -546,9 +522,6 @@ void GLAPIENTRY
 _mesa_StencilMaskSeparate(GLenum face, GLuint mask)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glStencilMaskSeparate()\n");
 
    if (face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glStencilaMaskSeparate(face)");

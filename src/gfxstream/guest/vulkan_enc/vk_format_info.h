@@ -53,6 +53,8 @@ static inline VkFormat vk_format_from_fourcc(unsigned fourcc_format) {
             return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
         case DRM_FORMAT_P010:
             return VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+        case DRM_FORMAT_P210:
+            return VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16;
         case HAL_PIXEL_FORMAT_NV12_Y_TILED_INTEL:
         case DRM_FORMAT_NV12:
         case DRM_FORMAT_NV21:
@@ -105,6 +107,7 @@ static inline bool android_format_is_yuv(unsigned android_format) {
         case AHARDWAREBUFFER_FORMAT_R8_UNORM:
         case AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM:
         case AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM:
+        case AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM:
         case AHARDWAREBUFFER_FORMAT_R8G8B8_UNORM:
         case AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM:
         case AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT:
@@ -121,6 +124,9 @@ static inline bool android_format_is_yuv(unsigned android_format) {
         case HAL_PIXEL_FORMAT_YV12:
 #if __ANDROID_API__ >= 30
         case AHARDWAREBUFFER_FORMAT_YCbCr_P010:
+#endif
+#if __ANDROID_API__ >= 35
+        case AHARDWAREBUFFER_FORMAT_YCbCr_P210:
 #endif
         case AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420:
             return true;

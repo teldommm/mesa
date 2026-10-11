@@ -16,7 +16,9 @@ struct nouveau_context {
    struct nouveau_client *client;
    struct nouveau_pushbuf *pushbuf;
    struct nouveau_fence *fence;
-   void (*kick_notify)(struct nouveau_context *);
+
+   /** Returns false on error */
+   MUST_CHECK bool (*kick_notify)(struct nouveau_context *);
    struct util_debug_callback debug;
 
    bool vbo_dirty;
@@ -116,6 +118,51 @@ nouveau_context_update_frame_stats(struct nouveau_context *nv)
       nv->stats.buf_cache_frame |= 1;
       if ((nv->stats.buf_cache_frame & 0xf) == 0xf)
          nv->screen->hint_buf_keep_sysmem_copy = true;
+   }
+}
+
+static inline void
+nv_framebuffer_init(struct pipe_context *pctx,
+                    const struct pipe_framebuffer_state *fb,
+                    struct pipe_surface **cbufs,
+                    struct pipe_surface **zsbuf,
+                    struct pipe_surface *(*create)(struct pipe_context *pipe,
+                                                   struct pipe_resource *pt,
+                                                   const struct pipe_surface *tmpl),
+                    void (*del)(struct pipe_context *pipe, struct pipe_surface *ps))
+{
+   if (fb) {
+      for (unsigned i = 0; i < fb->nr_cbufs; i++) {
+         if (cbufs[i] && pipe_surface_equal(&fb->cbufs[i], cbufs[i]))
+            continue;
+
+         struct pipe_surface *psurf = fb->cbufs[i].texture ? create(pctx, fb->cbufs[i].texture, &fb->cbufs[i]) : NULL;
+         if (cbufs[i])
+            del(pctx, cbufs[i]);
+         cbufs[i] = psurf;
+      }
+
+      for (unsigned i = fb->nr_cbufs; i < PIPE_MAX_COLOR_BUFS; i++) {
+         if (cbufs[i])
+            del(pctx, cbufs[i]);
+         cbufs[i] = NULL;
+      }
+
+      if (*zsbuf && pipe_surface_equal(&fb->zsbuf, *zsbuf))
+         return;
+      struct pipe_surface *zsurf = fb->zsbuf.texture ? create(pctx, fb->zsbuf.texture, &fb->zsbuf) : NULL;
+      if (*zsbuf)
+         del(pctx, *zsbuf);
+      *zsbuf = zsurf;
+   } else {
+      for (unsigned i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
+         if (cbufs[i])
+            del(pctx, cbufs[i]);
+         cbufs[i] = NULL;
+      }
+      if (*zsbuf)
+         del(pctx, *zsbuf);
+      *zsbuf = NULL;
    }
 }
 

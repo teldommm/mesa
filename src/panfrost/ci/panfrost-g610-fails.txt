@@ -1,513 +1,360 @@
-# Arm waiver 4936 (see waivers.xml)
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.isampler2darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.isampler2darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.isampler2d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.isampler2d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.isampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.isampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler1darray_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler1darray_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler1darrayshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler1d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler1d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler1dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2darray_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2darray_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2darray_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2darray_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2darrayshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2darrayshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler2dshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler3d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler3d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler3d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.sampler3d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler1darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler1darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler1d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler1d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler2darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler2darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler2d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler2d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturegradoffset.mirrored_repeat.usampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.isampler2darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.isampler2darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.isampler2d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.isampler2d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.isampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.isampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler1darray_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler1darray_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler1darrayshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler1darrayshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler1d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler1d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2darray_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2darray_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2darray_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2darray_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler2dshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler3d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler3d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler3d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.sampler3d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler1darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler1darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler1d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler1d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler2darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler2darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler2d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler2d_vertex,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.texturelodoffset.mirrored_repeat.usampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler1darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler1d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler2darray_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler2darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler2darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler2d_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler2d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler2d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler3d_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.isampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1darray_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1darray_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1darray_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1darrayshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1d_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler1dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darray_bias_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darray_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darray_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darray_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darray_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darray_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darrayshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2darrayshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2d_bias_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2d_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2dshadow_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler2dshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler3d_bias_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler3d_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler3d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler3d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler3d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.sampler3d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler1darray_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler1darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler1d_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler1d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler2darray_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler2darray_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler2darray_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler2d_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler2d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler2d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler3d_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureoffset.mirrored_repeat.usampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.isampler2d_vec3_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.isampler2d_vec3_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.isampler2d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.isampler2d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.isampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.isampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler1dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler1d_vec2_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler1d_vec2_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler1d_vec4_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler1d_vec4_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2dshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec3_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec3_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec3_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec3_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec4_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec4_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec4_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler2d_vec4_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler3d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler3d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler3d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.sampler3d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler1d_vec2_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler1d_vec2_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler1d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler1d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler2d_vec3_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler2d_vec3_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler2d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler2d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojgradoffset.mirrored_repeat.usampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.isampler2d_vec3_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.isampler2d_vec3_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.isampler2d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.isampler2d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.isampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.isampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler1dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler1dshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler1d_vec2_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler1d_vec2_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler1d_vec4_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler1d_vec4_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2dshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec3_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec3_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec3_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec3_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec4_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec4_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec4_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler2d_vec4_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler3d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler3d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler3d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.sampler3d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler1d_vec2_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler1d_vec2_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler1d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler1d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler2d_vec3_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler2d_vec3_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler2d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler2d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojlodoffset.mirrored_repeat.usampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler1d_vec2_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler1d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler2d_vec3_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler2d_vec3_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler2d_vec3_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler2d_vec4_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler2d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler2d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler3d_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.isampler3d_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler1dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler1d_vec2_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler1d_vec2_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler1d_vec2_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler1d_vec4_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler1d_vec4_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler1d_vec4_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2dshadow_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2dshadow_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2dshadow_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec3_bias_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec3_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec3_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec3_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec3_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec3_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec4_bias_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec4_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec4_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec4_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec4_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler2d_vec4_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler3d_bias_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler3d_bias_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler3d_fixed_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler3d_fixed_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler3d_float_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.sampler3d_float_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler1d_vec2_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler1d_vec2_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler1d_vec4_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler1d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler2d_vec3_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler2d_vec3_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler2d_vec3_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler2d_vec4_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler2d_vec4_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler2d_vec4_vertex,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler3d_bias_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler3d_fragment,Fail
-dEQP-VK.glsl.texture_functions.textureprojoffset.mirrored_repeat.usampler3d_vertex,Fail
+dEQP-VK.glsl.loops.special.do_while_dynamic_iterations.dowhile_trap_vertex,Crash
+asan-dEQP-VK.glsl.loops.special.do_while_dynamic_iterations.dowhile_trap_vertex,Crash
 
-# Seems to be caused by an off-by-0.5 in the position. Also passes if we change
-# the line shape mode to rectangular. This needs further investigation
-dEQP-VK.pipeline.fast_linked_library.multisample.alpha_to_coverage.samples_4.alpha_invisible_check_depth,Fail
-dEQP-VK.pipeline.fast_linked_library.multisample.alpha_to_coverage.samples_4.alpha_invisible,Fail
-dEQP-VK.pipeline.fast_linked_library.multisample.alpha_to_coverage.samples_4.alpha_translucent,Fail
-
+afbcp-spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube,Fail
+afbcp-spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgrad,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 1d,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 1dshadow,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 2d,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 2dshadow,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 3d,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 1d,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 1d_projvec4,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 1dshadow,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2d,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2d_projvec4,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2dshadow,Fail
+afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 3d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darray,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darrayshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2darray,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2darrayshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 3d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1darray,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1darrayshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2darray,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2darrayshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 3d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 1d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 1d_projvec4,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 1dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 2d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 2d_projvec4,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 2dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 3d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 1d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 1d_projvec4,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 1dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 2d,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 2d_projvec4,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 2dshadow,Fail
+afbcp-spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 3d,Fail
+afbcp-spec@khr_texture_compression_astc@miptree-gles srgb-fp,Fail
+afbcp-spec@khr_texture_compression_astc@miptree-gles srgb-fp@sRGB decode full precision,Fail
+afbcp-spec@khr_texture_compression_astc@miptree-gl srgb-fp,Fail
+afbcp-spec@khr_texture_compression_astc@miptree-gl srgb-fp@sRGB decode full precision,Fail
+afbcp-spec@khr_texture_compression_astc@sliced-3d-miptree-gles srgb-fp,Fail
+afbcp-spec@khr_texture_compression_astc@sliced-3d-miptree-gles srgb-fp@sRGB decode full precision,Fail
+afbcp-spec@khr_texture_compression_astc@sliced-3d-miptree-gl srgb-fp,Fail
+afbcp-spec@khr_texture_compression_astc@sliced-3d-miptree-gl srgb-fp@sRGB decode full precision,Fail
+glx@glx_arb_sync_control@waitformsc,Fail
+glx@glx-copy-sub-buffer,Fail
+glx@glx-make-current,Fail
+glx@glx-multi-window-single-context,Fail
+glx@glx-swap-pixmap-bad,Fail
+shaders@point-vertex-id divisor,Fail
+shaders@point-vertex-id gl_instanceid divisor,Fail
+shaders@point-vertex-id gl_instanceid,Fail
+shaders@point-vertex-id gl_vertexid divisor,Fail
+shaders@point-vertex-id gl_vertexid,Fail
+shaders@point-vertex-id gl_vertexid gl_instanceid divisor,Fail
+shaders@point-vertex-id gl_vertexid gl_instanceid,Fail
+spec@arb_point_sprite@arb_point_sprite-mipmap,Fail
+spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube,Fail
+spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgrad,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 1d,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 1dshadow,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 2d,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 2dshadow,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 3d,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 1d,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 1d_projvec4,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 1dshadow,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2d,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2d_projvec4,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2dshadow,Fail
+spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 3d,Fail
+spec@arb_transform_feedback_instanced@draw-auto instanced,Fail
+spec@egl 1.4@egl-ext_egl_image_storage,Fail
+spec@egl 1.4@eglterminate then unbind context,Fail
+spec@egl_khr_gl_image@egl_khr_gl_renderbuffer_image-clear-shared-image gl_depth_component24,Fail
+spec@egl_khr_surfaceless_context@viewport,Fail
+spec@egl_mesa_configless_context@basic,Fail
+spec@ext_framebuffer_blit@fbo-blit-check-limits,Fail
+spec@ext_framebuffer_multisample@accuracy 16 srgb depthstencil,Fail
+spec@ext_framebuffer_multisample@accuracy 16 srgb depthstencil linear,Fail
+spec@ext_framebuffer_multisample@accuracy 16 srgb small depthstencil,Fail
+spec@ext_framebuffer_multisample@accuracy 16 srgb small depthstencil linear,Fail
+spec@ext_framebuffer_multisample@accuracy all_samples srgb depthstencil,Fail
+spec@ext_framebuffer_multisample@accuracy all_samples srgb depthstencil linear,Fail
+spec@ext_framebuffer_multisample@accuracy all_samples srgb small depthstencil,Fail
+spec@ext_framebuffer_multisample@accuracy all_samples srgb small depthstencil linear,Fail
+spec@ext_framebuffer_multisample@alpha-to-coverage-dual-src-blend 16,Fail
+spec@ext_framebuffer_multisample@alpha-to-coverage-dual-src-blend 6,Fail
+spec@ext_framebuffer_multisample@alpha-to-coverage-dual-src-blend 8,Fail
+spec@ext_framebuffer_multisample@alpha-to-coverage-no-draw-buffer-zero 16,Fail
+spec@ext_framebuffer_multisample@alpha-to-coverage-no-draw-buffer-zero 6,Fail
+spec@ext_framebuffer_multisample@alpha-to-coverage-no-draw-buffer-zero 8,Fail
+spec@ext_framebuffer_multisample@draw-buffers-alpha-to-coverage 16,Fail
+spec@ext_framebuffer_multisample@draw-buffers-alpha-to-coverage 6,Fail
+spec@ext_framebuffer_multisample@draw-buffers-alpha-to-coverage 8,Fail
+spec@ext_framebuffer_multisample@sample-alpha-to-coverage 16 color,Fail
+spec@ext_framebuffer_multisample@sample-alpha-to-coverage 6 color,Fail
+spec@ext_framebuffer_multisample@sample-alpha-to-coverage 8 color,Fail
+spec@ext_shader_framebuffer_fetch@execution@gles3@discard-ms8,Fail
+spec@ext_shader_framebuffer_fetch_non_coherent@execution@gles3@discard-ms8,Fail
+spec@ext_transform_feedback2@draw-auto,Fail
+spec@ext_transform_feedback@builtin-varyings gl_clipdistance,Fail
+spec@ext_transform_feedback@change-size base-shrink,Fail
+spec@ext_transform_feedback@change-size offset-shrink,Fail
+spec@ext_transform_feedback@change-size range-grow,Fail
+spec@ext_transform_feedback@change-size range-shrink,Fail
+spec@ext_transform_feedback@immediate-reuse-index-buffer,Fail
+spec@ext_transform_feedback@interleaved-attribs,Fail
+spec@ext_transform_feedback@intervening-read output,Fail
+spec@ext_transform_feedback@intervening-read prims_written,Fail
+spec@ext_transform_feedback@max-varyings,Fail
+spec@ext_transform_feedback@order elements lines,Fail
+spec@ext_transform_feedback@order elements points,Fail
+spec@ext_transform_feedback@order elements triangles,Fail
+spec@ext_transform_feedback@overflow-edge-cases,Fail
+spec@ext_transform_feedback@position-readback-bufferbase-discard,Fail
+spec@ext_transform_feedback@position-readback-bufferbase,Fail
+spec@ext_transform_feedback@position-readback-bufferoffset-discard,Fail
+spec@ext_transform_feedback@position-readback-bufferoffset,Fail
+spec@ext_transform_feedback@position-readback-bufferrange-discard,Fail
+spec@ext_transform_feedback@position-readback-bufferrange,Fail
+spec@ext_transform_feedback@position-render-bufferbase-discard,Fail
+spec@ext_transform_feedback@position-render-bufferbase,Fail
+spec@ext_transform_feedback@position-render-bufferoffset-discard,Fail
+spec@ext_transform_feedback@position-render-bufferoffset,Fail
+spec@ext_transform_feedback@position-render-bufferrange-discard,Fail
+spec@ext_transform_feedback@position-render-bufferrange,Fail
+spec@ext_transform_feedback@query-primitives_written-bufferrange-discard,Fail
+spec@ext_transform_feedback@query-primitives_written-bufferrange,Fail
+spec@ext_transform_feedback@tessellation line_loop flat_first,Fail
+spec@ext_transform_feedback@tessellation line_loop flat_last,Fail
+spec@ext_transform_feedback@tessellation line_loop monochrome,Fail
+spec@ext_transform_feedback@tessellation line_loop smooth,Fail
+spec@ext_transform_feedback@tessellation line_strip flat_first,Fail
+spec@ext_transform_feedback@tessellation line_strip flat_last,Fail
+spec@ext_transform_feedback@tessellation line_strip monochrome,Fail
+spec@ext_transform_feedback@tessellation line_strip smooth,Fail
+spec@ext_transform_feedback@tessellation polygon monochrome,Fail
+spec@ext_transform_feedback@tessellation polygon smooth,Fail
+spec@ext_transform_feedback@tessellation quads monochrome,Fail
+spec@ext_transform_feedback@tessellation quads smooth,Fail
+spec@ext_transform_feedback@tessellation quad_strip monochrome,Fail
+spec@ext_transform_feedback@tessellation quad_strip smooth,Fail
+spec@ext_transform_feedback@tessellation triangle_fan flat_first,Fail
+spec@ext_transform_feedback@tessellation triangle_fan flat_last,Fail
+spec@ext_transform_feedback@tessellation triangle_fan monochrome,Fail
+spec@ext_transform_feedback@tessellation triangle_fan smooth,Fail
+spec@ext_transform_feedback@tessellation triangle_fan wireframe,Fail
+spec@ext_transform_feedback@tessellation triangle_strip flat_first,Fail
+spec@ext_transform_feedback@tessellation triangle_strip flat_last,Fail
+spec@ext_transform_feedback@tessellation triangle_strip monochrome,Fail
+spec@ext_transform_feedback@tessellation triangle_strip smooth,Fail
+spec@ext_transform_feedback@tessellation triangle_strip wireframe,Fail
+spec@glsl-1.20@execution@fs-underflow-mul-compare-zero,Fail
+spec@glsl-1.30@execution@clipping@fs-clip-distance-interpolated,Crash
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-flat-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-flat-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-flat-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-flat-vertex,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-smooth-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-smooth-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-smooth-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-smooth-vertex,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-flat-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-flat-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-flat-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-flat-vertex,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-smooth-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-smooth-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-smooth-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backsecondarycolor-smooth-vertex,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-flat-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-flat-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-flat-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-flat-vertex,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-smooth-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-smooth-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-smooth-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontcolor-smooth-vertex,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-flat-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-flat-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-flat-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-flat-vertex,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-smooth-distance,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-smooth-fixed,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-smooth-none,Fail
+spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_frontsecondarycolor-smooth-vertex,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darray,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darrayshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2darray,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2darrayshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 2dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 3d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1darray,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1darrayshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 1dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2darray,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2darrayshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 2dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection texturegradoffset 3d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 1d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 1d_projvec4,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 1dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 2d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 2d_projvec4,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 2dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgrad 3d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 1d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 1d_projvec4,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 1dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 2d,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 2d_projvec4,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 2dshadow,Fail
+spec@glsl-1.30@execution@tex-miplevel-selection textureprojgradoffset 3d,Fail
+spec@intel_blackhole_render@intel_blackhole-draw_gles2,Crash
+spec@intel_blackhole_render@intel_blackhole-draw_gles3,Crash
+spec@khr_texture_compression_astc@miptree-gles srgb-fp,Fail
+spec@khr_texture_compression_astc@miptree-gles srgb-fp@sRGB decode full precision,Fail
+spec@khr_texture_compression_astc@miptree-gl srgb-fp,Fail
+spec@khr_texture_compression_astc@miptree-gl srgb-fp@sRGB decode full precision,Fail
+spec@khr_texture_compression_astc@sliced-3d-miptree-gles srgb-fp,Fail
+spec@khr_texture_compression_astc@sliced-3d-miptree-gles srgb-fp@sRGB decode full precision,Fail
+spec@khr_texture_compression_astc@sliced-3d-miptree-gl srgb-fp,Fail
+spec@khr_texture_compression_astc@sliced-3d-miptree-gl srgb-fp@sRGB decode full precision,Fail
+spec@!opengl 1.0@gl-1.0-edgeflag-const,Fail
+spec@!opengl 1.0@gl-1.0-edgeflag,Fail
+spec@!opengl 1.0@gl-1.0-edgeflag-quads,Fail
+spec@!opengl 1.0@gl-1.0-no-op-paths,Fail
+spec@!opengl 1.0@gl-1.0-user-clip-all-planes,Fail
+spec@!opengl 1.1@line-smooth-stipple,Fail
+spec@!opengl 1.1@linestipple@Factor 2x,Fail
+spec@!opengl 1.1@linestipple@Factor 3x,Fail
+spec@!opengl 1.1@linestipple,Fail
+spec@!opengl 1.1@linestipple@Line loop,Fail
+spec@!opengl 1.1@linestipple@Line strip,Fail
+spec@!opengl 1.1@linestipple@Restarting lines within a single Begin-End block,Fail
+spec@!opengl 1.1@polygon-mode-facing,Fail
+spec@!opengl 1.1@polygon-mode,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 0: Expected white pixel on bottom edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 0: Expected white pixel on left edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 0: Expected white pixel on right edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 0: Expected white pixel on top edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 1: Expected blue pixel in center,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 1: Expected white pixel on right edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 1: Expected white pixel on top edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 2: Expected blue pixel in center,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 2: Expected white pixel on right edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 2: Expected white pixel on top edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 3: Expected white pixel on bottom edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 3: Expected white pixel on left edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 3: Expected white pixel on right edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 3: Expected white pixel on top edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 4: Expected white pixel on bottom edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 4: Expected white pixel on left edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 4: Expected white pixel on right edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 4: Expected white pixel on top edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 5: Expected blue pixel in center,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 5: Expected white pixel on right edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 5: Expected white pixel on top edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 6: Expected blue pixel in center,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 6: Expected white pixel on right edge,Fail
+spec@!opengl 1.1@polygon-mode-offset@config 6: Expected white pixel on top edge,Fail
+spec@!opengl 1.1@polygon-mode-offset,Fail
+spec@!opengl 2.0@gl-2.0-edgeflag,Fail
+spec@!opengl 2.0@gl-2.0-edgeflag-immediate,Fail
+spec@!opengl 2.1@pbo,Fail
+spec@!opengl 2.1@pbo@test_polygon_stip,Fail
+spec@!opengl 2.1@polygon-stipple-fs,Fail
+spec@!opengl 3.1@primitive-restart-xfb flush,Fail
+spec@!opengl 3.1@primitive-restart-xfb generated,Fail
+spec@!opengl 3.1@primitive-restart-xfb written,Fail
+spec@!opengl es 3.0@gles-3.0-transform-feedback-uniform-buffer-object,Fail
 
 # uprev Piglit in Mesa
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-refcount-multithread,Crash
+afbcp-spec@arb_texture_view@tex-view,Fail
+KHR-GLES31.core.draw_indirect.advanced-twoPass-transformFeedback-arrays,Fail
+spec@!opengl 1.1@large-tex,Fail
+spec@arb_texture_view@tex-view,Fail
+spec@glsl-1.30@execution@glsl-packed-back-color,Fail
 
-# physical device and device needs more robustness in allocation handling
+# OpenCL (rusticl) failures
+api@clgetcommandqueueinfo,Fail
+api@clgetextensionfunctionaddressforplatform,Fail
+api@clgetkernelarginfo,Fail
+api@cllinkprogram,Fail
+api@clsetkernelarg,Fail
+api@clsetkernelarg@Input checks,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float1,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float16,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float2,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float4,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float8,Fail
+program@execute@global-offset,Fail
+program@execute@global-offset@3d- input dependent,Fail
+program@execute@vector-conversion,Fail
 
-# Filtering of 3D depth-stencil textures fails unless we set SAMPLER:round_to_nearest_even=false
-dEQP-VK.texture.filtering.3d.formats.d24_unorm_s8_uint_stencil.d24_unorm_s8_uint_stencil_nearest,Fail
-dEQP-VK.texture.filtering.3d.formats.d32_sfloat_s8_uint_stencil.d32_sfloat_s8_uint_stencil_nearest,Fail
+# OpenCL-CTS quick profile
+Compiler@unload_repeated,Fail
+Compiler@unload_compile_unload_link,Fail
+Compiler@unload_build_unload_create_kernel,Fail
+Compiler@unload_build_threaded,Fail
+Compiler,Fail
+Images (clFillImage max size)@1D,Fail
+# Caused by the outdated SPIR-V LLVM Translator in the test image
+Basic@work_item_functions_out_of_range,Fail
+Basic,Crash
+Images (clCopyImage max size),Fail
+Images (clCopyImage max size)@2D,Fail
+Images (clCopyImage max size)@2Darrayto2D,Fail
+Images (clCopyImage max size)@2Darrayto3D,Fail
+Images (clCopyImage max size)@2Dto2Darray,Fail
+Images (clCopyImage max size)@2Dto3D,Fail
+Images (clCopyImage max size)@3Dto2D,Fail
+Images (clCopyImage max size)@3Dto2Darray,Fail
+Math@ilogb,Fail
+Math,Crash
+Relationals,Crash
+Integer Ops,Crash
+Images (API Info),Fail
+Images (API Info)@1Darray,Fail
+Images (API Info)@2D,Fail
 
-# CTS bug, see https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/5296
-dEQP-VK.api.device_init.create_device_unsupported_features.shader_draw_parameters_features,Fail
-dEQP-VK.api.device_init.create_device_unsupported_features.protected_memory_features,Fail
-
-# CTS bug, works fine if Vulkan 1.1 is forced
-dEQP-VK.api.device_init.create_device_global_priority.basic,Fail
-dEQP-VK.api.device_init.create_device_global_priority_khr.basic,Fail
-dEQP-VK.api.device_init.create_device_global_priority_query.basic,Fail
-dEQP-VK.api.device_init.create_device_global_priority_query_khr.basic,Fail
-
-dEQP-VK.draw.renderpass.linear_interpolation.no_offset_1_sample,Fail
-dEQP-VK.draw.renderpass.linear_interpolation.no_offset_4_samples,Fail
-dEQP-VK.draw.renderpass.linear_interpolation.offset_max_1_sample,Fail
-dEQP-VK.draw.renderpass.linear_interpolation.offset_max_4_samples,Fail
-dEQP-VK.draw.renderpass.linear_interpolation.offset_min_1_sample,Fail
-dEQP-VK.draw.renderpass.linear_interpolation.offset_min_4_samples,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.separate.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.separate.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.separate.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.separate.with_sample_decoration.4_samples,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.structured.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.structured.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.structured.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.renderpass.multiple_interpolation.structured.with_sample_decoration.4_samples,Fail
-
-dEQP-VK.renderpass.dedicated_allocation.attachment_allocation.input_output.63,Fail
-dEQP-VK.renderpass2.dedicated_allocation.attachment_allocation.input_output.63,Fail
-
-dEQP-VK.spirv_assembly.instruction.graphics.cross_stage.basic_type.no_perspective,Fail
-dEQP-VK.spirv_assembly.instruction.graphics.cross_stage.interface_blocks.no_perspective,Fail
-
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.linear_interpolation.no_offset_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.linear_interpolation.no_offset_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.linear_interpolation.offset_max_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.linear_interpolation.offset_max_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.linear_interpolation.offset_min_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.linear_interpolation.offset_min_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.separate.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.separate.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.separate.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.separate.with_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.structured.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.structured.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.structured.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.complete_secondary_cmd_buff.multiple_interpolation.structured.with_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.linear_interpolation.no_offset_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.linear_interpolation.no_offset_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.linear_interpolation.offset_max_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.linear_interpolation.offset_max_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.linear_interpolation.offset_min_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.linear_interpolation.offset_min_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.separate.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.separate.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.separate.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.separate.with_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.structured.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.structured.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.structured.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.partial_secondary_cmd_buff.multiple_interpolation.structured.with_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.linear_interpolation.no_offset_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.linear_interpolation.no_offset_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.linear_interpolation.offset_max_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.linear_interpolation.offset_max_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.linear_interpolation.offset_min_1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.linear_interpolation.offset_min_4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.separate.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.separate.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.separate.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.separate.with_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.structured.no_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.structured.no_sample_decoration.4_samples,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.structured.with_sample_decoration.1_sample,Fail
-dEQP-VK.draw.dynamic_rendering.primary_cmd_buff.multiple_interpolation.structured.with_sample_decoration.4_samples,Fail
-
-dEQP-VK.glsl.limits.near_max.fragment_input.components_123,Fail
-dEQP-VK.glsl.limits.near_max.fragment_input.components_124,Fail
-
-dEQP-VK.pipeline.monolithic.max_varyings.test_vertex_io_between_vertex_fragment,Fail
-dEQP-VK.pipeline.monolithic.multisample.alpha_to_coverage.samples_4.alpha_invisible,Fail
-dEQP-VK.pipeline.monolithic.multisample.alpha_to_coverage.samples_4.alpha_invisible_check_depth,Fail
-dEQP-VK.pipeline.monolithic.multisample.alpha_to_coverage.samples_4.alpha_translucent,Fail
-dEQP-VK.pipeline.monolithic.multisample.alpha_to_coverage_no_color_attachment.samples_4.alpha_opaque,Fail
-dEQP-VK.pipeline.monolithic.multisample.alpha_to_coverage_unused_attachment.samples_4.alpha_invisible,Fail
-dEQP-VK.pipeline.monolithic.multisample_shader_builtin.write_sample_mask.1_samples,Fail
-
-dEQP-VK.pipeline.pipeline_library.max_varyings.test_vertex_io_between_vertex_fragment,Fail
-dEQP-VK.pipeline.pipeline_library.multisample.alpha_to_coverage.samples_4.alpha_invisible,Fail
-dEQP-VK.pipeline.pipeline_library.multisample.alpha_to_coverage.samples_4.alpha_invisible_check_depth,Fail
-dEQP-VK.pipeline.pipeline_library.multisample.alpha_to_coverage.samples_4.alpha_translucent,Fail
-dEQP-VK.pipeline.pipeline_library.multisample.alpha_to_coverage_no_color_attachment.samples_4.alpha_opaque,Fail
-dEQP-VK.pipeline.pipeline_library.multisample.alpha_to_coverage_unused_attachment.samples_4.alpha_invisible,Fail
-
-dEQP-VK.pipeline.pipeline_library.multisample_shader_builtin.write_sample_mask.1_samples,Fail
-
-dEQP-VK.renderpass.suballocation.attachment_allocation.input_output.63,Fail
-dEQP-VK.renderpass.multiple_subpasses_multiple_command_buffers.test,Fail
-dEQP-VK.renderpass2.suballocation.attachment_allocation.input_output.63,Fail
-
-dEQP-VK.spirv_assembly.instruction.compute.opquantize.flush_to_zero,Fail
-dEQP-VK.spirv_assembly.instruction.compute.opquantize_vec4.flush_to_zero,Fail
-dEQP-VK.spirv_assembly.instruction.graphics.opquantize.too_small_frag,Fail
-dEQP-VK.spirv_assembly.instruction.graphics.opquantize.too_small_vert,Fail
-
-dEQP-VK.pipeline.fast_linked_library.max_varyings.test_vertex_io_between_vertex_fragment,Fail
-dEQP-VK.pipeline.fast_linked_library.multisample.alpha_to_coverage_no_color_attachment.samples_4.alpha_opaque,Fail
-dEQP-VK.pipeline.fast_linked_library.multisample.alpha_to_coverage_unused_attachment.samples_4.alpha_invisible,Fail
-
-dEQP-VK.pipeline.fast_linked_library.multisample_shader_builtin.write_sample_mask.1_samples,Fail
-
-dEQP-VK.glsl.loops.special.do_while_dynamic_iterations.dowhile_trap_vertex,Crash
-
-dEQP-VK.rasterization.rasterization_order_attachment_access.depth.samples_1.multi_draw_barriers,Crash
-dEQP-VK.rasterization.rasterization_order_attachment_access.stencil.samples_1.multi_draw_barriers,Crash
-
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.composite_alpha,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.exclusive_nonzero_queues,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.image_array_layers,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.image_extent,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.image_format,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.image_usage,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.min_image_count,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.pre_transform,Crash
-dEQP-VK.wsi.wayland.swapchain.simulate_oom.present_mode,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.clipped,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.composite_alpha,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.image_array_layers,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.image_extent,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.image_format,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.image_usage,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.min_image_count,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.pre_transform,Crash
-dEQP-VK.wsi.xcb.swapchain.simulate_oom.present_mode,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.clipped,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.composite_alpha,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.exclusive_nonzero_queues,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.image_array_layers,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.image_extent,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.image_format,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.min_image_count,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.pre_transform,Crash
-dEQP-VK.wsi.xlib.swapchain.simulate_oom.present_mode,Crash
-
-# introduced by multivews, but the failure actually seems unrelated...
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed0_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed1_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed10_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed11_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed12_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed13_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed14_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed15_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed16_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed17_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed18_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed19_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed2_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed20_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed21_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed22_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed23_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed24_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed25_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed26_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed27_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed28_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed29_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed3_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed30_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed31_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed32_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed33_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed34_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed35_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed36_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed37_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed38_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed39_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed4_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed40_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed41_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed42_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed43_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed44_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed45_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed46_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed47_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed48_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed49_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed5_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed50_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed51_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed52_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed53_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed54_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed55_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed56_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed57_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed58_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed59_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed6_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed60_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed61_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed62_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed63_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed64_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed65_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed66_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed67_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed68_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed69_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed7_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed70_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed71_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed72_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed73_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed74_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed75_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed76_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed77_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed78_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed79_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed8_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed80_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed81_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed82_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed83_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed84_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed85_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed86_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed87_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed88_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed89_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed9_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed90_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed91_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed92_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed93_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed94_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed95_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed96_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed97_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed98_multiview,Crash
-dEQP-VK.dynamic_rendering.primary_cmd_buff.random.seed99_multiview,Crash
+# VKCTS 1.4.5.3 -> 1.4.6.1 uprev
+# [  254.111168] panthor fb000000.gpu: [drm] *ERROR* Unhandled Page fault in AS4 at VA 0x00007FFFFFFF9000
+# [  254.111168] raw fault status: 0x50002C3
+# [  254.111168] decoded fault status: SLAVE FAULT
+# [  254.111168] exception type 0xC3: TRANSLATION_FAULT_3
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_debug_utils,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_large2,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_small2,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.xcb_bind_sparse_wsi,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.xlib_wsi_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_debug_utils,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_device_wait_idle,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_large2,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_small2,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.debug_utils_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.device_wait_idle_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.large2_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.small2_bind_sparse,Crash

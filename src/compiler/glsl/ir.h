@@ -32,7 +32,7 @@
 #include "util/format/u_format.h"
 #include "util/half_float.h"
 #include "compiler/glsl_types.h"
-#include "list.h"
+#include "ir_list.h"
 #include "ir_visitor.h"
 #include "ir_hierarchical_visitor.h"
 #include "util/glheader.h"
@@ -50,6 +50,8 @@ struct gl_builtin_uniform_desc;
 #endif
 
 #ifdef __cplusplus
+
+using float16_t = mesa::float16_t;
 
 /**
  * \defgroup IR Intermediate representation nodes
@@ -102,9 +104,22 @@ enum ir_node_type {
 /**
  * Base class of all IR instructions
  */
-class ir_instruction : public exec_node {
+class ir_instruction : public ir_exec_node {
 public:
    enum ir_node_type ir_type;
+
+   /* The linear_ctx this node was allocated with. If NULL, it's not allocated
+    * with linear_ctx.
+    */
+   linear_ctx *node_linalloc;
+
+   /* ir_instruction structure is not fully constructed the first time the
+    * new() operators are invoked, so UBSan shouldn't check vptrs.
+    */
+   DECLARE_LINEAR_ZALLOC_CXX_OPERATORS_NO_SANITIZE(ir_instruction,
+                                                        ((ir_instruction*)((uintptr_t)p))->node_linalloc = ctx;,
+                                                        UNREACHABLE("don't allocate ir_instruction with new[]");,
+                                                        VPTR)
 
    /**
     * GCC 4.7+ and clang warn when deleting an ir_instruction unless
@@ -122,7 +137,7 @@ public:
 
    virtual void accept(ir_visitor *) = 0;
    virtual ir_visitor_status accept(ir_hierarchical_visitor *) = 0;
-   virtual ir_instruction *clone(void *mem_ctx,
+   virtual ir_instruction *clone(linear_ctx *linalloc,
 				 struct hash_table *ht) const = 0;
 
    bool is_rvalue() const
@@ -222,7 +237,7 @@ class ir_rvalue : public ir_instruction {
 public:
    const struct glsl_type *type;
 
-   virtual ir_rvalue *clone(void *mem_ctx, struct hash_table *) const;
+   virtual ir_rvalue *clone(linear_ctx *linalloc, struct hash_table *) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -231,7 +246,7 @@ public:
 
    virtual ir_visitor_status accept(ir_hierarchical_visitor *);
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    virtual bool is_lvalue(const struct _mesa_glsl_parse_state * = NULL) const
@@ -270,7 +285,7 @@ public:
     * for vector and scalar types that have all elements set to the value
     * zero (or \c false for booleans).
     *
-    * \sa ir_constant::has_value, ir_rvalue::is_one, ir_rvalue::is_negative_one
+    * \sa ir_constant::has_value, ir_rvalue::is_one
     */
    virtual bool is_zero() const;
 
@@ -282,36 +297,14 @@ public:
     * for vector and scalar types that have all elements set to the value
     * one (or \c true for booleans).
     *
-    * \sa ir_constant::has_value, ir_rvalue::is_zero, ir_rvalue::is_negative_one
+    * \sa ir_constant::has_value, ir_rvalue::is_zero
     */
    virtual bool is_one() const;
 
    /**
-    * Determine if an r-value has the value negative one
-    *
-    * The base implementation of this function always returns \c false.  The
-    * \c ir_constant class over-rides this function to return \c true \b only
-    * for vector and scalar types that have all elements set to the value
-    * negative one.  For boolean types, the result is always \c false.
-    *
-    * \sa ir_constant::has_value, ir_rvalue::is_zero, ir_rvalue::is_one
-    */
-   virtual bool is_negative_one() const;
-
-   /**
-    * Determine if an r-value is an unsigned integer constant which can be
-    * stored in 16 bits.
-    *
-    * \sa ir_constant::is_uint16_constant.
-    */
-   virtual bool is_uint16_constant() const { return false; }
-
-   /**
     * Return a generic value of error_type.
-    *
-    * Allocation will be performed with 'mem_ctx' as ralloc owner.
     */
-   static ir_rvalue *error_value(void *mem_ctx);
+   static ir_rvalue *error_value(linear_ctx *linalloc);
 
 protected:
    ir_rvalue(enum ir_node_type t);
@@ -326,8 +319,10 @@ enum ir_variable_mode {
    ir_var_uniform,              /**< Variable declared as a uniform. */
    ir_var_shader_storage,       /**< Variable declared as an ssbo. */
    ir_var_shader_shared,        /**< Variable declared as shared. */
+   ir_var_shader_task_payload,
    ir_var_shader_in,
    ir_var_shader_out,
+   ir_var_shader_pixel_local_storage, /**< Variable declared as pixel local storage */
    ir_var_function_in,
    ir_var_function_out,
    ir_var_function_inout,
@@ -403,9 +398,10 @@ struct ir_state_slot {
 
 class ir_variable : public ir_instruction {
 public:
-   ir_variable(const struct glsl_type *, const char *, ir_variable_mode);
+   ir_variable(const struct glsl_type *, const char *,
+               ir_variable_mode);
 
-   virtual ir_variable *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_variable *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -479,7 +475,7 @@ public:
       this->interface_type = type;
       if (this->is_interface_instance()) {
          this->u.max_ifc_array_access =
-            ralloc_array(this, int, type->length);
+            linear_alloc_array(this->node_linalloc, int, type->length);
          for (unsigned i = 0; i < type->length; i++) {
             this->u.max_ifc_array_access[i] = -1;
          }
@@ -520,7 +516,6 @@ public:
          for (unsigned i = 0; i < this->interface_type->length; i++)
             assert(this->u.max_ifc_array_access[i] == -1);
 #endif
-         ralloc_free(this->u.max_ifc_array_access);
          this->u.max_ifc_array_access = NULL;
       }
       this->interface_type = NULL;
@@ -576,7 +571,7 @@ public:
    {
       assert(!this->is_interface_instance());
 
-      this->u.state_slots = ralloc_array(this, ir_state_slot, n);
+      this->u.state_slots = linear_alloc_array(this->node_linalloc, ir_state_slot, n);
       this->data._num_state_slots = 0;
 
       if (this->u.state_slots != NULL)
@@ -609,13 +604,6 @@ public:
     * Enable emitting extension warnings for this variable
     */
    void enable_extension_warning(const char *extension);
-
-   /**
-    * Get the extension warning string for this variable
-    *
-    * If warnings are not enabled, \c NULL is returned.
-    */
-   const char *get_extension_warning() const;
 
    /**
     * Declared type of the variable
@@ -872,6 +860,17 @@ public:
       unsigned implicit_conversion_prohibited:1;
 
       /**
+       * Non-zero if the variable is per-primitive as defined by EXT_mesh_shader
+       */
+      unsigned per_primitive:1;
+
+      /**
+       * Non-zero if the variable is pixel local storage; in this
+       * case bit 0 indicates read access, bit 1 write access
+       */
+      unsigned pixel_local_storage:2;
+
+      /**
        * Emit a warning if this variable is accessed.
        */
    private:
@@ -1103,6 +1102,7 @@ enum ir_intrinsic_id {
 
    ir_intrinsic_memory_barrier,
    ir_intrinsic_shader_clock,
+   ir_intrinsic_shader_clock_realtime,
    ir_intrinsic_group_memory_barrier,
    ir_intrinsic_memory_barrier_atomic_counter,
    ir_intrinsic_memory_barrier_buffer,
@@ -1177,6 +1177,9 @@ enum ir_intrinsic_id {
    ir_intrinsic_quad_swap_horizontal,
    ir_intrinsic_quad_swap_vertical,
    ir_intrinsic_quad_swap_diagonal,
+
+   ir_intrinsic_emit_mesh_tasks,
+   ir_intrinsic_set_mesh_outputs,
 };
 
 /*@{*/
@@ -1192,9 +1195,9 @@ public:
    ir_function_signature(const glsl_type *return_type,
                          builtin_available_predicate builtin_avail = NULL);
 
-   virtual ir_function_signature *clone(void *mem_ctx,
+   virtual ir_function_signature *clone(linear_ctx *linalloc,
 					struct hash_table *ht) const;
-   ir_function_signature *clone_prototype(void *mem_ctx,
+   ir_function_signature *clone_prototype(linear_ctx *mem_ctx,
 					  struct hash_table *ht) const;
 
    virtual void accept(ir_visitor *v)
@@ -1209,8 +1212,8 @@ public:
     * given a list of the actual parameters and the variable context.
     * Returns NULL for non-built-ins.
     */
-   ir_constant *constant_expression_value(void *mem_ctx,
-                                          exec_list *actual_parameters,
+   ir_constant *constant_expression_value(linear_ctx *mem_ctx,
+                                          ir_exec_list *actual_parameters,
                                           struct hash_table *variable_context);
 
    /**
@@ -1240,14 +1243,14 @@ public:
     * and the supplied parameter list.  If not, returns the name of the first
     * parameter with mismatched qualifiers (for use in error messages).
     */
-   const char *qualifiers_match(exec_list *params);
+   const char *qualifiers_match(ir_exec_list *params);
 
    /**
     * Replace the current parameter list with the given one.  This is useful
     * if the current information came from a prototype, and either has invalid
     * or missing parameter names.
     */
-   void replace_parameters(exec_list *new_params);
+   void replace_parameters(ir_exec_list *new_params);
 
    /**
     * Function return type.
@@ -1262,7 +1265,7 @@ public:
     * This represents the storage.  The paramaters passed in a particular
     * call will be in ir_call::actual_paramaters.
     */
-   struct exec_list parameters;
+   struct ir_exec_list parameters;
 
    /** Whether or not this function has a body (which may be empty). */
    unsigned is_defined:1;
@@ -1293,7 +1296,7 @@ public:
    bool is_builtin_available(const _mesa_glsl_parse_state *state) const;
 
    /** Body of instructions in the function. */
-   struct exec_list body;
+   struct ir_exec_list body;
 
 private:
    /**
@@ -1321,8 +1324,8 @@ private:
     * Returns false if the expression is not constant, true otherwise,
     * and the value in *result if result is non-NULL.
     */
-   bool constant_expression_evaluate_expression_list(void *mem_ctx,
-                                                     const struct exec_list &body,
+   bool constant_expression_evaluate_expression_list(linear_ctx *linalloc,
+                                                     const struct ir_exec_list &body,
 						     struct hash_table *variable_context,
 						     ir_constant **result);
 };
@@ -1337,7 +1340,7 @@ class ir_function : public ir_instruction {
 public:
    ir_function(const char *name);
 
-   virtual ir_function *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_function *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -1357,7 +1360,7 @@ public:
     * conversions into account.  Also flags whether the match was exact.
     */
    ir_function_signature *matching_signature(_mesa_glsl_parse_state *state,
-                                             const exec_list *actual_param,
+                                             const ir_exec_list *actual_param,
                                              bool has_implicit_conversions,
                                              bool has_implicit_int_to_uint_conversion,
                                              bool allow_builtins,
@@ -1368,7 +1371,7 @@ public:
     * conversions into account.
     */
    ir_function_signature *matching_signature(_mesa_glsl_parse_state *state,
-                                             const exec_list *actual_param,
+                                             const ir_exec_list *actual_param,
                                              bool has_implicit_conversions,
                                              bool has_implicit_int_to_uint_conversion,
                                              bool allow_builtins);
@@ -1378,7 +1381,7 @@ public:
     * any implicit type conversions.
     */
    ir_function_signature *exact_matching_signature(_mesa_glsl_parse_state *state,
-                                                   const exec_list *actual_ps);
+                                                   const ir_exec_list *actual_ps);
 
    /**
     * Name of the function.
@@ -1391,7 +1394,7 @@ public:
    /**
     * List of ir_function_signature for each overloaded function with this name.
     */
-   struct exec_list signatures;
+   struct ir_exec_list signatures;
 
    /**
     * is this function a subroutine type declaration
@@ -1428,7 +1431,7 @@ public:
    {
    }
 
-   virtual ir_if *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_if *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -1439,9 +1442,9 @@ public:
 
    ir_rvalue *condition;
    /** List of ir_instruction for the body of the then branch */
-   exec_list  then_instructions;
+   ir_exec_list  then_instructions;
    /** List of ir_instruction for the body of the else branch */
-   exec_list  else_instructions;
+   ir_exec_list  else_instructions;
 };
 
 
@@ -1452,7 +1455,7 @@ class ir_loop : public ir_instruction {
 public:
    ir_loop();
 
-   virtual ir_loop *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_loop *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -1462,7 +1465,11 @@ public:
    virtual ir_visitor_status accept(ir_hierarchical_visitor *);
 
    /** List of ir_instruction that make up the body of the loop. */
-   exec_list body_instructions;
+   ir_exec_list body_instructions;
+   /** List of ir_instruction that make up the continue construct. */
+   ir_exec_list continue_instructions;
+   /** Whether the loop is in do-while form. */
+   bool do_while;
 };
 
 
@@ -1479,9 +1486,9 @@ public:
     */
    ir_assignment(ir_dereference *lhs, ir_rvalue *rhs, unsigned write_mask);
 
-   virtual ir_assignment *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_assignment *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    virtual void accept(ir_visitor *v)
@@ -1567,7 +1574,7 @@ public:
     */
    ir_expression(int op, ir_rvalue *op0, ir_rvalue *op1, ir_rvalue *op2);
 
-   virtual ir_expression *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_expression *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
    /**
     * Attempt to constant-fold the expression
@@ -1579,7 +1586,7 @@ public:
     * If the expression cannot be constant folded, this method will return
     * \c NULL.
     */
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    /**
@@ -1600,11 +1607,6 @@ public:
              operation == ir_triop_vector_insert ||
              operation == ir_quadop_vector;
    }
-
-   /**
-    * Do a reverse-lookup to translate the given string into an operator.
-    */
-   static ir_expression_operation get_operator(const char *);
 
    virtual void accept(ir_visitor *v)
    {
@@ -1641,7 +1643,7 @@ class ir_call : public ir_instruction {
 public:
    ir_call(ir_function_signature *callee,
 	   ir_dereference_variable *return_deref,
-	   exec_list *actual_parameters)
+	   ir_exec_list *actual_parameters)
       : ir_instruction(ir_type_call), return_deref(return_deref), callee(callee), sub_var(NULL), array_idx(NULL)
    {
       assert(callee->return_type != NULL);
@@ -1650,7 +1652,7 @@ public:
 
    ir_call(ir_function_signature *callee,
 	   ir_dereference_variable *return_deref,
-	   exec_list *actual_parameters,
+	   ir_exec_list *actual_parameters,
 	   ir_variable *var, ir_rvalue *array_idx)
       : ir_instruction(ir_type_call), return_deref(return_deref), callee(callee), sub_var(var), array_idx(array_idx)
    {
@@ -1658,9 +1660,9 @@ public:
       actual_parameters->move_nodes_to(& this->actual_parameters);
    }
 
-   virtual ir_call *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_call *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    virtual void accept(ir_visitor *v)
@@ -1696,7 +1698,7 @@ public:
    ir_function_signature *callee;
 
    /* List of ir_rvalue of paramaters passed in this call. */
-   exec_list actual_parameters;
+   ir_exec_list actual_parameters;
 
    /*
     * ARB_shader_subroutine support -
@@ -1734,7 +1736,7 @@ public:
    {
    }
 
-   virtual ir_return *clone(void *mem_ctx, struct hash_table *) const;
+   virtual ir_return *clone(linear_ctx *linalloc, struct hash_table *) const;
 
    ir_rvalue *get_value() const
    {
@@ -1773,7 +1775,7 @@ public:
       this->mode = mode;
    }
 
-   virtual ir_loop_jump *clone(void *mem_ctx, struct hash_table *) const;
+   virtual ir_loop_jump *clone(linear_ctx *linalloc, struct hash_table *) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -1813,7 +1815,7 @@ public:
       this->condition = cond;
    }
 
-   virtual ir_discard *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_discard *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -1838,7 +1840,7 @@ public:
    {
    }
 
-   virtual ir_demote *clone(void *mem_ctx, struct hash_table *ht) const;
+   virtual ir_demote *clone(linear_ctx *linalloc, struct hash_table *ht) const;
 
    virtual void accept(ir_visitor *v)
    {
@@ -1905,9 +1907,9 @@ public:
       memset(&lod_info, 0, sizeof(lod_info));
    }
 
-   virtual ir_texture *clone(void *mem_ctx, struct hash_table *) const;
+   virtual ir_texture *clone(linear_ctx *linalloc, struct hash_table *) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    virtual void accept(ir_visitor *v)
@@ -1924,11 +1926,6 @@ public:
 
    /** Set the sampler and type. */
    void set_sampler(ir_dereference *sampler, const glsl_type *type);
-
-   /**
-    * Do a reverse-lookup to translate a string into an ir_texture_opcode.
-    */
-   static ir_texture_opcode get_opcode(const char *);
 
    enum ir_texture_opcode op;
 
@@ -2006,9 +2003,9 @@ public:
 
    ir_swizzle(ir_rvalue *val, ir_swizzle_mask mask);
 
-   virtual ir_swizzle *clone(void *mem_ctx, struct hash_table *) const;
+   virtual ir_swizzle *clone(linear_ctx *linalloc, struct hash_table *) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    /**
@@ -2048,7 +2045,7 @@ private:
 
 class ir_dereference : public ir_rvalue {
 public:
-   virtual ir_dereference *clone(void *mem_ctx, struct hash_table *) const = 0;
+   virtual ir_dereference *clone(linear_ctx *linalloc, struct hash_table *) const = 0;
 
    bool is_lvalue(const struct _mesa_glsl_parse_state *state) const;
 
@@ -2075,10 +2072,10 @@ class ir_dereference_variable : public ir_dereference {
 public:
    ir_dereference_variable(ir_variable *var);
 
-   virtual ir_dereference_variable *clone(void *mem_ctx,
+   virtual ir_dereference_variable *clone(linear_ctx *linalloc,
 					  struct hash_table *) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    /**
@@ -2125,10 +2122,10 @@ public:
 
    ir_dereference_array(ir_variable *var, ir_rvalue *array_index);
 
-   virtual ir_dereference_array *clone(void *mem_ctx,
+   virtual ir_dereference_array *clone(linear_ctx *linalloc,
 				       struct hash_table *) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
    /**
     * Get the variable that is ultimately referenced by an r-value
@@ -2169,10 +2166,10 @@ public:
 
    ir_dereference_record(ir_variable *var, const char *field);
 
-   virtual ir_dereference_record *clone(void *mem_ctx,
+   virtual ir_dereference_record *clone(linear_ctx *linalloc,
 					struct hash_table *) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    /**
@@ -2236,7 +2233,7 @@ public:
    /**
     * Construct an ir_constant from a list of ir_constant values
     */
-   ir_constant(const struct glsl_type *type, exec_list *values);
+   ir_constant(const struct glsl_type *type, ir_exec_list *values);
 
    /**
     * Construct an ir_constant from a scalar component of another ir_constant
@@ -2253,11 +2250,11 @@ public:
    /**
     * Return a new ir_constant of the specified type containing all zeros.
     */
-   static ir_constant *zero(void *mem_ctx, const glsl_type *type);
+   static ir_constant *zero(linear_ctx *linalloc, const glsl_type *type);
 
-   virtual ir_constant *clone(void *mem_ctx, struct hash_table *) const;
+   virtual ir_constant *clone(linear_ctx *linalloc, struct hash_table *) const;
 
-   virtual ir_constant *constant_expression_value(void *mem_ctx,
+   virtual ir_constant *constant_expression_value(linear_ctx *linalloc,
                                                   struct hash_table *variable_context = NULL);
 
    virtual void accept(ir_visitor *v)
@@ -2301,7 +2298,7 @@ public:
     * without creating a new object.
     */
 
-   void copy_offset(ir_constant *src, int offset);
+   void copy_offset(linear_ctx *linalloc, ir_constant *src, int offset);
 
    /**
     * Copy the values on another constant at a given offset and
@@ -2332,15 +2329,6 @@ public:
    virtual bool is_value(float f, int i) const;
    virtual bool is_zero() const;
    virtual bool is_one() const;
-   virtual bool is_negative_one() const;
-
-   /**
-    * Return true for constants that could be stored as 16-bit unsigned values.
-    *
-    * Note that this will return true even for signed integer ir_constants, as
-    * long as the value is non-negative and fits in 16-bits.
-    */
-   virtual bool is_uint16_constant() const;
 
    /**
     * Value of the constant.
@@ -2378,9 +2366,9 @@ public:
       v->visit(this);
    }
 
-   virtual ir_emit_vertex *clone(void *mem_ctx, struct hash_table *ht) const
+   virtual ir_emit_vertex *clone(linear_ctx *linalloc, struct hash_table *ht) const
    {
-      return new(mem_ctx) ir_emit_vertex(this->stream->clone(mem_ctx, ht));
+      return new(linalloc) ir_emit_vertex(this->stream->clone(linalloc, ht));
    }
 
    virtual ir_visitor_status accept(ir_hierarchical_visitor *);
@@ -2411,9 +2399,9 @@ public:
       v->visit(this);
    }
 
-   virtual ir_end_primitive *clone(void *mem_ctx, struct hash_table *ht) const
+   virtual ir_end_primitive *clone(linear_ctx *linalloc, struct hash_table *ht) const
    {
-      return new(mem_ctx) ir_end_primitive(this->stream->clone(mem_ctx, ht));
+      return new(linalloc) ir_end_primitive(this->stream->clone(linalloc, ht));
    }
 
    virtual ir_visitor_status accept(ir_hierarchical_visitor *);
@@ -2441,9 +2429,9 @@ public:
       v->visit(this);
    }
 
-   virtual ir_barrier *clone(void *mem_ctx, struct hash_table *) const
+   virtual ir_barrier *clone(linear_ctx *linalloc, struct hash_table *) const
    {
-      return new(mem_ctx) ir_barrier();
+      return new(linalloc) ir_barrier();
    }
 
    virtual ir_visitor_status accept(ir_hierarchical_visitor *);
@@ -2455,15 +2443,15 @@ public:
  * Apply a visitor to each IR node in a list
  */
 void
-visit_exec_list(exec_list *list, ir_visitor *visitor);
+visit_exec_list(ir_exec_list *list, ir_visitor *visitor);
 
 void
-visit_exec_list_safe(exec_list *list, ir_visitor *visitor);
+visit_exec_list_safe(ir_exec_list *list, ir_visitor *visitor);
 
 /**
  * Validate invariants on each IR node in a list
  */
-void validate_ir_tree(exec_list *instructions);
+void validate_ir_tree(ir_exec_list *instructions);
 
 /**
  * Detect whether an unlinked shader contains static recursion
@@ -2474,7 +2462,7 @@ void validate_ir_tree(exec_list *instructions);
  */
 void
 detect_recursion_unlinked(struct _mesa_glsl_parse_state *state,
-			  exec_list *instructions);
+			  ir_exec_list *instructions);
 
 /**
  * Make a clone of each IR instruction in a list
@@ -2483,14 +2471,11 @@ detect_recursion_unlinked(struct _mesa_glsl_parse_state *state,
  * \param out  List to hold the cloned instructions
  */
 void
-clone_ir_list(void *mem_ctx, exec_list *out, const exec_list *in);
-
-extern void
-reparent_ir(exec_list *list, void *mem_ctx);
+clone_ir_list(linear_ctx *mem_ctx, ir_exec_list *out, const ir_exec_list *in);
 
 extern char *
 prototype_string(const glsl_type *return_type, const char *name,
-		 exec_list *parameters);
+		 ir_exec_list *parameters);
 
 const char *
 mode_string(const ir_variable *var);
@@ -2502,10 +2487,10 @@ extern void
 _mesa_glsl_initialize_types(struct _mesa_glsl_parse_state *state);
 
 extern void
-_mesa_glsl_initialize_variables(struct exec_list *instructions,
+_mesa_glsl_initialize_variables(struct ir_exec_list *instructions,
                                 struct _mesa_glsl_parse_state *state);
 
-extern void _mesa_print_ir(FILE *f, struct exec_list *instructions,
+extern void _mesa_print_ir(FILE *f, struct ir_exec_list *instructions,
                            struct _mesa_glsl_parse_state *state);
 
 extern void

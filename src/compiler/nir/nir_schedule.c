@@ -24,6 +24,7 @@
 #include "nir_schedule.h"
 #include "util/dag.h"
 #include "util/u_dynarray.h"
+#include "nir.h"
 
 /** @file
  *
@@ -273,11 +274,11 @@ nir_schedule_ssa_deps(nir_def *def, void *in_state)
 {
    nir_deps_state *state = in_state;
    struct hash_table *instr_map = state->scoreboard->instr_map;
-   nir_schedule_node *def_n = nir_schedule_get_node(instr_map, def->parent_instr);
+   nir_schedule_node *def_n = nir_schedule_get_node(instr_map, nir_def_instr(def));
 
    nir_foreach_use(src, def) {
       nir_schedule_node *use_n = nir_schedule_get_node(instr_map,
-                                                       nir_src_parent_instr(src));
+                                                       nir_src_use_instr(src));
 
       add_read_dep(state, def_n, use_n);
    }
@@ -462,7 +463,6 @@ nir_schedule_calculate_deps(nir_deps_state *state, nir_schedule_node *n)
    case nir_instr_type_load_const:
    case nir_instr_type_alu:
    case nir_instr_type_deref:
-   case nir_instr_type_debug_info:
       break;
 
    case nir_instr_type_tex:
@@ -477,15 +477,12 @@ nir_schedule_calculate_deps(nir_deps_state *state, nir_schedule_node *n)
       break;
 
    case nir_instr_type_call:
-      unreachable("Calls should have been lowered");
-      break;
-
-   case nir_instr_type_parallel_copy:
-      unreachable("Parallel copies should have been lowered");
+   case nir_instr_type_cmat_call:
+      UNREACHABLE("Calls should have been lowered");
       break;
 
    case nir_instr_type_phi:
-      unreachable("nir_schedule() should be called after lowering from SSA");
+      UNREACHABLE("nir_schedule() should be called after lowering from SSA");
       break;
 
    case nir_instr_type_intrinsic:
@@ -543,7 +540,7 @@ nir_schedule_regs_freed_src_cb(nir_src *src, void *in_state)
    struct set *remaining_uses = nir_schedule_scoreboard_get_src(scoreboard, src);
 
    if (remaining_uses->entries == 1 &&
-       _mesa_set_search(remaining_uses, nir_src_parent_instr(src))) {
+       _mesa_set_search(remaining_uses, nir_src_use_instr(src))) {
       state->regs_freed += nir_schedule_src_pressure(src);
    }
 
@@ -902,7 +899,7 @@ nir_schedule_mark_src_scheduled(nir_src *src, void *state)
    struct set *remaining_uses = nir_schedule_scoreboard_get_src(scoreboard, src);
 
    struct set_entry *entry = _mesa_set_search(remaining_uses,
-                                              nir_src_parent_instr(src));
+                                              nir_src_use_instr(src));
    if (entry) {
       /* Once we've used an SSA value in one instruction, bump the priority of
        * the other uses so the SSA value can get fully consumed.
@@ -912,14 +909,14 @@ nir_schedule_mark_src_scheduled(nir_src *src, void *state)
        * they're often folded as immediates into backend instructions and have
        * many unrelated instructions all referencing the same value (0).
        */
-      if (src->ssa->parent_instr->type != nir_instr_type_load_const) {
+      if (!nir_def_is_const(src->ssa)) {
          nir_foreach_use(other_src, src->ssa) {
-            if (nir_src_parent_instr(other_src) == nir_src_parent_instr(src))
+            if (nir_src_use_instr(other_src) == nir_src_use_instr(src))
                continue;
 
             nir_schedule_node *n =
                nir_schedule_get_node(scoreboard->instr_map,
-                                     nir_src_parent_instr(other_src));
+                                     nir_src_use_instr(other_src));
 
             if (n && !n->partially_evaluated_path) {
                if (debug) {
@@ -936,7 +933,7 @@ nir_schedule_mark_src_scheduled(nir_src *src, void *state)
 
    nir_schedule_mark_use(scoreboard,
                          (void *)src->ssa,
-                         nir_src_parent_instr(src),
+                         nir_src_use_instr(src),
                          nir_schedule_src_pressure(src));
 
    return true;
@@ -947,7 +944,7 @@ nir_schedule_mark_def_scheduled(nir_def *def, void *state)
 {
    nir_schedule_scoreboard *scoreboard = state;
 
-   nir_schedule_mark_use(scoreboard, def, def->parent_instr,
+   nir_schedule_mark_use(scoreboard, def, nir_def_instr(def),
                          nir_schedule_def_pressure(def));
 
    return true;
@@ -1093,10 +1090,9 @@ nir_schedule_get_delay(nir_schedule_scoreboard *scoreboard, nir_instr *instr)
    case nir_instr_type_alu:
    case nir_instr_type_deref:
    case nir_instr_type_jump:
-   case nir_instr_type_parallel_copy:
    case nir_instr_type_call:
+   case nir_instr_type_cmat_call:
    case nir_instr_type_phi:
-   case nir_instr_type_debug_info:
       return 1;
 
    case nir_instr_type_intrinsic:
@@ -1191,11 +1187,11 @@ nir_schedule_ssa_def_init_scoreboard(nir_def *def, void *state)
    /* We don't consider decl_reg to be a use to avoid extending register live
     * ranges any further than needed.
     */
-   if (!is_decl_reg(def->parent_instr))
-      _mesa_set_add(def_uses, def->parent_instr);
+   if (!is_decl_reg(nir_def_instr(def)))
+      _mesa_set_add(def_uses, nir_def_instr(def));
 
    nir_foreach_use(src, def) {
-      _mesa_set_add(def_uses, nir_src_parent_instr(src));
+      _mesa_set_add(def_uses, nir_src_use_instr(src));
    }
 
    /* XXX: Handle if uses */
@@ -1271,7 +1267,7 @@ nir_schedule_validate_uses(nir_schedule_scoreboard *scoreboard)
  * free a register immediately.  The amount below the limit is up to you to
  * tune.
  */
-void
+bool
 nir_schedule(nir_shader *shader,
              const nir_schedule_options *options)
 {
@@ -1287,9 +1283,14 @@ nir_schedule(nir_shader *shader,
       nir_foreach_block(block, impl) {
          nir_schedule_block(scoreboard, block);
       }
+
+      nir_progress(true, impl, nir_metadata_control_flow |
+                               nir_metadata_divergence |
+                               nir_metadata_live_defs);
    }
 
    nir_schedule_validate_uses(scoreboard);
 
    ralloc_free(scoreboard);
+   return true;
 }

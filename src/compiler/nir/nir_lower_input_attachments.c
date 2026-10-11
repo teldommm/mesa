@@ -28,104 +28,128 @@ static nir_def *
 load_frag_coord(nir_builder *b, nir_deref_instr *deref,
                 const nir_input_attachment_options *options)
 {
-   if (options->use_fragcoord_sysval) {
-      nir_def *frag_coord = nir_load_frag_coord(b);
-      if (options->unscaled_input_attachment_ir3 ||
-          options->unscaled_depth_stencil_ir3) {
-         nir_variable *var = nir_deref_instr_get_variable(deref);
-         unsigned base = var->data.index;
-         nir_def *unscaled_frag_coord = nir_load_frag_coord_unscaled_ir3(b);
-         if (deref->deref_type == nir_deref_type_array &&
-             options->unscaled_input_attachment_ir3) {
-            nir_def *unscaled =
-               nir_i2b(b, nir_iand(b, nir_ishr(b, nir_imm_int(b, options->unscaled_input_attachment_ir3 >> base), deref->arr.index.ssa),
-                                   nir_imm_int(b, 1)));
-            frag_coord = nir_bcsel(b, unscaled, unscaled_frag_coord, frag_coord);
-         } else {
-            assert(deref->deref_type == nir_deref_type_var);
-            bool unscaled = base == NIR_VARIABLE_NO_INDEX ?
-               options->unscaled_depth_stencil_ir3 :
-               ((options->unscaled_input_attachment_ir3 >> base) & 1);
-            frag_coord = unscaled ? unscaled_frag_coord : frag_coord;
-         }
+   nir_def *frag_coord = nir_build_frag_coord(b, 2);
+
+   if (options->gmem_input_attachment_ir3 ||
+       options->gmem_depth_stencil_ir3) {
+      nir_variable *var = nir_deref_instr_get_variable(deref);
+      unsigned base = var->data.index;
+      nir_def *gmem_frag_coord = nir_trim_vector(b, nir_load_frag_coord_gmem_ir3(b), 2);
+
+      if (deref->deref_type == nir_deref_type_array &&
+          options->gmem_input_attachment_ir3) {
+         nir_def *gmem =
+            nir_i2b(b, nir_iand(b, nir_ishr(b, nir_imm_int(b, options->gmem_input_attachment_ir3 >> base), deref->arr.index.ssa),
+                                nir_imm_int(b, 1)));
+         frag_coord = nir_bcsel(b, gmem, gmem_frag_coord, frag_coord);
+      } else {
+         assert(deref->deref_type == nir_deref_type_var);
+         bool gmem = base == NIR_VARIABLE_NO_INDEX ? options->gmem_depth_stencil_ir3 : ((options->gmem_input_attachment_ir3 >> base) & 1);
+         frag_coord = gmem ? gmem_frag_coord : frag_coord;
       }
-      return frag_coord;
    }
-
-   nir_variable *pos = nir_get_variable_with_location(b->shader, nir_var_shader_in,
-                                                      VARYING_SLOT_POS, glsl_vec4_type());
-
-   /**
-    * From Vulkan spec:
-    *   "The OriginLowerLeft execution mode must not be used; fragment entry
-    *    points must declare OriginUpperLeft."
-    *
-    * So at this point origin_upper_left should be true
-    */
-   assert(b->shader->info.fs.origin_upper_left == true);
-
-   return nir_load_var(b, pos);
+   return frag_coord;
 }
 
 static nir_def *
 load_layer_id(nir_builder *b, const nir_input_attachment_options *options)
 {
-   if (options->use_layer_id_sysval) {
-      if (options->use_view_id_for_layer)
-         return nir_load_view_index(b);
-      else
-         return nir_load_layer_id(b);
+   if (options->use_view_id_for_layer)
+      return nir_load_view_index(b);
+   else
+      return nir_load_layer_id(b);
+}
+
+static nir_def *
+load_coord(nir_builder *b, nir_deref_instr *deref,
+           const nir_input_attachment_options *options)
+{
+   if (options->use_ia_coord_intrin) {
+      nir_def *index;
+      if (deref->deref_type == nir_deref_type_array) {
+         ASSERTED nir_deref_instr *parent = nir_deref_instr_parent(deref);
+         assert(parent->deref_type == nir_deref_type_var);
+         index = deref->arr.index.ssa;
+      } else {
+         assert(deref->deref_type == nir_deref_type_var);
+         index = nir_imm_int(b, 0);
+      }
+
+      return nir_load_input_attachment_coord(b, index);
+   } else {
+      nir_def *pos = nir_f2i32(b, load_frag_coord(b, deref, options));
+      nir_def *layer = load_layer_id(b, options);
+      return nir_vec3(b, nir_channel(b, pos, 0), nir_channel(b, pos, 1), layer);
    }
-
-   gl_varying_slot slot = options->use_view_id_for_layer ? VARYING_SLOT_VIEW_INDEX : VARYING_SLOT_LAYER;
-   nir_variable *layer_id = nir_get_variable_with_location(b->shader, nir_var_shader_in,
-                                                           slot, glsl_int_type());
-   layer_id->data.interpolation = INTERP_MODE_FLAT;
-
-   return nir_load_var(b, layer_id);
 }
 
 static bool
 try_lower_input_load(nir_builder *b, nir_intrinsic_instr *load,
+                     bool is_deref, bool is_sparse,
                      const nir_input_attachment_options *options)
 {
-   nir_deref_instr *deref = nir_src_as_deref(load->src[0]);
-   assert(glsl_type_is_image(deref->type));
+   nir_tex_src_type handle_src_type;
+   enum glsl_sampler_dim image_dim;
+   nir_alu_type dest_type;
+   nir_def *handle, *coord;
 
-   enum glsl_sampler_dim image_dim = glsl_get_sampler_dim(deref->type);
-   if (image_dim != GLSL_SAMPLER_DIM_SUBPASS &&
-       image_dim != GLSL_SAMPLER_DIM_SUBPASS_MS)
-      return false;
+   b->cursor = nir_after_instr(&load->instr);
+
+   if (is_deref) {
+      nir_deref_instr *deref = nir_src_as_deref(load->src[0]);
+      assert(glsl_type_is_image(deref->type));
+
+      image_dim = glsl_get_sampler_dim(deref->type);
+      if (image_dim != GLSL_SAMPLER_DIM_SUBPASS &&
+          image_dim != GLSL_SAMPLER_DIM_SUBPASS_MS)
+         return false;
+
+      nir_def *offset = nir_vec3(b, nir_channel(b, load->src[1].ssa, 0),
+                                    nir_channel(b, load->src[1].ssa, 1),
+                                    nir_imm_int(b, 0));
+      coord = nir_iadd(b, load_coord(b, deref, options), offset);
+
+      handle = &deref->def;
+      handle_src_type = nir_tex_src_texture_deref;
+
+      dest_type = nir_get_nir_type_for_glsl_base_type(
+         glsl_get_sampler_result_type(deref->type));
+   } else {
+      image_dim = nir_intrinsic_image_dim(load);
+      if (image_dim != GLSL_SAMPLER_DIM_SUBPASS &&
+          image_dim != GLSL_SAMPLER_DIM_SUBPASS_MS)
+         return false;
+
+      nir_def *frag_coord = nir_f2i32(b, nir_build_frag_coord(b, 2));
+      coord = nir_vec3(
+         b,
+         nir_iadd(b, nir_channel(b, frag_coord, 0), nir_channel(b, load->src[1].ssa, 0)),
+         nir_iadd(b, nir_channel(b, frag_coord, 1), nir_channel(b, load->src[1].ssa, 1)),
+         load_layer_id(b, options));
+
+      handle = load->src[0].ssa;
+      handle_src_type = nir_tex_src_texture_heap_offset;
+
+      dest_type = nir_intrinsic_dest_type(load);
+   }
 
    const bool multisampled = (image_dim == GLSL_SAMPLER_DIM_SUBPASS_MS);
-
-   b->cursor = nir_instr_remove(&load->instr);
-
-   nir_def *frag_coord = load_frag_coord(b, deref, options);
-   frag_coord = nir_f2i32(b, frag_coord);
-   nir_def *offset = nir_trim_vector(b, load->src[1].ssa, 2);
-   nir_def *pos = nir_iadd(b, frag_coord, offset);
-
-   nir_def *layer = load_layer_id(b, options);
-   nir_def *coord =
-      nir_vec3(b, nir_channel(b, pos, 0), nir_channel(b, pos, 1), layer);
 
    nir_tex_instr *tex = nir_tex_instr_create(b->shader, 3 + multisampled);
 
    tex->op = nir_texop_txf;
    tex->sampler_dim = image_dim;
 
-   tex->dest_type =
-      nir_get_nir_type_for_glsl_base_type(glsl_get_sampler_result_type(deref->type));
+   tex->dest_type = dest_type;
    tex->is_array = true;
    tex->is_shadow = false;
-   tex->is_sparse = load->intrinsic == nir_intrinsic_image_deref_sparse_load;
+   tex->is_sparse = is_sparse;
 
    tex->texture_index = 0;
    tex->sampler_index = 0;
+   tex->can_speculate = true;
 
-   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_texture_deref,
-                                     &deref->def);
+   tex->src[0] = nir_tex_src_for_ssa(handle_src_type, handle);
    tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
    tex->coord_components = 3;
 
@@ -148,10 +172,9 @@ try_lower_input_load(nir_builder *b, nir_intrinsic_instr *load,
       nir_def *res = nir_channels(
          b, &tex->def, load_result_mask | 0x10);
 
-      nir_def_rewrite_uses(&load->def, res);
+      nir_def_replace(&load->def, res);
    } else {
-      nir_def_rewrite_uses(&load->def,
-                           &tex->def);
+      nir_def_replace(&load->def, &tex->def);
    }
 
    return true;
@@ -161,23 +184,30 @@ static bool
 try_lower_input_texop(nir_builder *b, nir_tex_instr *tex,
                       const nir_input_attachment_options *options)
 {
-   nir_deref_instr *deref = nir_src_as_deref(tex->src[0].src);
+   const int texture_src_idx =
+      nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
+   if (texture_src_idx < 0)
+      return false;
+
+   nir_deref_instr *deref = nir_src_as_deref(tex->src[texture_src_idx].src);
 
    if (glsl_get_sampler_dim(deref->type) != GLSL_SAMPLER_DIM_SUBPASS_MS)
       return false;
 
+   const int coord_src_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   assert(coord_src_idx >= 0);
+
    b->cursor = nir_before_instr(&tex->instr);
 
-   nir_def *frag_coord = load_frag_coord(b, deref, options);
-   frag_coord = nir_f2i32(b, frag_coord);
-
-   nir_def *layer = load_layer_id(b, options);
-   nir_def *coord = nir_vec3(b, nir_channel(b, frag_coord, 0),
-                             nir_channel(b, frag_coord, 1), layer);
+   nir_def *offset = tex->src[coord_src_idx].src.ssa;
+   offset = nir_vec3(b, nir_channel(b, offset, 0),
+                        nir_channel(b, offset, 1),
+                        nir_imm_int(b, 0));
+   nir_def *coord = nir_iadd(b, load_coord(b, deref, options), offset);
 
    tex->coord_components = 3;
 
-   nir_src_rewrite(&tex->src[1].src, coord);
+   nir_src_rewrite(&tex->src[coord_src_idx].src, coord);
 
    return true;
 }
@@ -200,11 +230,20 @@ lower_input_attachments_instr(nir_builder *b, nir_instr *instr, void *_data)
    case nir_instr_type_intrinsic: {
       nir_intrinsic_instr *load = nir_instr_as_intrinsic(instr);
 
-      if (load->intrinsic == nir_intrinsic_image_deref_load ||
-          load->intrinsic == nir_intrinsic_image_deref_sparse_load)
-         return try_lower_input_load(b, load, options);
-
-      return false;
+      switch (load->intrinsic) {
+      case nir_intrinsic_image_deref_load:
+      case nir_intrinsic_image_deref_sparse_load:
+         return try_lower_input_load(
+            b, load, true /* is_deref */,
+            load->intrinsic == nir_intrinsic_image_deref_sparse_load, options);
+      case nir_intrinsic_image_heap_load:
+      case nir_intrinsic_image_heap_sparse_load:
+         return try_lower_input_load(
+            b, load, false /* is_deref */,
+            load->intrinsic == nir_intrinsic_image_heap_sparse_load, options);
+      default:
+         return false;
+      }
    }
 
    default:

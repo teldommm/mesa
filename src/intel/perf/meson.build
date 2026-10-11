@@ -12,6 +12,7 @@ intel_hw_metrics = [
   'arlgt1', 'arlgt2',
   'lnl',
   'bmg',
+  'ptl',
 ]
 
 intel_hw_metrics_xml_files = []
@@ -48,10 +49,16 @@ libintel_perf = static_library(
   include_directories : [
     inc_include, inc_src, inc_intel,
   ],
-  c_args : [no_override_init_args, sse2_arg],
+  c_args : [no_override_init_args, soong_compat_c_args, sse2_arg],
   cpp_args : [sse2_arg],
   gnu_symbol_visibility : 'hidden',
   dependencies : [idep_intel_dev],
+)
+
+idep_intel_perf = declare_dependency(
+  link_with : libintel_perf,
+  dependencies : [idep_intel_dev, idep_libintel_common],
+  sources : intel_perf_sources
 )
 
 if with_intel_tools
@@ -61,7 +68,7 @@ if with_intel_tools
     dependencies : [idep_mesautil, dep_dl, dep_thread, dep_m, idep_intel_dev],
     include_directories : [inc_include, inc_src, inc_intel],
     link_with : [libintel_common, libintel_perf],
-    c_args : [no_override_init_args],
+    c_args : [no_override_init_args, soong_compat_c_args],
     gnu_symbol_visibility : 'hidden',
     install : false
   )

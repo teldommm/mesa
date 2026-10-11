@@ -59,10 +59,13 @@ struct lp_velems_state;
 struct llvmpipe_context {
    struct pipe_context pipe;  /**< base class */
 
+   /** Context creation flags */
+   unsigned flags;
+
    struct list_head list;
    /** Constant state objects */
    const struct pipe_blend_state *blend;
-   struct pipe_sampler_state *samplers[PIPE_SHADER_MESH_TYPES][PIPE_MAX_SAMPLERS];
+   struct pipe_sampler_state *samplers[MESA_SHADER_MESH_STAGES][PIPE_MAX_SAMPLERS];
 
    const struct pipe_depth_stencil_alpha_state *depth_stencil;
    const struct pipe_rasterizer_state *rasterizer;
@@ -83,24 +86,26 @@ struct llvmpipe_context {
    /** Other rendering state */
    unsigned sample_mask;
    unsigned min_samples;
+   uint8_t sample_locations[LP_MAX_SAMPLES];
+   bool sample_locations_enabled;
    struct pipe_blend_color blend_color;
    struct pipe_stencil_ref stencil_ref;
    struct pipe_clip_state clip;
-   struct pipe_constant_buffer constants[PIPE_SHADER_MESH_TYPES][LP_MAX_TGSI_CONST_BUFFERS];
+   struct pipe_constant_buffer constants[MESA_SHADER_MESH_STAGES][LP_MAX_TGSI_CONST_BUFFERS];
    struct pipe_framebuffer_state framebuffer;
    struct pipe_poly_stipple poly_stipple;
    struct pipe_scissor_state scissors[PIPE_MAX_VIEWPORTS];
-   struct pipe_sampler_view *sampler_views[PIPE_SHADER_MESH_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   struct pipe_sampler_view *sampler_views[MESA_SHADER_MESH_STAGES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
    struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
 
-   struct pipe_shader_buffer ssbos[PIPE_SHADER_MESH_TYPES][LP_MAX_TGSI_SHADER_BUFFERS];
-   struct pipe_image_view images[PIPE_SHADER_MESH_TYPES][LP_MAX_TGSI_SHADER_IMAGES];
+   struct pipe_shader_buffer ssbos[MESA_SHADER_MESH_STAGES][LP_MAX_TGSI_SHADER_BUFFERS];
+   struct pipe_image_view images[MESA_SHADER_MESH_STAGES][LP_MAX_TGSI_SHADER_IMAGES];
    uint32_t fs_ssbo_write_mask;
-   unsigned num_samplers[PIPE_SHADER_MESH_TYPES];
-   unsigned num_sampler_views[PIPE_SHADER_MESH_TYPES];
-   unsigned num_images[PIPE_SHADER_MESH_TYPES];
+   unsigned num_samplers[MESA_SHADER_MESH_STAGES];
+   unsigned num_sampler_views[MESA_SHADER_MESH_STAGES];
+   unsigned num_images[MESA_SHADER_MESH_STAGES];
 
    unsigned num_vertex_buffers;
 
@@ -151,7 +156,7 @@ struct llvmpipe_context {
 
    /** The tiling engine */
    struct lp_setup_context *setup;
-   struct lp_setup_variant setup_variant;
+   struct lp_setup_variant_key cached_setup_key;
 
    /** The primitive drawing context */
    struct draw_context *draw;
@@ -160,21 +165,19 @@ struct llvmpipe_context {
 
    unsigned tex_timestamp;
 
-   /** List of all fragment shader variants */
-   struct lp_fs_variant_list_item fs_variants_list;
-   unsigned nr_fs_variants;
-   unsigned nr_fs_instrs;
+   /** Currently bound FS variant; pinned via the screen's FS variant cache. */
+   struct util_shader_variant *fs_variant_pin;
 
    bool permit_linear_rasterizer;
    bool single_vp;
 
-   struct lp_setup_variant_list_item setup_variants_list;
-   unsigned nr_setup_variants;
+   /** Currently bound setup variant; pinned via the screen's setup cache. */
+   struct util_shader_variant *setup_variant_pin;
 
-   /** List of all compute shader variants */
-   struct lp_cs_variant_list_item cs_variants_list;
-   unsigned nr_cs_variants;
-   unsigned nr_cs_instrs;
+   /** Currently bound CS/task/mesh variants; pinned via the screen's CS cache. */
+   struct util_shader_variant *cs_variant_pin;
+   struct util_shader_variant *task_variant_pin;
+   struct util_shader_variant *mesh_variant_pin;
    struct lp_cs_context *csctx;
 
    struct lp_cs_context *task_ctx;
@@ -195,6 +198,10 @@ struct llvmpipe_context {
    int max_global_buffers;
    struct pipe_resource **global_buffers;
 
+   /** Used for context reset emulation, see LP_CONTEXT_RESET_FILE */
+   const char *context_reset_file_path;
+   int64_t context_creation_time_ns;
+   int64_t context_reset_time_ns;
 };
 
 

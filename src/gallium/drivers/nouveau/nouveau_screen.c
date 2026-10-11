@@ -83,7 +83,8 @@ nouveau_screen_fence_ref(struct pipe_screen *pscreen,
                          struct pipe_fence_handle *pfence)
 {
    nouveau_fence_ref((pfence ? nouveau_fence(pfence) : NULL),
-                     (ptr ? (struct nouveau_fence **)ptr : NULL));
+                     (ptr ? (struct nouveau_fence **)ptr : NULL),
+                     nouveau_screen(pscreen));
 }
 
 static bool
@@ -175,18 +176,18 @@ nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,
 static void
 nouveau_disk_cache_create(struct nouveau_screen *screen)
 {
-   struct mesa_sha1 ctx;
-   unsigned char sha1[20];
-   char cache_id[20 * 2 + 1];
+   blake3_hasher ctx;
+   unsigned char blake3[BLAKE3_KEY_LEN];
+   char cache_id[BLAKE3_HEX_LEN];
    uint64_t driver_flags = 0;
 
-   _mesa_sha1_init(&ctx);
+   _mesa_blake3_init(&ctx);
    if (!disk_cache_get_function_identifier(nouveau_disk_cache_create,
                                            &ctx))
       return;
 
-   _mesa_sha1_final(&ctx, sha1);
-   mesa_bytes_to_hex(cache_id, sha1, 20);
+   _mesa_blake3_final(&ctx, blake3);
+   mesa_bytes_to_hex(cache_id, blake3, BLAKE3_KEY_LEN);
 
    driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_NIR;
 
@@ -219,17 +220,20 @@ nouveau_query_memory_info(struct pipe_screen *pscreen,
    info->avail_staging_memory = dev->gart_limit / 1024;
 }
 
-static void
+static bool
 nouveau_pushbuf_cb(struct nouveau_pushbuf *push)
 {
    struct nouveau_pushbuf_priv *p = (struct nouveau_pushbuf_priv *)push->user_priv;
 
-   if (p->context)
-      p->context->kick_notify(p->context);
-   else
+   if (p->context) {
+      if (!p->context->kick_notify(p->context))
+         return false;
+   } else {
       _nouveau_fence_update(p->screen, true);
+   }
 
    NOUVEAU_DRV_STAT(p->screen, pushbuf_count, 1);
+   return true;
 }
 
 int
@@ -275,13 +279,13 @@ static void
 nouveau_driver_uuid(struct pipe_screen *screen, char *uuid)
 {
    const char* driver = PACKAGE_VERSION MESA_GIT_SHA1;
-   struct mesa_sha1 sha1_ctx;
-   uint8_t sha1[20];
+   blake3_hasher blake3_ctx;
+   uint8_t blake3[BLAKE3_KEY_LEN];
 
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, driver, strlen(driver));
-   _mesa_sha1_final(&sha1_ctx, sha1);
-   memcpy(uuid, sha1, PIPE_UUID_SIZE);
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, driver, strlen(driver));
+   _mesa_blake3_final(&blake3_ctx, blake3);
+   memcpy(uuid, blake3, PIPE_UUID_SIZE);
 }
 
 static void
@@ -305,7 +309,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
 
    glsl_type_singleton_init_or_ref();
 
-   char *nv_dbg = getenv("NOUVEAU_MESA_DEBUG");
+   const char *nv_dbg = os_get_option("NOUVEAU_MESA_DEBUG");
    if (nv_dbg)
       nouveau_mesa_debug = atoi(nv_dbg);
 
@@ -438,7 +442,6 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
       PIPE_BIND_CURSOR |
       PIPE_BIND_SAMPLER_VIEW |
       PIPE_BIND_SHADER_BUFFER | PIPE_BIND_SHADER_IMAGE |
-      PIPE_BIND_COMPUTE_RESOURCE |
       PIPE_BIND_GLOBAL;
    screen->sysmem_bindings =
       PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_STREAM_OUTPUT |

@@ -23,19 +23,9 @@
 
 #version 460
 
-#extension GL_GOOGLE_include_directive : require
-
-#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
-#extension GL_EXT_scalar_block_layout : require
-#extension GL_EXT_buffer_reference : require
-#extension GL_EXT_buffer_reference2 : require
-#extension GL_KHR_memory_scope_semantics : require
-
-#include "vk_build_interface.h"
+#include "vk_bvh_defines.h"
+#define VK_USED_BUILD_FLAGS VK_LBVH_GENERATE_IR_BUILD_FLAGS
+#include "vk_bvh_helpers.h"
 
 layout(local_size_x_id = SUBGROUP_SIZE_ID, local_size_y = 1, local_size_z = 1) in;
 
@@ -51,12 +41,17 @@ main(void)
 {
    uint32_t global_id = gl_GlobalInvocationID.x;
 
+   uint32_t internal_node_count = max(DEREF(args.header).active_leaf_count, 2) - 1;
+   if (global_id >= internal_node_count)
+      return;
+
    uint32_t idx = global_id;
 
    uint32_t previous_id = VK_BVH_INVALID_NODE;
    vk_aabb previous_bounds;
    previous_bounds.min = vec3(INFINITY);
    previous_bounds.max = vec3(-INFINITY);
+   uint32_t previous_flags;
 
    for (;;) {
       uint32_t count = 0;
@@ -74,14 +69,14 @@ main(void)
       /* We allocate nodes on demand with the atomic here to ensure children come before their
        * parents, which is a requirement of the encoder.
        */
-      uint32_t dst_idx =
-         atomicAdd(DEREF(REF(vk_ir_header)(args.header)).ir_internal_node_count, 1);
+      uint32_t dst_idx = atomicAdd(DEREF(args.header).ir_internal_node_count, 1);
 
       uint32_t current_offset = args.internal_node_base + dst_idx * SIZEOF(vk_ir_box_node);
       uint32_t current_id = pack_ir_node_id(current_offset, vk_ir_node_internal);
 
       REF(vk_ir_box_node) node = REF(vk_ir_box_node)(OFFSET(args.bvh, current_offset));
       vk_aabb bounds = previous_bounds;
+      uint32_t flags = VK_BVH_BOX_FLAG_ONLY_OPAQUE | VK_BVH_BOX_FLAG_NO_OPAQUE;
 
       lbvh_node_info info = DEREF(INDEX(lbvh_node_info, args.node_info, idx));
 
@@ -101,8 +96,14 @@ main(void)
             vk_aabb child_bounds = DEREF(child).aabb;
             bounds.min = min(bounds.min, child_bounds.min);
             bounds.max = max(bounds.max, child_bounds.max);
+
+            if (VK_TEST_BUILD_FLAG_PROPAGATE_CULL_FLAGS)
+               flags &= fetch_child_flags(args.bvh, children[0]);
          }
          previous_child_index = 0;
+      } else {
+            if (VK_TEST_BUILD_FLAG_PROPAGATE_CULL_FLAGS)
+               flags &= previous_flags;
       }
 
       /* Fetch the non-cached child */
@@ -112,13 +113,20 @@ main(void)
          vk_aabb child_bounds = DEREF(child).aabb;
          bounds.min = min(bounds.min, child_bounds.min);
          bounds.max = max(bounds.max, child_bounds.max);
+
+         if (VK_TEST_BUILD_FLAG_PROPAGATE_CULL_FLAGS)
+            flags &= fetch_child_flags(args.bvh, children[1 - previous_child_index]);
       }
+
 
       vk_ir_box_node node_value;
 
       node_value.base.aabb = bounds;
       node_value.bvh_offset = VK_UNKNOWN_BVH_OFFSET;
       node_value.children = children;
+
+      if (VK_TEST_BUILD_FLAG_PROPAGATE_CULL_FLAGS)
+         node_value.flags = flags;
 
       DEREF(node) = node_value;
 
@@ -132,6 +140,7 @@ main(void)
 
       previous_id = current_id;
       previous_bounds = bounds;
+      previous_flags = flags;
 
       memoryBarrierBuffer();
    }

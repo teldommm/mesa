@@ -47,10 +47,6 @@ conservative_raster_parameter(GLenum pname, GLfloat param,
       return;
    }
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "%s(%s, %g)\n",
-                  func, _mesa_enum_to_string(pname), param);
-
    ASSERT_OUTSIDE_BEGIN_END(ctx);
 
    switch (pname) {
@@ -64,7 +60,7 @@ conservative_raster_parameter(GLenum pname, GLfloat param,
       }
 
       FLUSH_VERTICES(ctx, 0, 0);
-      ctx->NewDriverState |= ST_NEW_RASTERIZER;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_RASTERIZER);
 
       ctx->ConservativeRasterDilate =
          CLAMP(param,
@@ -83,7 +79,7 @@ conservative_raster_parameter(GLenum pname, GLfloat param,
       }
 
       FLUSH_VERTICES(ctx, 0, 0);
-      ctx->NewDriverState |= ST_NEW_RASTERIZER;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_RASTERIZER);
       ctx->ConservativeRasterMode = param;
       break;
    default:

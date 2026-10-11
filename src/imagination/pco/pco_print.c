@@ -17,6 +17,7 @@
 #include "util/bitscan.h"
 #include "util/list.h"
 #include "util/macros.h"
+#include "util/shader_stats.h"
 #include "util/u_hexdump.h"
 
 #include <assert.h>
@@ -33,6 +34,14 @@ typedef struct _pco_print_state {
    bool is_grouped; /** Whether the shader uses igrps. */
    bool verbose; /** Whether to print additional info. */
 } pco_print_state;
+
+typedef struct _pco_igrp_offsets {
+   unsigned instrs[_PCO_OP_PHASE_COUNT];
+   unsigned lower_srcs;
+   unsigned upper_srcs;
+   unsigned iss;
+   unsigned dests;
+} pco_igrp_offsets;
 
 /* Forward declarations. */
 static void _pco_print_cf_node(pco_print_state *state, pco_cf_node *cf_node);
@@ -170,14 +179,14 @@ static void pco_printfi(pco_print_state *state, const char *fmt, ...)
 }
 
 /**
- * \brief Returns a space if the string is not empty.
+ * \brief Returns whether the string is not empty.
  *
  * \param[in] str String.
- * \return A space if the string is not empty, else an empty string.
+ * \return True if the string is not empty, else false.
  */
-static inline const char *space_if_str(const char *str)
+static inline bool if_str(const char *str)
 {
-   return str[0] != '\0' ? " " : "";
+   return str[0] != '\0';
 }
 
 /**
@@ -218,7 +227,6 @@ static void pco_print_ref_color(pco_print_state *state, pco_ref ref)
 
    case PCO_REF_TYPE_SSA:
    case PCO_REF_TYPE_REG:
-   case PCO_REF_TYPE_IDX_REG:
       YELLOW(state);
       return;
 
@@ -229,6 +237,7 @@ static void pco_print_ref_color(pco_print_state *state, pco_ref ref)
    case PCO_REF_TYPE_IO:
    case PCO_REF_TYPE_PRED:
    case PCO_REF_TYPE_DRC:
+   case PCO_REF_TYPE_IDX_REG:
       WHITE(state);
       return;
 
@@ -236,7 +245,7 @@ static void pco_print_ref_color(pco_print_state *state, pco_ref ref)
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 /**
@@ -262,11 +271,15 @@ static void _pco_print_ref(pco_print_state *state, pco_ref ref)
       pco_printf(state, "%s%u", pco_reg_class_str(ref.reg_class), ref.val);
       break;
 
-   case PCO_REF_TYPE_IDX_REG:
+   case PCO_REF_TYPE_IDX_REG: {
       _pco_print_ref(state, pco_ref_get_idx_pointee(ref));
+      if (pco_ref_is_self_idx_reg(ref))
+         break;
+
       pco_print_ref_color(state, ref);
       pco_printf(state, "[idx%u", ref.idx_reg.num);
       break;
+   }
 
    case PCO_REF_TYPE_IMM:
       assert(pco_ref_is_scalar(ref));
@@ -288,7 +301,7 @@ static void _pco_print_ref(pco_print_state *state, pco_ref ref)
          break;
 
       default:
-         unreachable();
+         UNREACHABLE("");
       }
       pco_printf(state, "%s", pco_dtype_str(ref.dtype));
       break;
@@ -309,14 +322,14 @@ static void _pco_print_ref(pco_print_state *state, pco_ref ref)
       break;
 
    default:
-      unreachable();
+      UNREACHABLE("");
    }
 
    unsigned chans = pco_ref_get_chans(ref);
    if (chans > 1 && !pco_ref_is_ssa(ref))
       pco_printf(state, "..%u", ref.val + chans - 1);
 
-   if (ref.type == PCO_REF_TYPE_IDX_REG)
+   if (ref.type == PCO_REF_TYPE_IDX_REG && !pco_ref_is_self_idx_reg(ref))
       pco_printf(state, "]");
 
    RESET(state);
@@ -367,6 +380,9 @@ static void pco_print_instr_mods(pco_print_state *state,
                                  pco_instr *instr,
                                  bool print_early)
 {
+   if (print_early)
+      WHITE(state);
+
    u_foreach_bit64 (op_mod, op_info->mods) {
       const struct pco_op_mod_info *mod_info = &pco_op_mod_info[op_mod];
       if (mod_info->print_early != print_early)
@@ -410,9 +426,12 @@ static void pco_print_instr_mods(pco_print_state *state,
          break;
 
       default:
-         unreachable();
+         UNREACHABLE("");
       }
    }
+
+   if (print_early)
+      RESET(state);
 }
 
 /**
@@ -444,11 +463,11 @@ static void _pco_print_instr(pco_print_state *state, pco_instr *instr)
    bool printed = false;
 
    /* Destinations. */
-   for (unsigned d = 0; d < instr->num_dests; ++d) {
+   pco_foreach_instr_dest (pdest, instr) {
       if (printed)
          pco_printf(state, ",");
       pco_printf(state, " ");
-      _pco_print_ref(state, instr->dest[d]);
+      _pco_print_ref(state, *pdest);
       printed = true;
    }
 
@@ -461,20 +480,18 @@ static void _pco_print_instr(pco_print_state *state, pco_instr *instr)
       switch (instr->target_cf_node->type) {
       case PCO_CF_NODE_TYPE_BLOCK: {
          pco_block *target_block = pco_cf_node_as_block(instr->target_cf_node);
-         pco_printf(state, " ");
          pco_print_block_name(state, target_block);
          break;
       }
 
       case PCO_CF_NODE_TYPE_FUNC: {
          pco_func *target_func = pco_cf_node_as_func(instr->target_cf_node);
-         pco_printf(state, " ");
          pco_print_func_sig(state, target_func, true);
          break;
       }
 
       default:
-         unreachable();
+         UNREACHABLE("");
       }
       printed = true;
    } else if (!list_is_empty(&instr->phi_srcs)) {
@@ -488,28 +505,39 @@ static void _pco_print_instr(pco_print_state *state, pco_instr *instr)
    }
 
    /* Sources. */
-   for (unsigned s = 0; s < instr->num_srcs; ++s) {
+   pco_foreach_instr_src (psrc, instr) {
       if (printed)
          pco_printf(state, ",");
       pco_printf(state, " ");
-      _pco_print_ref(state, instr->src[s]);
+      _pco_print_ref(state, *psrc);
       printed = true;
    }
    pco_printf(state, ";");
 
    /* Spec for destinations. */
-   if (state->verbose && !state->is_grouped && instr->num_dests) {
+   bool no_dest_specs = true;
+   pco_foreach_instr_dest (pdest, instr) {
+      if (!pco_ref_is_null(*pdest)) {
+         no_dest_specs = false;
+         break;
+      }
+   }
+
+   if (state->verbose && !state->is_grouped && !no_dest_specs) {
       pco_printf(state, " /*");
 
       printed = false;
-      for (unsigned d = 0; d < instr->num_dests; ++d) {
+      pco_foreach_instr_dest (pdest, instr) {
+         if (pco_ref_is_null(*pdest))
+            continue;
+
          if (printed)
             pco_printf(state, ",");
          pco_printf(state, " ");
 
-         _pco_print_ref(state, instr->dest[d]);
+         _pco_print_ref(state, *pdest);
          pco_printf(state, ":");
-         pco_print_ref_spec(state, instr->dest[d]);
+         pco_print_ref_spec(state, *pdest);
 
          printed = true;
       }
@@ -528,9 +556,9 @@ static void _pco_print_instr(pco_print_state *state, pco_instr *instr)
  * \param[in] alutype ALU type.
  * \param[in] phase Phase.
  */
-static void pco_print_phase(pco_print_state *state,
-                            enum pco_alutype alutype,
-                            enum pco_op_phase phase)
+static void _pco_print_phase(pco_print_state *state,
+                             enum pco_alutype alutype,
+                             enum pco_op_phase phase)
 {
    switch (alutype) {
    case PCO_ALUTYPE_MAIN:
@@ -548,7 +576,7 @@ static void pco_print_phase(pco_print_state *state,
    default:
       break;
    }
-   unreachable();
+   UNREACHABLE("");
 }
 
 /**
@@ -560,14 +588,11 @@ static void pco_print_phase(pco_print_state *state,
 static void pco_print_igrp_phases(pco_print_state *state, pco_igrp *igrp)
 {
    bool printed = false;
-   for (enum pco_op_phase phase = 0; phase < _PCO_OP_PHASE_COUNT; ++phase) {
-      if (!igrp->instrs[phase])
-         continue;
-
+   pco_foreach_phase_in_igrp (igrp, phase) {
       if (printed)
          pco_printf(state, ",");
 
-      pco_print_phase(state, igrp->hdr.alutype, phase);
+      _pco_print_phase(state, igrp->hdr.alutype, phase);
 
       printed = true;
    }
@@ -645,6 +670,37 @@ static void pco_print_igrp_dests(pco_print_state *state, pco_igrp *igrp)
    }
 }
 
+static inline void pco_calc_igrp_offsets(pco_igrp *igrp,
+                                         pco_igrp_offsets *offsets)
+{
+   memset(offsets, 0, sizeof(*offsets));
+   unsigned offset = igrp->enc.len.hdr;
+
+   pco_foreach_phase_in_igrp_rev (igrp, p) {
+      offsets->instrs[p] = offset;
+      offset += igrp->enc.len.instrs[p];
+   }
+
+   offsets->lower_srcs = offset;
+   offset += igrp->enc.len.lower_srcs;
+
+   offsets->upper_srcs = offset;
+   offset += igrp->enc.len.upper_srcs;
+
+   offsets->iss = offset;
+   offset += igrp->enc.len.iss;
+
+   offsets->dests = offset;
+
+#ifndef NDEBUG
+   /* Sanity check. */
+   offset += igrp->enc.len.dests;
+   offset += igrp->enc.len.word_padding;
+   offset += igrp->enc.len.align_padding;
+   assert(offset == igrp->enc.len.total);
+#endif /* NDEBUG */
+}
+
 /**
  * \brief Print PCO instruction group.
  *
@@ -655,11 +711,20 @@ static void _pco_print_igrp(pco_print_state *state, pco_igrp *igrp)
 {
    bool printed = false;
 
-   pco_printfi(state,
-               "%04u:%s%s { ",
-               igrp->index,
-               space_if_str(pco_cc_str(igrp->hdr.cc)),
-               pco_cc_str(igrp->hdr.cc));
+   pco_igrp_offsets offsets;
+   if (state->verbose)
+      pco_calc_igrp_offsets(igrp, &offsets);
+
+   pco_printfi(state, "%04u:", igrp->index);
+
+   const char *cc_str = pco_cc_str(igrp->hdr.cc);
+   if (if_str(cc_str)) {
+      WHITE(state);
+      pco_printf(state, " %s", cc_str);
+      RESET(state);
+   }
+
+   pco_printf(state, " { ");
 
    if (state->verbose) {
       unsigned padding_size =
@@ -685,7 +750,7 @@ static void _pco_print_igrp(pco_print_state *state, pco_igrp *igrp)
       ++state->indent;
 
       pco_printfi(state,
-                  "type %s /* hdr bytes: %u */\n",
+                  "type %s /* hdr bytes: %u @ +0 */\n",
                   pco_alutype_str(igrp->hdr.alutype),
                   igrp->enc.len.hdr);
    }
@@ -715,8 +780,9 @@ static void _pco_print_igrp(pco_print_state *state, pco_igrp *igrp)
 
       if (state->verbose)
          pco_printf(state,
-                    "/* lo src bytes: %u */\n",
-                    igrp->enc.len.lower_srcs);
+                    "/* lo src bytes: %u @ +%u */\n",
+                    igrp->enc.len.lower_srcs,
+                    offsets.lower_srcs);
 
       printed = true;
    }
@@ -737,8 +803,9 @@ static void _pco_print_igrp(pco_print_state *state, pco_igrp *igrp)
 
       if (state->verbose)
          pco_printf(state,
-                    "/* up src bytes: %u */\n",
-                    igrp->enc.len.upper_srcs);
+                    "/* up src bytes: %u @ +%u */\n",
+                    igrp->enc.len.upper_srcs,
+                    offsets.upper_srcs);
 
       printed = true;
    }
@@ -758,28 +825,33 @@ static void _pco_print_igrp(pco_print_state *state, pco_igrp *igrp)
       }
 
       if (state->verbose)
-         pco_printf(state, "/* iss bytes: %u */\n", igrp->enc.len.iss);
+         pco_printf(state,
+                    "/* iss bytes: %u @ +%u */\n",
+                    igrp->enc.len.iss,
+                    offsets.iss);
 
       printed = true;
    }
 
-   for (enum pco_op_phase phase = 0; phase < _PCO_OP_PHASE_COUNT; ++phase) {
-      if (!igrp->instrs[phase])
-         continue;
+   pco_foreach_instr_in_igrp (instr, igrp) {
+      enum pco_op_phase phase = instr->phase;
 
       if (state->verbose)
          pco_printfi(state, "%s", "");
       else if (printed)
          pco_printf(state, " ");
 
-      pco_print_phase(state, igrp->hdr.alutype, phase);
+      _pco_print_phase(state, igrp->hdr.alutype, phase);
       pco_printf(state, ": ");
-      _pco_print_instr(state, igrp->instrs[phase]);
+      _pco_print_instr(state, instr);
 
       if (state->verbose) {
          pco_printf(state, " /* ");
-         pco_print_phase(state, igrp->hdr.alutype, phase);
-         pco_printf(state, " bytes: %u */\n", igrp->enc.len.instrs[phase]);
+         _pco_print_phase(state, igrp->hdr.alutype, phase);
+         pco_printf(state,
+                    " bytes: %u @ +%u */\n",
+                    igrp->enc.len.instrs[phase],
+                    offsets.instrs[phase]);
       }
 
       printed = true;
@@ -800,7 +872,10 @@ static void _pco_print_igrp(pco_print_state *state, pco_igrp *igrp)
       }
 
       if (state->verbose)
-         pco_printf(state, "/* dest bytes: %u */\n", igrp->enc.len.dests);
+         pco_printf(state,
+                    "/* dest bytes: %u @ +%u */\n",
+                    igrp->enc.len.dests,
+                    offsets.dests);
 
       printed = true;
    }
@@ -853,7 +928,7 @@ static void pco_print_block(pco_print_state *state, pco_block *block)
 {
    pco_printfi(state, "block ");
    pco_print_block_name(state, block);
-   pco_printfi(state, ":\n");
+   pco_printf(state, ":\n");
    ++state->indent;
 
    if (state->is_grouped) {
@@ -891,30 +966,84 @@ static void pco_print_if(pco_print_state *state, pco_if *pif)
 {
    pco_printfi(state, "if ");
    pco_print_if_name(state, pif);
-   pco_printfi(state, " (");
-   _pco_print_ref(state, pif->cond);
-   pco_printf(state, ") {\n");
-   ++state->indent;
 
-   pco_foreach_cf_node_in_if_then (cf_node, pif) {
-      _pco_print_cf_node(state, cf_node);
+   if (!pco_ref_is_null(pif->cond)) {
+      pco_printf(state, " (");
+      _pco_print_ref(state, pif->cond);
+      pco_printf(state, ")");
    }
 
-   --state->indent;
-   if (list_is_empty(&pif->else_body)) {
-      pco_printf(state, "}\n");
-      return;
+   pco_printf(state, " {\n");
+
+   if (!list_is_empty(&pif->prologue)) {
+      pco_printfi(state, "/* if ");
+      pco_print_if_name(state, pif);
+      pco_printf(state, " prologue start */\n");
+
+      ++state->indent;
+      pco_foreach_cf_node_in_if_prologue (cf_node, pif) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
+
+      pco_printfi(state, "/* if ");
+      pco_print_if_name(state, pif);
+      pco_printf(state, " prologue end */\n");
    }
 
-   pco_printf(state, "} else {\n");
-   ++state->indent;
-
-   pco_foreach_cf_node_in_if_else (cf_node, pif) {
-      _pco_print_cf_node(state, cf_node);
+   if (!list_is_empty(&pif->then_body)) {
+      ++state->indent;
+      pco_foreach_cf_node_in_if_then (cf_node, pif) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
    }
 
-   --state->indent;
-   pco_printf(state, "}\n");
+   if (!list_is_empty(&pif->else_body)) {
+      pco_printfi(state, "} else {\n");
+
+      if (!list_is_empty(&pif->interlogue)) {
+         pco_printfi(state, "/* if ");
+         pco_print_if_name(state, pif);
+         pco_printf(state, " interlogue start */\n");
+
+         ++state->indent;
+         pco_foreach_cf_node_in_if_interlogue (cf_node, pif) {
+            _pco_print_cf_node(state, cf_node);
+         }
+         --state->indent;
+
+         pco_printfi(state, "/* if ");
+         pco_print_if_name(state, pif);
+         pco_printf(state, " interlogue end */\n");
+      }
+
+      ++state->indent;
+      pco_foreach_cf_node_in_if_else (cf_node, pif) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
+   } else {
+      assert(list_is_empty(&pif->interlogue));
+   }
+
+   if (!list_is_empty(&pif->epilogue)) {
+      pco_printfi(state, "/* if ");
+      pco_print_if_name(state, pif);
+      pco_printf(state, " epilogue start */\n");
+
+      ++state->indent;
+      pco_foreach_cf_node_in_if_epilogue (cf_node, pif) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
+
+      pco_printfi(state, "/* if ");
+      pco_print_if_name(state, pif);
+      pco_printf(state, " epilogue end */\n");
+   }
+
+   pco_printfi(state, "}\n");
 }
 
 /**
@@ -938,15 +1067,65 @@ static void pco_print_loop(pco_print_state *state, pco_loop *loop)
 {
    pco_printfi(state, "loop ");
    pco_print_loop_name(state, loop);
-   pco_printfi(state, " {\n");
-   ++state->indent;
+   pco_printf(state, " {\n");
 
-   pco_foreach_cf_node_in_loop (cf_node, loop) {
-      _pco_print_cf_node(state, cf_node);
+   if (!list_is_empty(&loop->prologue)) {
+      pco_printfi(state, "/* loop ");
+      pco_print_loop_name(state, loop);
+      pco_printf(state, " prologue start */\n");
+
+      ++state->indent;
+      pco_foreach_cf_node_in_loop_prologue (cf_node, loop) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
+
+      pco_printfi(state, "/* loop ");
+      pco_print_loop_name(state, loop);
+      pco_printf(state, " prologue end */\n");
    }
 
-   --state->indent;
-   pco_printf(state, "}\n");
+   if (!list_is_empty(&loop->body)) {
+      ++state->indent;
+      pco_foreach_cf_node_in_loop (cf_node, loop) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
+   }
+
+   if (!list_is_empty(&loop->interlogue)) {
+      pco_printfi(state, "/* loop ");
+      pco_print_loop_name(state, loop);
+      pco_printf(state, " interlogue start */\n");
+
+      ++state->indent;
+      pco_foreach_cf_node_in_loop_interlogue (cf_node, loop) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
+
+      pco_printfi(state, "/* loop ");
+      pco_print_loop_name(state, loop);
+      pco_printf(state, " interlogue end */\n");
+   }
+
+   if (!list_is_empty(&loop->epilogue)) {
+      pco_printfi(state, "/* loop ");
+      pco_print_loop_name(state, loop);
+      pco_printf(state, " epilogue start */\n");
+
+      ++state->indent;
+      pco_foreach_cf_node_in_loop_epilogue (cf_node, loop) {
+         _pco_print_cf_node(state, cf_node);
+      }
+      --state->indent;
+
+      pco_printfi(state, "/* loop ");
+      pco_print_loop_name(state, loop);
+      pco_printf(state, " epilogue end */\n");
+   }
+
+   pco_printfi(state, "}\n");
 }
 
 /**
@@ -977,7 +1156,7 @@ pco_print_func_sig(pco_print_state *state, pco_func *func, bool call)
          break;
 
       default:
-         unreachable();
+         UNREACHABLE("");
       }
    }
 
@@ -1008,8 +1187,10 @@ static void pco_print_func(pco_print_state *state, pco_func *func)
 {
    pco_printfi(state, "func");
    pco_print_func_sig(state, func, false);
-   if (state->is_grouped)
+   if (state->is_grouped) {
       pco_printf(state, " /* temps: %u */", func->temps);
+      pco_printf(state, " /* vtxins: %u */", func->vtxins);
+   }
    pco_printf(state, "\n");
 
    pco_printfi(state, "{\n");
@@ -1046,7 +1227,7 @@ static void _pco_print_cf_node(pco_print_state *state, pco_cf_node *cf_node)
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 /**
@@ -1059,9 +1240,32 @@ static void _pco_print_shader_info(pco_print_state *state, pco_shader *shader)
 {
    if (shader->name)
       pco_printfi(state, "name: \"%s\"\n", shader->name);
-   pco_printfi(state, "stage: %s\n", gl_shader_stage_name(shader->stage));
+   pco_printfi(state, "stage: %s\n", mesa_shader_stage_name(shader->stage));
    pco_printfi(state, "internal: %s\n", true_false_str(shader->is_internal));
-   /* TODO: more info/stats, e.g. temps/other regs used, etc.? */
+}
+
+/**
+ * \brief Print PCO shader stats.
+ *
+ * \param[in] shader PCO state.
+ * \param[in] fp Print target file pointer.
+ */
+void pco_print_shader_stats(pco_shader *shader, FILE *fp)
+{
+   pco_print_state state = {
+      .fp = fp,
+      .shader = shader,
+      .indent = 0,
+      .is_grouped = shader->is_grouped,
+      .verbose = PCO_DEBUG_PRINT(VERBOSE),
+   };
+
+   _pco_print_shader_info(&state, shader);
+
+   struct pvr_stats stats = pco_get_pvr_stats(shader);
+   pvr_stats_fprintf(fp,
+                     _mesa_shader_stage_to_abbrev(shader->nir->info.stage),
+                     &stats);
 }
 
 /**
@@ -1214,7 +1418,7 @@ void pco_print_cf_node_name(pco_shader *shader, pco_cf_node *cf_node)
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 /**
@@ -1232,4 +1436,26 @@ void pco_print_shader_info(pco_shader *shader)
       .verbose = false,
    };
    return _pco_print_shader_info(&state, shader);
+}
+
+/**
+ * \brief Print the name of a phase(wrapper).
+ *
+ * \param[in] shader PCO shader.
+ * \param[in] alutype ALU type.
+ * \param[in] phase Phase.
+ */
+void pco_print_phase(pco_shader *shader,
+                     enum pco_alutype alutype,
+                     enum pco_op_phase phase)
+{
+   pco_print_state state = {
+      .fp = stdout,
+      .shader = shader,
+      .indent = 0,
+      .is_grouped = shader->is_grouped,
+      .verbose = false,
+   };
+
+   return _pco_print_phase(&state, alutype, phase);
 }

@@ -1,4 +1,5 @@
 #include <vndk/window.h>
+#include <vndk/hardware_buffer.h>
 
 extern "C" {
 
@@ -44,7 +45,7 @@ AHardwareBuffer_getNativeHandle(const AHardwareBuffer *buffer)
 }
 
 int
-AHardwareBuffer_sendHandleToUnixSocket(const AHardwareBuffer* buffer,
+AHardwareBuffer_sendHandleToUnixSocket(const AHardwareBuffer *buffer,
                                        int socketFd)
 {
    return 0;

@@ -34,6 +34,7 @@
 #include "etnaviv_screen.h"
 #include "etnaviv_util.h"
 
+#include "nir/nir_xfb_info.h"
 #include "nir/tgsi_to_nir.h"
 #include "util/u_atomic.h"
 #include "util/u_cpu_detect.h"
@@ -67,7 +68,6 @@ etna_dump_shader(const struct etna_shader_variant *shader)
 
    etna_disasm(shader->code, shader->code_size, PRINT_RAW);
 
-   printf("num loops: %i\n", shader->num_loops);
    printf("num temps: %i\n", shader->num_temps);
    printf("immediates:\n");
    for (int idx = 0; idx < shader->uniforms.count; ++idx) {
@@ -140,6 +140,17 @@ etna_link_shaders(struct etna_context *ctx, struct compiled_shader_state *cs,
                       link.varyings[idx].pa_attributes);
    }
 
+   if (ctx->screen->specs.has_unified_uniforms) {
+      /* check if combined shader constants fit into unified const memory */
+      if ((vs->uniforms.count + fs->uniforms.count) / 4 >
+          ctx->screen->info->gpu.num_constants) {
+         DBG("Number of combined uniforms (%d) exceeds maximum %d",
+             (vs->uniforms.count + fs->uniforms.count) / 4,
+             ctx->screen->info->gpu.num_constants);
+         return false;
+      }
+   }
+
    /* set last_varying_2x flag if the last varying has 1 or 2 components */
    bool last_varying_2x = false;
    if (link.num_varyings > 0 && link.varyings[link.num_varyings - 1].num_components <= 2)
@@ -152,18 +163,45 @@ etna_link_shaders(struct etna_context *ctx, struct compiled_shader_state *cs,
    STATIC_ASSERT(VIVS_PA_SHADER_ATTRIBUTES__LEN >= ETNA_NUM_VARYINGS);
    for (int idx = 0; idx < link.num_varyings; ++idx)
       cs->PA_SHADER_ATTRIBUTES[idx] = link.varyings[idx].pa_attributes;
+   cs->pa_shader_attributes_states = link.num_varyings;
 
    cs->VS_END_PC = vs->code_size / 4;
-   cs->VS_OUTPUT_COUNT = 1 + link.num_varyings; /* position + varyings */
 
    /* vs outputs (varyings) */
    DEFINE_ETNA_BITARRAY(vs_output, ARRAY_SIZE(cs->VS_OUTPUT) * 4, 8) = {0};
    int varid = 0;
+   memset(cs->vs_output_slot, -1, sizeof(cs->vs_output_slot));
+   cs->vs_output_slot[VARYING_SLOT_POS] = varid;
    etna_bitarray_set(vs_output, 8, varid++, vs->vs_pos_out_reg);
    for (int idx = 0; idx < link.num_varyings; ++idx)
       etna_bitarray_set(vs_output, 8, varid++, link.varyings[idx].reg);
-   if (vs->vs_pointsize_out_reg >= 0)
+   for (int idx = 0; idx < fs->infile.num_reg; ++idx)
+      cs->vs_output_slot[fs->infile.reg[idx].slot] = fs->infile.reg[idx].reg;
+
+   const nir_xfb_info *xfb_info = vs->shader->nir->xfb_info;
+   if (VIV_FEATURE(ctx->screen, ETNA_FEATURE_HWTFB) && xfb_info) {
+      for (unsigned i = 0; i < xfb_info->output_count; i++) {
+         const unsigned location = xfb_info->outputs[i].location;
+
+         if (location == VARYING_SLOT_PSIZ || cs->vs_output_slot[location] >= 0)
+            continue;
+
+         for (int j = 0; j < vs->outfile.num_reg; j++) {
+            if (vs->outfile.reg[j].slot == location) {
+               cs->vs_output_slot[location] = varid;
+               etna_bitarray_set(vs_output, 8, varid++, vs->outfile.reg[j].reg);
+               break;
+            }
+         }
+      }
+   }
+
+   cs->VS_OUTPUT_COUNT = varid;
+
+   if (vs->vs_pointsize_out_reg >= 0) {
+      cs->vs_output_slot[VARYING_SLOT_PSIZ] = varid;
       etna_bitarray_set(vs_output, 8, varid++, vs->vs_pointsize_out_reg); /* pointsize is last */
+   }
 
    for (int idx = 0; idx < ARRAY_SIZE(cs->VS_OUTPUT); ++idx)
       cs->VS_OUTPUT[idx] = vs_output[idx];
@@ -232,22 +270,36 @@ etna_link_shaders(struct etna_context *ctx, struct compiled_shader_state *cs,
    uint32_t total_components = 0;
    DEFINE_ETNA_BITARRAY(num_components, ETNA_NUM_VARYINGS, 4) = {0};
    DEFINE_ETNA_BITARRAY(component_use, 4 * ETNA_NUM_VARYINGS, 2) = {0};
+   DEFINE_ETNA_BITARRAY(halti5_varying_semantic, 4 * 32, 4) = {0};
    for (int idx = 0; idx < link.num_varyings; ++idx) {
       const struct etna_varying *varying = &link.varyings[idx];
 
       etna_bitarray_set(num_components, 4, idx, varying->num_components);
       for (int comp = 0; comp < varying->num_components; ++comp) {
-         etna_bitarray_set(component_use, 2, total_components, varying->use[comp]);
+         if (ctx->screen->info->halti >= 5)
+            etna_bitarray_set(halti5_varying_semantic, 4, total_components, varying->semantic);
+         else
+            etna_bitarray_set(component_use, 2, total_components, varying->use[comp]);
          total_components += 1;
+      }
+   }
+
+   /* if shader has flat varyings, switch to flat shading */
+   for (int idx = 0; idx < link.num_varyings; ++idx) {
+      if (link.varyings[idx].semantic == VARYING_INTERPOLATION_MODE_FLAT) {
+         cs->PA_CONFIG &= ~VIVS_PA_CONFIG_SHADE_MODEL_SMOOTH;
+         cs->PA_CONFIG |= VIVS_PA_CONFIG_SHADE_MODEL_FLAT;
+         break;
       }
    }
 
    cs->GL_VARYING_TOTAL_COMPONENTS =
       VIVS_GL_VARYING_TOTAL_COMPONENTS_NUM(align(total_components, 2));
-   cs->GL_VARYING_NUM_COMPONENTS[0] = num_components[0];
-   cs->GL_VARYING_NUM_COMPONENTS[1] = num_components[1];
-   cs->GL_VARYING_COMPONENT_USE[0] = component_use[0];
-   cs->GL_VARYING_COMPONENT_USE[1] = component_use[1];
+   memcpy(cs->GL_VARYING_NUM_COMPONENTS, num_components, sizeof(uint32_t) * 2);
+   memcpy(cs->GL_VARYING_COMPONENT_USE, component_use, sizeof(uint32_t) * 4);
+   memcpy(cs->GL_HALTI5_SHADER_ATTRIBUTES, halti5_varying_semantic,
+          sizeof(uint32_t) * VIVS_GL_HALTI5_SHADER_ATTRIBUTES__LEN);
+   cs->halti5_shader_attributes_states = DIV_ROUND_UP(total_components, 8);
 
    cs->GL_HALTI5_SH_SPECIALS =
       0x7f7f0000 | /* unknown bits, probably other PS inputs */
@@ -267,7 +319,13 @@ etna_link_shaders(struct etna_context *ctx, struct compiled_shader_state *cs,
    cs->ps_inst_mem_size = fs->code_size;
    cs->PS_INST_MEM = fs->code;
 
-   if (vs->needs_icache || fs->needs_icache) {
+   if (vs->needs_icache || fs->needs_icache ||
+       (ctx->screen->specs.has_unified_instmem &&
+        ((cs->vs_inst_mem_size + cs->ps_inst_mem_size) / 4 >
+         ctx->screen->specs.max_instructions))) {
+      if (!ctx->screen->specs.has_icache)
+         return false;
+
       /* If either of the shaders needs ICACHE, we use it for both. It is
        * either switched on or off for the entire shader processor.
        */
@@ -378,7 +436,7 @@ etna_shader_stage(struct etna_shader *shader)
    case MESA_SHADER_FRAGMENT:   return "FRAG";
    case MESA_SHADER_COMPUTE:    return "CL";
    default:
-      unreachable("invalid type");
+      UNREACHABLE("invalid type");
       return NULL;
    }
 }
@@ -391,12 +449,11 @@ dump_shader_info(struct etna_shader_variant *v, struct util_debug_callback *debu
 
    util_debug_message(debug, SHADER_INFO,
          "%s shader: %u instructions, %u temps, "
-         "%u immediates, %u loops",
+         "%u immediates",
          etna_shader_stage(v->shader),
          v->code_size / 4,
          v->num_temps,
-         v->uniforms.count,
-         v->num_loops);
+         v->uniforms.count);
 }
 
 bool
@@ -406,13 +463,30 @@ etna_shader_update_vertex(struct etna_context *ctx)
                                        ctx->vertex_elements);
 }
 
-static struct etna_shader_variant *
-create_variant(struct etna_shader *shader,
-               const struct etna_shader_key* const key)
+static uint32_t
+etna_variant_hash(const void *spec_key)
 {
-   struct etna_shader_variant *v = CALLOC_STRUCT(etna_shader_variant);
-   int ret;
+   /* Hash on the global word so the cache's hash filter is as cheap as
+    * etna_shader_key_equal's fast path.
+    */
+   const struct etna_shader_key *key = spec_key;
 
+   return key->global;
+}
+
+static bool
+etna_variant_equal(const void *a, const void *b)
+{
+   return etna_shader_key_equal(a, b);
+}
+
+static struct util_shader_variant *
+etna_variant_compile(UNUSED void *user_data, void *cso, const void *spec_key)
+{
+   struct etna_shader *shader = cso;
+   const struct etna_shader_key *key = spec_key;
+
+   struct etna_shader_variant *v = CALLOC_STRUCT(etna_shader_variant);
    if (!v)
       return NULL;
 
@@ -421,12 +495,12 @@ create_variant(struct etna_shader *shader,
    v->id = ++shader->variant_count;
 
    if (etna_disk_cache_retrieve(shader->compiler, v))
-      return v;
+      return &v->base;
 
-   ret = etna_compile_shader(v);
-   if (!ret) {
+   if (!etna_compile_shader(v)) {
       debug_error("compile failed!");
-      goto fail;
+      FREE(v);
+      return NULL;
    }
 
    etna_disk_cache_store(shader->compiler, v);
@@ -434,11 +508,19 @@ create_variant(struct etna_shader *shader,
    if (DBG_ENABLED(ETNA_DBG_DUMP_SHADERS))
       etna_dump_shader(v);
 
-   return v;
+   return &v->base;
+}
 
-fail:
-   FREE(v);
-   return NULL;
+static void
+etna_variant_destroy_cb(struct util_shader_variant *base)
+{
+   struct etna_shader_variant *v =
+      container_of(base, struct etna_shader_variant, base);
+
+   if (v->bo)
+      etna_bo_del(v->bo);
+
+   etna_destroy_shader(v);
 }
 
 struct etna_shader_variant *
@@ -447,27 +529,28 @@ etna_shader_variant(struct etna_shader *shader,
                     struct util_debug_callback *debug,
                     bool called_from_draw)
 {
-   struct etna_shader_variant *v;
-
    assert(shader->specs->fragment_sampler_count <= ARRAY_SIZE(key->tex_swizzle));
 
-   for (v = shader->variants; v; v = v->next)
-      if (etna_shader_key_equal(key, &v->key))
-         return v;
+   bool was_miss;
+   struct util_shader_variant *base =
+      util_shader_variant_get(&shader->screen->variant_opts,
+                              &shader->variants, shader,
+                              key, sizeof(*key), &was_miss);
+   if (!base)
+      return NULL;
 
-   /* compile new variant if it doesn't exist already */
-   v = create_variant(shader, key);
-   if (v) {
-      v->next = shader->variants;
-      shader->variants = v;
+   struct etna_shader_variant *v =
+      container_of(base, struct etna_shader_variant, base);
+
+   if (was_miss) {
       dump_shader_info(v, debug);
-   }
 
-   if (called_from_draw) {
-      perf_debug_message(debug, SHADER_INFO,
-                         "%s shader: recompiling at draw time: global "
-                         "0x%08x\n",
-                         etna_shader_stage(shader), key->global);
+      if (called_from_draw) {
+         perf_debug_message(debug, SHADER_INFO,
+                            "%s shader: recompiling at draw time: global "
+                            "0x%08x\n",
+                            etna_shader_stage(shader), key->global);
+      }
    }
 
    return v;
@@ -515,6 +598,9 @@ etna_create_shader_state(struct pipe_context *pctx,
    shader->info = screen->info;
    shader->specs = &screen->specs;
    shader->compiler = screen->compiler;
+   shader->screen = screen;
+
+   util_shader_variant_list_init(&shader->variants);
    util_queue_fence_init(&shader->ready);
 
    shader->nir = (pss->type == PIPE_SHADER_IR_NIR) ? pss->ir.nir :
@@ -540,19 +626,10 @@ etna_delete_shader_state(struct pipe_context *pctx, void *ss)
    struct etna_context *ctx = etna_context(pctx);
    struct etna_screen *screen = ctx->screen;
    struct etna_shader *shader = ss;
-   struct etna_shader_variant *v, *t;
 
    util_queue_drop_job(&screen->shader_compiler_queue, &shader->ready);
 
-   v = shader->variants;
-   while (v) {
-      t = v;
-      v = v->next;
-      if (t->bo)
-         etna_bo_del(t->bo);
-
-      etna_destroy_shader(t);
-   }
+   util_shader_variant_list_destroy(&screen->variant_opts, &shader->variants);
 
    ralloc_free(shader->nir);
    util_queue_fence_destroy(&shader->ready);
@@ -590,7 +667,7 @@ etna_set_max_shader_compiler_threads(struct pipe_screen *pscreen,
 static bool
 etna_is_parallel_shader_compilation_finished(struct pipe_screen *pscreen,
                                              void *hwcso,
-                                             enum pipe_shader_type shader_type)
+                                             mesa_shader_stage shader_type)
 {
    struct etna_shader *shader = (struct etna_shader *)hwcso;
 
@@ -621,8 +698,21 @@ etna_shader_screen_init(struct pipe_screen *pscreen)
    if (!screen->compiler)
       return false;
 
+   for (unsigned i = 0; i <= MESA_SHADER_COMPUTE; i++)
+      pscreen->nir_options[i] = etna_compiler_get_options(screen->compiler);
+
    pscreen->set_max_shader_compiler_threads = etna_set_max_shader_compiler_threads;
    pscreen->is_parallel_shader_compilation_finished = etna_is_parallel_shader_compilation_finished;
+
+   const struct util_shader_variant_cache_options opts = {
+      .compile = etna_variant_compile,
+      .destroy = etna_variant_destroy_cb,
+      .hash = etna_variant_hash,
+      .equal = etna_variant_equal,
+      .user_data = screen,
+   };
+
+   screen->variant_opts = opts;
 
    return util_queue_init(&screen->shader_compiler_queue, "sh", 64, num_threads,
                           UTIL_QUEUE_INIT_RESIZE_IF_FULL | UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY,

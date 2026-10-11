@@ -15,7 +15,7 @@ libpanfrost_shared = static_library(
   [libpanfrost_shared_files],
   include_directories : [inc_include, inc_src],
   dependencies : idep_mesautil,
-  c_args : [no_override_init_args, '-O3'],
+  c_args : [no_override_init_args, soong_compat_c_args, '-O3'],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
@@ -28,7 +28,7 @@ if with_tests
       files(
         'test/test-tiling.cpp',
       ),
-      c_args : [c_msvc_compat_args, no_override_init_args],
+      cpp_args : cpp_msvc_compat_args,
       gnu_symbol_visibility : 'hidden',
       include_directories : [inc_include, inc_src, inc_panfrost],
       dependencies: [idep_gtest, idep_mesautil],

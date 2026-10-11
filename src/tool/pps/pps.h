@@ -7,7 +7,14 @@
 
 #pragma once
 
-#include <perfetto.h>
+#include "util/perf/u_perfetto.h"
+#ifdef ANDROID_LIBPERFETTO
+#include <perfetto/common/gpu_counter_descriptor.gen.h>
+#include <perfetto/common/gpu_counter_descriptor.pbzero.h>
+#include <perfetto/config/gpu/gpu_counter_config.pbzero.h>
+#include <perfetto/trace/clock_snapshot.pbzero.h>
+#include <perfetto/trace/gpu/gpu_counter_event.pbzero.h>
+#endif
 
 #define PPS_LOG PERFETTO_LOG
 #define PPS_LOG_IMPORTANT PERFETTO_ILOG

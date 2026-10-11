@@ -26,7 +26,7 @@ nir_lower_terminate_cf_list(nir_builder *b, struct exec_list *cf_list)
                /* Everything after the terminate is dead */
                nir_cf_list dead_cf;
                nir_cf_extract(&dead_cf, nir_after_instr(&intrin->instr),
-                                        nir_after_cf_list(cf_list));
+                              nir_after_cf_list(cf_list));
                nir_cf_delete(&dead_cf);
 
                intrin->intrinsic = nir_intrinsic_demote;
@@ -40,13 +40,18 @@ nir_lower_terminate_cf_list(nir_builder *b, struct exec_list *cf_list)
             }
 
             case nir_intrinsic_terminate_if:
-               b->cursor = nir_before_instr(&intrin->instr);
+               /* We use demote_if instead of putting a demote in the if, since
+                * the backend can likely optimize if { halt } via jump threading
+                * or predication while an intervening demote may require real
+                * control flow.
+                */
+               intrin->intrinsic = nir_intrinsic_demote_if;
+               b->cursor = nir_after_instr(&intrin->instr);
+
                nir_push_if(b, intrin->src[0].ssa);
                {
-                  nir_demote(b);
                   nir_jump(b, nir_jump_halt);
                }
-               nir_instr_remove(&intrin->instr);
                progress = true;
                break;
 
@@ -72,7 +77,7 @@ nir_lower_terminate_cf_list(nir_builder *b, struct exec_list *cf_list)
       }
 
       default:
-         unreachable("Unknown CF node type");
+         UNREACHABLE("Unknown CF node type");
       }
    }
 
@@ -85,13 +90,7 @@ nir_lower_terminate_impl(nir_function_impl *impl)
    nir_builder b = nir_builder_create(impl);
    bool progress = nir_lower_terminate_cf_list(&b, &impl->body);
 
-   if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_none);
-   } else {
-      nir_metadata_preserve(impl, nir_metadata_all);
-   }
-
-   return progress;
+   return nir_progress(progress, impl, nir_metadata_none);
 }
 
 /** Lowers nir_intrinsic_terminate to demote + halt

@@ -27,11 +27,11 @@ private:
 
    bool load_input(UNUSED nir_intrinsic_instr *intr) override
    {
-      unreachable("load_input must be lowered in TCS");
+      UNREACHABLE("load_input must be lowered in TCS");
    };
    bool store_output(UNUSED nir_intrinsic_instr *intr) override
    {
-      unreachable("load_output must be lowered in TCS");
+      UNREACHABLE("load_output must be lowered in TCS");
    };
 
    bool read_prop(std::istream& is) override;
@@ -60,11 +60,11 @@ private:
 
    bool load_input(UNUSED nir_intrinsic_instr *intr) override
    {
-      unreachable("load_input must be lowered in TES");
+      UNREACHABLE("load_input must be lowered in TES");
    };
    bool store_output(UNUSED nir_intrinsic_instr *intr) override
    {
-      unreachable("load_output must be lowered in TES");
+      UNREACHABLE("load_output must be lowered in TES");
    };
 
    bool read_prop(std::istream& is) override;
@@ -78,11 +78,11 @@ private:
 
    VertexExportStage *m_export_processor{nullptr};
 
-   int m_tcs_vertices_out{0};
    bool m_vs_as_gs_a{false};
-   bool m_tes_as_es{false};
 };
 
 } // namespace r600
+
+int r600_lower_tess_level_default_to_ubo(nir_shader *sh);
 
 #endif // TCS_H

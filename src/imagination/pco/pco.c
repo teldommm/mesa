@@ -11,12 +11,15 @@
  */
 
 #include "compiler/glsl_types.h"
+#include "nir_serialize.h"
 #include "pco.h"
 #include "pco_internal.h"
+#include "util/blob.h"
 #include "util/hash_table.h"
 #include "util/list.h"
 #include "util/macros.h"
 #include "util/ralloc.h"
+#include "util/shader_stats.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -35,14 +38,18 @@ static void pco_ctx_destructor(UNUSED void *ptr)
  * \brief Allocates and sets up a PCO compiler context.
  *
  * \param[in] dev_info Device info.
+ * \param[in] dev_runtime_info Device runtime info.
  * \param[in] mem_ctx Ralloc memory allocation context.
  * \return The PCO compiler context, or NULL on failure.
  */
-pco_ctx *pco_ctx_create(const struct pvr_device_info *dev_info, void *mem_ctx)
+pco_ctx *pco_ctx_create(const struct pvr_device_info *dev_info,
+                        const struct pvr_device_runtime_info *dev_runtime_info,
+                        void *mem_ctx)
 {
    pco_ctx *ctx = rzalloc_size(mem_ctx, sizeof(*ctx));
 
    ctx->dev_info = dev_info;
+   ctx->dev_runtime_info = dev_runtime_info;
 
    pco_debug_init();
 
@@ -51,37 +58,29 @@ pco_ctx *pco_ctx_create(const struct pvr_device_info *dev_info, void *mem_ctx)
    nir_process_debug_variable();
 #endif /* NDEBUG */
 
-   pco_setup_spirv_options(dev_info, &ctx->spirv_options);
-   pco_setup_nir_options(dev_info, &ctx->nir_options);
-
    glsl_type_singleton_init_or_ref();
    ralloc_set_destructor(ctx, pco_ctx_destructor);
 
    return ctx;
 }
 
-/**
- * \brief Returns the device/core-specific SPIR-V to NIR options for a PCO
- * compiler context.
- *
- * \param[in] ctx PCO compiler context.
- * \return The device/core-specific SPIR-V to NIR options.
- */
-const struct spirv_to_nir_options *pco_spirv_options(pco_ctx *ctx)
+void pco_ctx_setup_usclib(pco_ctx *ctx, const void *data, unsigned size)
 {
-   return &ctx->spirv_options;
+   struct blob_reader blob_reader;
+   blob_reader_init(&blob_reader, data, size);
+   ctx->usclib = nir_deserialize(ctx, pco_nir_options(), &blob_reader);
 }
 
 /**
- * \brief Returns the device/core-specific NIR options for a PCO compiler
- * context.
+ * \brief Updates the device info for a PCO compiler context.
  *
- * \param[in] ctx PCO compiler context.
- * \return The device/core-specific NIR options.
+ * \param[in,out] ctx PCO compiler context.
+ * \param[in] dev_info Device info.
  */
-const nir_shader_compiler_options *pco_nir_options(pco_ctx *ctx)
+void pco_ctx_update_dev_info(pco_ctx *ctx,
+                             const struct pvr_device_info *dev_info)
 {
-   return &ctx->nir_options;
+   ctx->dev_info = dev_info;
 }
 
 /**
@@ -142,7 +141,10 @@ pco_func *pco_func_create(pco_shader *shader,
       list_add(&func->link, &shader->funcs);
    } else if (type == PCO_FUNC_TYPE_ENTRYPOINT) {
       assert(!pco_entrypoint(shader));
-      list_add(&func->link, !preamble ? &shader->funcs : &preamble->link);
+      if (!preamble)
+         list_add(&func->link, &shader->funcs);
+      else
+         list_add(&func->link, &preamble->link);
    } else {
       list_addtail(&func->link, &shader->funcs);
    }
@@ -197,8 +199,11 @@ pco_if *pco_if_create(pco_func *func)
 
    init_cf_node(&pif->cf_node, PCO_CF_NODE_TYPE_IF);
    pif->parent_func = func;
+   list_inithead(&pif->prologue);
    list_inithead(&pif->then_body);
+   list_inithead(&pif->interlogue);
    list_inithead(&pif->else_body);
+   list_inithead(&pif->epilogue);
    pif->index = func->next_if++;
 
    return pif;
@@ -216,7 +221,10 @@ pco_loop *pco_loop_create(pco_func *func)
 
    init_cf_node(&loop->cf_node, PCO_CF_NODE_TYPE_LOOP);
    loop->parent_func = func;
+   list_inithead(&loop->prologue);
    list_inithead(&loop->body);
+   list_inithead(&loop->interlogue);
+   list_inithead(&loop->epilogue);
    loop->index = func->next_loop++;
 
    return loop;
@@ -226,15 +234,12 @@ pco_loop *pco_loop_create(pco_func *func)
  * \brief Allocates and sets up a PCO instruction.
  *
  * \param[in,out] func Parent function.
- * \param[in] op Instruction op.
  * \param[in] num_dests Number of destinations.
  * \param[in] num_srcs Number of sources.
  * \return The PCO instruction, or NULL on failure.
  */
-pco_instr *pco_instr_create(pco_func *func,
-                            enum pco_op op,
-                            unsigned num_dests,
-                            unsigned num_srcs)
+pco_instr *
+pco_instr_create(pco_func *func, unsigned num_dests, unsigned num_srcs)
 {
    pco_instr *instr;
    unsigned size = sizeof(*instr);
@@ -244,8 +249,6 @@ pco_instr *pco_instr_create(pco_func *func,
    instr = rzalloc_size(func, size);
 
    instr->parent_func = func;
-
-   instr->op = op;
 
    instr->num_dests = num_dests;
    instr->dest = (pco_ref *)(instr + 1);
@@ -295,4 +298,164 @@ void pco_instr_delete(pco_instr *instr)
 pco_data *pco_shader_data(pco_shader *shader)
 {
    return &shader->data;
+}
+
+/**
+ * \brief Returns precompilation data for a shader.
+ *
+ * \param[in] shader PCO shader.
+ * \return The precompilation data.
+ */
+pco_precomp_data pco_get_precomp_data(pco_shader *shader)
+{
+   assert(pco_shader_binary_size(shader));
+
+   unsigned size_dwords = pco_shader_binary_size(shader) / sizeof(uint32_t);
+   assert(size_dwords <= UINT16_MAX);
+
+   return (pco_precomp_data){
+      .temps = shader->data.common.temps,
+      .vtxins = shader->data.common.vtxins,
+      .coeffs = shader->data.common.coeffs,
+      .shareds = shader->data.common.shareds,
+      .size_dwords = size_dwords,
+   };
+}
+
+/**
+ * \brief Returns statistics for a shader.
+ *
+ * \param[in] shader PCO shader.
+ * \return The shader statistics.
+ */
+struct pvr_stats pco_get_pvr_stats(pco_shader *shader)
+{
+   assert(shader->is_grouped);
+
+   unsigned shader_size = pco_shader_binary_size(shader);
+   assert(shader_size > 0);
+
+   unsigned loop_count = 0;
+   unsigned igrp_count = 0;
+
+   unsigned main_count = 0;
+   unsigned bitwise_count = 0;
+   unsigned control_count = 0;
+
+   pco_foreach_func_in_shader (func, shader) {
+      pco_foreach_loop_in_func (loop, func) {
+         loop_count++;
+      }
+      pco_foreach_igrp_in_func (igrp, func) {
+         igrp_count++;
+         switch (igrp->hdr.alutype) {
+         case PCO_ALUTYPE_MAIN:
+            main_count++;
+            break;
+
+         case PCO_ALUTYPE_BITWISE:
+            bitwise_count++;
+            break;
+
+         case PCO_ALUTYPE_CONTROL:
+            control_count++;
+            break;
+
+         default:
+            UNREACHABLE("Invalid pco_alutype");
+         }
+      }
+   }
+
+   return (struct pvr_stats){
+      .isa = PVR_STAT_ROGUE,
+      .rogue = (struct rogue_stats) {
+         .code_size = shader_size,
+         .scratch_size = shader->data.common.scratch,
+         .spill_count = shader->data.common.spilled_temps,
+         .temp_count = shader->data.common.temps,
+         .vtxin_count = shader->data.common.vtxins,
+         .loop_count = loop_count,
+         .inst_group_count = igrp_count,
+         .main_inst_group_count = main_count,
+         .bitwise_inst_group_count = bitwise_count,
+         .control_inst_group_count = control_count,
+      },
+   };
+}
+
+enum pco_pck_format pco_pipe_to_pck_format(enum pipe_format format,
+                                           bool *scale,
+                                           bool *roundzero,
+                                           bool *split)
+{
+   enum pco_pck_format pck_format = ~0;
+   *scale = false;
+   *roundzero = false;
+   *split = false;
+
+   switch (format) {
+   case PIPE_FORMAT_R8_UNORM:
+   case PIPE_FORMAT_R8G8_UNORM:
+   case PIPE_FORMAT_R8G8B8_UNORM:
+   case PIPE_FORMAT_R8G8B8A8_UNORM:
+      pck_format = PCO_PCK_FORMAT_U8888;
+      *scale = true;
+      break;
+
+   case PIPE_FORMAT_R8_SNORM:
+   case PIPE_FORMAT_R8G8_SNORM:
+   case PIPE_FORMAT_R8G8B8_SNORM:
+   case PIPE_FORMAT_R8G8B8A8_SNORM:
+      pck_format = PCO_PCK_FORMAT_S8888;
+      *scale = true;
+      break;
+
+   case PIPE_FORMAT_R11G11B10_FLOAT:
+      pck_format = PCO_PCK_FORMAT_F111110;
+      break;
+
+   /* TODO: better way to do the 1x2 component. */
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+      pck_format = PCO_PCK_FORMAT_U1010102;
+      *scale = true;
+      break;
+
+   /* TODO: better way to do the 1x2 component. */
+   case PIPE_FORMAT_R10G10B10A2_SNORM:
+      pck_format = PCO_PCK_FORMAT_S1010102;
+      *scale = true;
+      break;
+
+   case PIPE_FORMAT_R16_FLOAT:
+   case PIPE_FORMAT_R16G16_FLOAT:
+   case PIPE_FORMAT_R16G16B16_FLOAT:
+   case PIPE_FORMAT_R16G16B16A16_FLOAT:
+      pck_format = PCO_PCK_FORMAT_F16F16;
+      *split = true;
+      break;
+
+   case PIPE_FORMAT_R16_UNORM:
+   case PIPE_FORMAT_R16G16_UNORM:
+   case PIPE_FORMAT_R16G16B16_UNORM:
+   case PIPE_FORMAT_R16G16B16A16_UNORM:
+      pck_format = PCO_PCK_FORMAT_U1616;
+      *scale = true;
+      *split = true;
+      break;
+
+   case PIPE_FORMAT_R16_SNORM:
+   case PIPE_FORMAT_R16G16_SNORM:
+   case PIPE_FORMAT_R16G16B16_SNORM:
+   case PIPE_FORMAT_R16G16B16A16_SNORM:
+      pck_format = PCO_PCK_FORMAT_S1616;
+      *scale = true;
+      *split = true;
+      break;
+
+   default:
+      break;
+   }
+
+   return pck_format;
 }

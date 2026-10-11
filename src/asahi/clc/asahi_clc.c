@@ -53,13 +53,19 @@ optimize(nir_shader *nir)
       NIR_PASS(progress, nir, nir_lower_var_copies);
       NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
 
-      NIR_PASS(progress, nir, nir_copy_prop);
+      NIR_PASS(progress, nir, nir_opt_copy_prop);
       NIR_PASS(progress, nir, nir_opt_remove_phis);
-      NIR_PASS(progress, nir, nir_lower_phis_to_scalar, true);
+      NIR_PASS(progress, nir, nir_lower_all_phis_to_scalar);
       NIR_PASS(progress, nir, nir_opt_dce);
       NIR_PASS(progress, nir, nir_opt_dead_cf);
       NIR_PASS(progress, nir, nir_opt_cse);
-      NIR_PASS(progress, nir, nir_opt_peephole_select, 64, false, true);
+
+      nir_opt_peephole_select_options peephole_select_options = {
+         .limit = 64,
+         .expensive_alu_ok = true,
+      };
+      NIR_PASS(progress, nir, nir_opt_peephole_select,
+               &peephole_select_options);
       NIR_PASS(progress, nir, nir_opt_phi_precision);
       NIR_PASS(progress, nir, nir_opt_algebraic);
       NIR_PASS(progress, nir, nir_opt_constant_folding);
@@ -67,7 +73,7 @@ optimize(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_deref);
       NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
       NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_lower_undef_to_zero);
+      NIR_PASS(progress, nir, nir_lower_undef_to_zero, NULL);
 
       NIR_PASS(progress, nir, nir_opt_shrink_vectors, true);
       NIR_PASS(progress, nir, nir_opt_loop_unroll);
@@ -82,10 +88,9 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size)
 
    assert(spirv_size % 4 == 0);
    nir_shader *nir =
-      spirv_to_nir(spirv, spirv_size / 4, NULL, 0, MESA_SHADER_KERNEL,
-                   "library", &spirv_options, nir_options);
+      spirv_to_nir(spirv, spirv_size / 4, NULL, MESA_SHADER_KERNEL, "library",
+                   &spirv_options, nir_options);
    nir_validate_shader(nir, "after spirv_to_nir");
-   nir_validate_ssa_dominance(nir, "after spirv_to_nir");
    ralloc_steal(memctx, nir);
 
    nir_fixup_is_exported(nir);
@@ -98,8 +103,7 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size)
 
    NIR_PASS(_, nir, nir_lower_printf,
             &(const struct nir_lower_printf_options){
-               .buffer_address = LIBAGX_PRINTF_BUFFER_ADDRESS,
-               .max_buffer_size = LIBAGX_PRINTF_BUFFER_SIZE - 8,
+               .hash_format_strings = true,
             });
 
    /* We have to lower away local constant initializers right before we
@@ -110,7 +114,7 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size)
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
    nir_remove_non_exported(nir);
-   NIR_PASS(_, nir, nir_copy_prop);
+   NIR_PASS(_, nir, nir_opt_copy_prop);
    NIR_PASS(_, nir, nir_opt_deref);
 
    /* We can't deal with constant data, get rid of it */
@@ -189,7 +193,7 @@ print_shader(FILE *fp, const char *name, const char *suffix, uint32_t variant,
    memcpy(mem, &info, sizeof(info));
    memcpy((uint8_t *)mem + sizeof(info), p->binary, p->info.binary_size);
 
-   nir_precomp_print_blob(fp, name, suffix, variant, mem, sz_B);
+   nir_precomp_print_blob(fp, name, suffix, variant, mem, sz_B, true);
    free(mem);
 }
 
@@ -216,6 +220,9 @@ gather_atomic_info(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 static const char *
 remap_variant(nir_function *func, unsigned variant, const char *target)
 {
+   /* pass_flags is only 32-bit */
+   assert(variant < 32 && "maximum # of variants");
+
    bool has_atomic = func->pass_flags & BITFIELD_BIT(variant);
 
    if (!has_atomic && !strcmp(target, "g13x"))
@@ -286,9 +293,20 @@ main(int argc, char **argv)
 
       for (unsigned v = 0; v < nr_vars; ++v) {
          nir_shader *s = nir_precompiled_build_variant(
-            libfunc, v, &agx_nir_options, &opt, load_kernel_input);
+            libfunc, MESA_SHADER_COMPUTE, v, &agx_nir_options, &opt,
+            load_kernel_input);
 
-         agx_link_libagx(s, nir);
+         nir_link_shader_functions(s, nir);
+         NIR_PASS(_, s, nir_inline_functions);
+         nir_remove_non_entrypoints(s);
+         NIR_PASS(_, s, nir_opt_deref);
+         NIR_PASS(_, s, nir_lower_vars_to_ssa);
+         NIR_PASS(_, s, nir_remove_dead_derefs);
+         NIR_PASS(_, s, nir_remove_dead_variables,
+                  nir_var_function_temp | nir_var_shader_temp, NULL);
+         NIR_PASS(_, s, nir_lower_vars_to_explicit_types,
+                  nir_var_shader_temp | nir_var_function_temp,
+                  glsl_get_cl_type_size_align);
 
          NIR_PASS(_, s, nir_lower_vars_to_explicit_types, nir_var_mem_shared,
                   glsl_get_cl_type_size_align);
@@ -296,14 +314,14 @@ main(int argc, char **argv)
          NIR_PASS(_, s, nir_lower_explicit_io, nir_var_mem_shared,
                   nir_address_format_62bit_generic);
 
-         /* Unroll loops before lowering indirects */
-         bool progress = false;
-         do {
-            progress = false;
-            NIR_PASS(progress, s, nir_opt_loop);
-         } while (progress);
+         agx_preprocess_nir(s);
 
-         agx_preprocess_nir(s, NULL);
+         NIR_PASS(_, s, nir_opt_deref);
+         NIR_PASS(_, s, nir_lower_vars_to_ssa);
+         NIR_PASS(_, s, nir_lower_explicit_io,
+                  nir_var_shader_temp | nir_var_function_temp |
+                     nir_var_mem_shared | nir_var_mem_global,
+                  nir_address_format_62bit_generic);
 
          bool has_atomic = false;
          nir_shader_intrinsics_pass(s, gather_atomic_info, nir_metadata_all,
@@ -321,8 +339,14 @@ main(int argc, char **argv)
             struct agx_shader_part compiled;
             bool is_helper = !strcmp(libfunc->name, "libagx_helper");
             struct agx_shader_key key = {
-               .libagx = nir,
                .promote_constants = !is_helper,
+
+               /* Most of the internal programs don't use textures at all, but
+                * the few that do are exclusively bindless, so we want to
+                * promote their access.
+                */
+               .promote_textures = true,
+
                .reserved_preamble = layout.size_B / 2,
                .is_helper = is_helper,
             };
@@ -333,7 +357,7 @@ main(int argc, char **argv)
             }
 
             nir_shader *clone = nir_shader_clone(NULL, s);
-            agx_compile_shader_nir(clone, &key, NULL, &compiled);
+            agx_compile_shader_nir(clone, &key, &compiled);
             print_shader(fp_c, libfunc->name, *target, v, &compiled);
             free(compiled.binary);
             ralloc_free(clone);
@@ -358,11 +382,6 @@ main(int argc, char **argv)
       nir_precomp_print_extern_binary_map(fp_h, "libagx", *target);
       nir_precomp_print_binary_map(fp_c, nir, "libagx", *target, remap_variant);
    }
-
-   /* Remove the NIR functions we compiled to binaries to save memory */
-   nir_remove_entrypoints(nir);
-
-   nir_precomp_print_nir(fp_c, fp_h, nir, "libagx", "nir");
 
    glsl_type_singleton_decref();
    fclose(fp_c);

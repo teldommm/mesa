@@ -1,9 +1,9 @@
 /*
  * Copyright © 2024 Collabora Ltd.
  * Copyright © 2024 Arm Ltd.
- *
  * SPDX-License-Identifier: MIT
  */
+#include "drm-uapi/panthor_drm.h"
 
 #include "panvk_cmd_buffer.h"
 #include "panvk_device.h"
@@ -13,8 +13,9 @@ tiler_oom_reg_perm_cb(struct cs_builder *b, unsigned reg)
 {
    switch (reg) {
    /* The bbox is set up by the fragment subqueue, we should not modify it. */
-   case 42:
-   case 43:
+   case MALI_FRAGMENT_SR_BBOX_MIN:
+   case MALI_FRAGMENT_SR_BBOX_MAX:
+
    /* We should only load from the subqueue context. */
    case PANVK_CS_REG_SUBQUEUE_CTX_START:
    case PANVK_CS_REG_SUBQUEUE_CTX_END:
@@ -23,96 +24,213 @@ tiler_oom_reg_perm_cb(struct cs_builder *b, unsigned reg)
    return CS_REG_RW;
 }
 
+static void
+copy_fbd(struct cs_builder *b, bool has_zs_ext, uint32_t rt_count,
+         struct cs_index src_tiler, struct cs_index src_other,
+         struct cs_index dst)
+{
+#if PAN_ARCH >= 14
+   const size_t fbd_size = ALIGN_POT(sizeof(struct panvk_fb_layer_state), 64);
+#else
+   const size_t fbd_size = pan_size(FRAMEBUFFER);
+#endif
+   const uint16_t dbd_offset = fbd_size;
+   const uint16_t rts_offset =
+      fbd_size + (has_zs_ext ? sizeof(struct mali_zs_crc_extension_packed) : 0);
+
+#if PAN_ARCH >= 14
+   /* Copy the layer state from src_other, but preserve the tiler descriptor
+    * pointer from src_tiler. We also need to repoint the DBD/RTD pointers to
+    * the copies that are written after the layer state in dst.
+    */
+   cs_load64_to(b, cs_scratch_reg64(b, 0), src_tiler,
+                offsetof(struct panvk_fb_layer_state, tiler));
+   cs_load_to(b, cs_scratch_reg_tuple(b, 2, 6), src_other, BITFIELD_MASK(6),
+              2 * sizeof(uint32_t));
+   cs_store(b, cs_scratch_reg_tuple(b, 0, 8), dst, BITFIELD_MASK(8), 0);
+
+   cs_load_to(b, cs_scratch_reg_tuple(b, 0, 2), src_other, BITFIELD_MASK(2),
+              8 * sizeof(uint32_t));
+   cs_store(b, cs_scratch_reg_tuple(b, 0, 2), dst, BITFIELD_MASK(2),
+            8 * sizeof(uint32_t));
+
+   if (has_zs_ext)
+      cs_add_imm64(b, cs_scratch_reg64(b, 0), dst, dbd_offset);
+   else
+      cs_move64_to(b, cs_scratch_reg64(b, 0), 0);
+   cs_add_imm64(b, cs_scratch_reg64(b, 2), dst, rts_offset);
+   cs_store(b, cs_scratch_reg_tuple(b, 0, 4), dst, BITFIELD_MASK(4),
+            10 * sizeof(uint32_t));
+#else
+   /* Copy the FBD from src to dst. Most words come from
+    * src_other, but the tiler desc pointer is taken from src_tiler.
+    */
+   cs_load_to(b, cs_scratch_reg_tuple(b, 0, 8), src_other,
+              BITFIELD_MASK(8), 0);
+   cs_store(b, cs_scratch_reg_tuple(b, 0, 8), dst,
+            BITFIELD_MASK(8), 0);
+   cs_load_to(b, cs_scratch_reg_tuple(b, 0, 6), src_other,
+              BITFIELD_MASK(6), 8 * sizeof(uint32_t));
+   cs_load64_to(b, cs_scratch_reg64(b, 6), src_tiler,
+                14 * sizeof(uint32_t));
+   cs_store(b, cs_scratch_reg_tuple(b, 0, 8), dst, BITFIELD_MASK(8),
+            8 * sizeof(uint32_t));
+#endif
+
+   if (has_zs_ext) {
+      /* Copy the whole DBD. */
+      cs_load_to(b, cs_scratch_reg_tuple(b, 0, 8), src_other,
+                 BITFIELD_MASK(8), dbd_offset);
+      cs_store(b, cs_scratch_reg_tuple(b, 0, 8), dst,
+               BITFIELD_MASK(8), dbd_offset);
+      cs_load_to(b, cs_scratch_reg_tuple(b, 0, 8), src_other,
+                 BITFIELD_MASK(8), dbd_offset + (8 * sizeof(uint32_t)));
+      cs_store(b, cs_scratch_reg_tuple(b, 0, 8), dst,
+               BITFIELD_MASK(8), dbd_offset + (8 * sizeof(uint32_t)));
+   }
+
+   for (uint32_t rt = 0; rt < rt_count; rt++) {
+      const uint16_t rt_offset =
+         rts_offset + (rt * sizeof(struct mali_render_target_packed));
+
+      /* Copy the whole RTD. */
+      cs_load_to(b, cs_scratch_reg_tuple(b, 0, 8), src_other,
+                 BITFIELD_MASK(8), rt_offset);
+      cs_store(b, cs_scratch_reg_tuple(b, 0, 8), dst,
+               BITFIELD_MASK(8), rt_offset);
+      cs_load_to(b, cs_scratch_reg_tuple(b, 0, 8), src_other,
+                 BITFIELD_MASK(8), rt_offset + (8 * sizeof(uint32_t)));
+      cs_store(b, cs_scratch_reg_tuple(b, 0, 8), dst,
+               BITFIELD_MASK(8), rt_offset + (8 * sizeof(uint32_t)));
+   }
+}
+
 static size_t
-generate_tiler_oom_handler(struct cs_buffer handler_mem, bool has_zs_ext,
+generate_tiler_oom_handler(struct panvk_device *dev,
+                           struct cs_buffer handler_mem, bool has_zs_ext,
                            uint32_t rt_count, bool tracing_enabled,
                            uint32_t *dump_region_size)
 {
    assert(rt_count >= 1 && rt_count <= MAX_RTS);
-   uint32_t fbd_size = get_fbd_size(has_zs_ext, rt_count);
+
+   const uint32_t fbd_size = get_fbd_size(has_zs_ext, rt_count);
+
+   const struct drm_panthor_csif_info *csif_info =
+      panthor_kmod_get_csif_props(dev->kmod.dev);
 
    struct cs_builder b;
    struct cs_builder_conf conf = {
-      .nr_registers = 96,
-      .nr_kernel_registers = 4,
+      .nr_registers = csif_info->cs_reg_count,
+      .nr_kernel_registers = MAX2(csif_info->unpreserved_cs_reg_count, 4),
       .reg_perm = tiler_oom_reg_perm_cb,
+      .ls_sb_slot = SB_ID(LS),
    };
    cs_builder_init(&b, &conf, handler_mem);
 
-   struct cs_exception_handler handler;
-   struct cs_exception_handler_ctx handler_ctx = {
+   struct cs_function handler;
+   struct cs_function_ctx handler_ctx = {
       .ctx_reg = cs_subqueue_ctx_reg(&b),
-      .dump_addr_offset = TILER_OOM_CTX_FIELD_OFFSET(reg_dump_addr),
-      .ls_sb_slot = SB_ID(LS),
+      .dump_addr_offset =
+         offsetof(struct panvk_cs_subqueue_context, reg_dump_addr),
    };
    struct cs_tracing_ctx tracing_ctx = {
       .enabled = tracing_enabled,
       .ctx_reg = cs_subqueue_ctx_reg(&b),
       .tracebuf_addr_offset =
          offsetof(struct panvk_cs_subqueue_context, debug.tracebuf.cs),
-      .ls_sb_slot = SB_ID(LS),
    };
 
-   cs_exception_handler_def(&b, &handler, handler_ctx) {
+#if PAN_ARCH < 14
+   struct mali_framebuffer_pointer_packed fb_tag;
+   pan_pack(&fb_tag, FRAMEBUFFER_POINTER, cfg) {
+      cfg.zs_crc_extension_present = has_zs_ext;
+      cfg.render_target_count = rt_count;
+   }
+#endif
+
+   cs_function_def(&b, &handler, handler_ctx) {
       struct cs_index subqueue_ctx = cs_subqueue_ctx_reg(&b);
+
       struct cs_index zero = cs_scratch_reg64(&b, 0);
       /* Have flush_id read part of the double zero register */
       struct cs_index flush_id = cs_scratch_reg32(&b, 0);
+
       struct cs_index completed_chunks = cs_scratch_reg_tuple(&b, 2, 4);
       struct cs_index completed_top = cs_scratch_reg64(&b, 2);
       struct cs_index completed_bottom = cs_scratch_reg64(&b, 4);
-      struct cs_index counter = cs_scratch_reg32(&b, 6);
-      struct cs_index layer_count = cs_scratch_reg32(&b, 7);
+      struct cs_index td_count = cs_scratch_reg32(&b, 6);
+
+      /* FBD patching registers */
+      struct cs_index layer_count = cs_scratch_reg32(&b, 8);
+      struct cs_index ir_count = cs_scratch_reg32(&b, 9);
+      struct cs_index scratch_fbd_ptr_reg = cs_scratch_reg64(&b, 10);
+      struct cs_index current_fbd_ptr_reg = cs_scratch_reg64(&b, 12);
+      struct cs_index ir_descs_ptr = cs_scratch_reg64(&b, 14);
+
+      /* Run fragment registers will only be used after FBD patching */
+      struct cs_index run_fragment_regs = cs_scratch_reg_tuple(&b, 0, 4);
 
       /* The tiler pointer is pre-filled. */
-      struct cs_index tiler_ptr = cs_sr_reg64(&b, 38);
-      struct cs_index fbd_ptr = cs_sr_reg64(&b, 40);
+      struct cs_index tiler_ptr = cs_reg64(&b, PANVK_CS_REG_TILER_DESC_PTR);
+
+      cs_load64_to(&b, scratch_fbd_ptr_reg, subqueue_ctx,
+                   TILER_OOM_CTX_FIELD_OFFSET(ir_scratch_fbd_ptr));
+      cs_load32_to(&b, ir_count, subqueue_ctx,
+                   TILER_OOM_CTX_FIELD_OFFSET(counter));
+      cs_load32_to(&b, layer_count, subqueue_ctx,
+                   TILER_OOM_CTX_FIELD_OFFSET(layer_count));
+      cs_load64_to(&b, current_fbd_ptr_reg, subqueue_ctx,
+                   TILER_OOM_CTX_FIELD_OFFSET(layer_fbd_ptr));
 
       /* Use different framebuffer descriptor depending on whether incremental
        * rendering has already been triggered */
-      cs_load32_to(&b, counter, subqueue_ctx,
-                   TILER_OOM_CTX_FIELD_OFFSET(counter));
-      cs_wait_slot(&b, SB_ID(LS), false);
-
-      cs_if(&b, MALI_CS_CONDITION_GREATER, counter)
-         cs_load64_to(&b, fbd_ptr, subqueue_ctx,
-                      TILER_OOM_CTX_FBDPTR_OFFSET(MIDDLE));
-      cs_else(&b)
-         cs_load64_to(&b, fbd_ptr, subqueue_ctx,
-                      TILER_OOM_CTX_FBDPTR_OFFSET(FIRST));
-
-      cs_load32_to(&b, layer_count, subqueue_ctx,
-                   TILER_OOM_CTX_FIELD_OFFSET(layer_count));
-      cs_wait_slot(&b, SB_ID(LS), false);
-
-      cs_req_res(&b, CS_FRAG_RES);
-      cs_while(&b, MALI_CS_CONDITION_GREATER, layer_count) {
-         cs_trace_run_fragment(&b, &tracing_ctx,
-                               cs_scratch_reg_tuple(&b, 8, 4), false,
-                               MALI_TILE_RENDER_ORDER_Z_ORDER, false);
-         cs_add32(&b, layer_count, layer_count, -1);
-         cs_add64(&b, fbd_ptr, fbd_ptr, fbd_size);
+      cs_if(&b, MALI_CS_CONDITION_GREATER, ir_count) {
+         cs_load64_to(
+            &b, ir_descs_ptr, subqueue_ctx,
+            TILER_OOM_CTX_FIELD_OFFSET(ir_descs[PANVK_IR_MIDDLE_PASS]));
       }
-      cs_req_res(&b, 0);
-      /* Wait for all iter scoreboards for simplicity. */
-      cs_wait_slots(&b, SB_ALL_ITERS_MASK, false);
+      cs_else(&b) {
+         cs_load64_to(
+            &b, ir_descs_ptr, subqueue_ctx,
+            TILER_OOM_CTX_FIELD_OFFSET(ir_descs[PANVK_IR_FIRST_PASS]));
+      }
 
-      /* Increment counter */
-      cs_add32(&b, counter, counter, 1);
-      cs_store32(&b, counter, subqueue_ctx,
-                 TILER_OOM_CTX_FIELD_OFFSET(counter));
+      cs_wait_slot(&b, SB_ID(LS));
 
-      /* Reuse layer_count reg for td_count */
-      struct cs_index td_count = layer_count;
+      cs_while(&b, MALI_CS_CONDITION_GREATER, layer_count) {
+         cs_add_imm32(&b, layer_count, layer_count, -1);
+
+         copy_fbd(&b, has_zs_ext, rt_count, current_fbd_ptr_reg, ir_descs_ptr,
+                  scratch_fbd_ptr_reg);
+
+#if PAN_ARCH >= 14
+         /* Emit the scratch fbd layer state. */
+         cs_emit_layer_fragment_state(&b, scratch_fbd_ptr_reg);
+
+         cs_trace_run_fragment2(&b, &tracing_ctx, run_fragment_regs, false,
+                                MALI_TILE_RENDER_ORDER_Z_ORDER);
+#else
+         /* Set FBD pointer to the scratch fbd */
+         cs_add_imm64(&b, cs_sr_reg64(&b, FRAGMENT, FBD_POINTER),
+                      scratch_fbd_ptr_reg, fb_tag.opaque[0]);
+         cs_trace_run_fragment(&b, &tracing_ctx, run_fragment_regs, false,
+                               MALI_TILE_RENDER_ORDER_Z_ORDER);
+#endif
+
+         /* Serialize run fragments since we reuse FBD for the runs */
+         cs_wait_slots(&b, dev->csf.sb.all_iters_mask);
+
+         cs_add_imm64(&b, current_fbd_ptr_reg, current_fbd_ptr_reg, fbd_size);
+         cs_add_imm64(&b, ir_descs_ptr, ir_descs_ptr, fbd_size);
+      }
+
       cs_load32_to(&b, td_count, subqueue_ctx,
                    TILER_OOM_CTX_FIELD_OFFSET(td_count));
       cs_move64_to(&b, zero, 0);
-      cs_wait_slot(&b, SB_ID(LS), false);
 
       cs_while(&b, MALI_CS_CONDITION_GREATER, td_count) {
          /* Load completed chunks */
          cs_load_to(&b, completed_chunks, tiler_ptr, BITFIELD_MASK(4), 10 * 4);
-         cs_wait_slot(&b, SB_ID(LS), false);
 
          cs_finish_fragment(&b, false, completed_top, completed_bottom,
                             cs_now());
@@ -122,34 +240,67 @@ generate_tiler_oom_handler(struct cs_buffer handler_mem, bool has_zs_ext,
          cs_store64(&b, zero, tiler_ptr, 10 * 4);
          cs_store64(&b, zero, tiler_ptr, 12 * 4);
 
-         cs_add64(&b, tiler_ptr, tiler_ptr, pan_size(TILER_CONTEXT));
-         cs_add32(&b, td_count, td_count, -1);
+         cs_add_imm64(&b, tiler_ptr, tiler_ptr, pan_size(TILER_CONTEXT));
+         cs_add_imm32(&b, td_count, td_count, -1);
       }
+
+      /* If this is the first IR call, we need to patch the regular FBD
+       * to use the last IR config.
+       */
+      cs_if(&b, MALI_CS_CONDITION_EQUAL, ir_count) {
+         cs_load64_to(&b, current_fbd_ptr_reg, subqueue_ctx,
+                      TILER_OOM_CTX_FIELD_OFFSET(layer_fbd_ptr));
+         cs_load64_to(&b, ir_descs_ptr, subqueue_ctx,
+                      TILER_OOM_CTX_FIELD_OFFSET(ir_descs[PANVK_IR_LAST_PASS]));
+         cs_load32_to(&b, layer_count, subqueue_ctx,
+                      TILER_OOM_CTX_FIELD_OFFSET(layer_count));
+
+         cs_while(&b, MALI_CS_CONDITION_GREATER, layer_count) {
+            cs_add_imm32(&b, layer_count, layer_count, -1);
+
+            /* Preserve the tiler pointer, take the rest from the
+             * last IR config.
+             */
+            copy_fbd(&b, has_zs_ext, rt_count, current_fbd_ptr_reg,
+                     ir_descs_ptr, current_fbd_ptr_reg);
+
+            cs_add_imm64(&b, current_fbd_ptr_reg, current_fbd_ptr_reg,
+                         fbd_size);
+            cs_add_imm64(&b, ir_descs_ptr, ir_descs_ptr, fbd_size);
+         }
+      }
+
+      /* Increment IR counter */
+      cs_add_imm32(&b, ir_count, ir_count, 1);
+      cs_store32(&b, ir_count, subqueue_ctx,
+                 TILER_OOM_CTX_FIELD_OFFSET(counter));
+      cs_wait_slot(&b, SB_ID(LS));
 
       /* We need to flush the texture caches so future preloads see the new
        * content. */
       cs_flush_caches(&b, MALI_CS_FLUSH_MODE_NONE, MALI_CS_FLUSH_MODE_NONE,
-                      true, flush_id, cs_defer(SB_IMM_MASK, SB_ID(IMM_FLUSH)));
+                      MALI_CS_OTHER_FLUSH_MODE_INVALIDATE, flush_id,
+                      cs_defer(SB_IMM_MASK, SB_ID(IMM_FLUSH)));
 
-      cs_wait_slot(&b, SB_ID(IMM_FLUSH), false);
+      cs_wait_slot(&b, SB_ID(IMM_FLUSH));
    }
 
    assert(cs_is_valid(&b));
-   cs_finish(&b);
+   cs_end(&b);
+   cs_builder_fini(&b);
    *dump_region_size = handler.dump_size;
 
    return handler.length * sizeof(uint64_t);
 }
 
-#define TILER_OOM_HANDLER_MAX_SIZE 512
+#define TILER_OOM_HANDLER_MAX_SIZE 2048
 VkResult
 panvk_per_arch(init_tiler_oom)(struct panvk_device *device)
 {
-   struct panvk_instance *instance =
-      to_panvk_instance(device->vk.physical->instance);
-   bool tracing_enabled = instance->debug_flags & PANVK_DEBUG_TRACE;
+   const bool tracing_enabled = PANVK_DEBUG(TRACE);
    VkResult result = panvk_priv_bo_create(
-      device, TILER_OOM_HANDLER_MAX_SIZE * 2 * MAX_RTS, 0,
+      device, TILER_OOM_HANDLER_MAX_SIZE * 2 * MAX_RTS,
+      panvk_device_adjust_bo_flags(device, PAN_KMOD_BO_FLAG_WB_MMAP),
       VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &device->tiler_oom.handlers_bo);
    if (result != VK_SUCCESS)
       return result;
@@ -157,10 +308,7 @@ panvk_per_arch(init_tiler_oom)(struct panvk_device *device)
    for (uint32_t zs_ext = 0; zs_ext <= 1; zs_ext++) {
       for (uint32_t rt_count = 1; rt_count <= MAX_RTS; rt_count++) {
          uint32_t idx = get_tiler_oom_handler_idx(zs_ext, rt_count);
-         /* Check that we have calculated a handler_stride if we need it to
-          * offset addresses. */
-         assert(idx == 0 || device->tiler_oom.handler_stride != 0);
-         size_t offset = idx * device->tiler_oom.handler_stride;
+         size_t offset = idx * TILER_OOM_HANDLER_MAX_SIZE;
 
          struct cs_buffer handler_mem = {
             .cpu = device->tiler_oom.handlers_bo->addr.host + offset,
@@ -169,17 +317,24 @@ panvk_per_arch(init_tiler_oom)(struct panvk_device *device)
          };
 
          uint32_t dump_region_size;
-         size_t handler_length = generate_tiler_oom_handler(
-            handler_mem, zs_ext, rt_count, tracing_enabled, &dump_region_size);
+         size_t handler_length =
+            generate_tiler_oom_handler(device, handler_mem, zs_ext, rt_count,
+                                       tracing_enabled, &dump_region_size);
 
-         /* All handlers must have the same length */
-         assert(idx == 0 || handler_length == device->tiler_oom.handler_stride);
-         assert(idx == 0 ||
-                dump_region_size == device->tiler_oom.dump_region_size);
-         device->tiler_oom.handler_stride = handler_length;
-         device->tiler_oom.dump_region_size = dump_region_size;
+         /* Use memset(0) to make sure the remaining space is filled with NOP
+          * instructions. */
+         assert(handler_length <= TILER_OOM_HANDLER_MAX_SIZE);
+         memset((uint8_t *)handler_mem.cpu + handler_length, 0,
+                TILER_OOM_HANDLER_MAX_SIZE - handler_length);
+         device->dump_region_size[PANVK_SUBQUEUE_FRAGMENT] =
+            MAX2(device->dump_region_size[PANVK_SUBQUEUE_FRAGMENT],
+                 dump_region_size);
       }
+      device->tiler_oom.handler_stride = TILER_OOM_HANDLER_MAX_SIZE;
    }
+
+   panvk_priv_bo_flush(device->tiler_oom.handlers_bo, 0,
+                       pan_kmod_bo_size(device->tiler_oom.handlers_bo->bo));
 
    return result;
 }

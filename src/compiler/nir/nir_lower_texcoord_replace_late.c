@@ -64,8 +64,7 @@ pass(nir_builder *b, nir_instr *instr, void *data)
    }
 
    nir_def *res = nir_vec(b, &channels[component], intr->num_components);
-   nir_def_rewrite_uses_after(&intr->def, res,
-                              res->parent_instr);
+   nir_def_rewrite_uses_after(&intr->def, res);
    return true;
 }
 
@@ -86,7 +85,7 @@ nir_lower_texcoord_replace_late(nir_shader *s, unsigned coord_replace,
    s->info.inputs_read &= ~(((uint64_t)coord_replace) << VARYING_SLOT_TEX0);
 
    if (!point_coord_is_sysval)
-      s->info.inputs_read |= BITFIELD64_BIT(VARYING_SLOT_PNTC);
+      s->info.inputs_read |= VARYING_BIT_PNTC;
 
    return nir_shader_instructions_pass(s, pass,
                                        nir_metadata_control_flow,

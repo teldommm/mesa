@@ -8,25 +8,27 @@
 
 #include "pipe/p_state.h"
 #include "util/u_dynarray.h"
+#include "util/macros.h"
 #include "etnaviv_context.h"
 
 #define MAX_CONFIG_BOS 4
 
-/*
- * SWAP - swap value of @a and @b
- */
-#define SWAP(a, b)                                                             \
-   do {                                                                        \
-      __typeof(a) __tmp = (a);                                                 \
-      (a) = (b);                                                               \
-      (b) = __tmp;                                                             \
-   } while (0)
+struct etna_ml_device {
+   struct pipe_ml_device base;
+};
+
+static inline struct etna_ml_device *
+etna_ml_device(struct pipe_ml_device *dev)
+{
+   return (struct etna_ml_device *)dev;
+}
 
 enum etna_job_type {
     ETNA_JOB_TYPE_NN,
     ETNA_JOB_TYPE_TP,
     ETNA_JOB_TYPE_CONCAT, /* Fake operation, won't execute on HW. Hack will go away after the move to NIR. */
     ETNA_JOB_TYPE_SPLIT, /* Fake operation, won't execute on HW. Hack will go away after the move to NIR. */
+    ETNA_JOB_TYPE_BYPASS, /* Fake operation, won't execute on HW. Hack will go away after the move to NIR. */
 };
 
 enum etna_ml_tp_type {
@@ -34,17 +36,33 @@ enum etna_ml_tp_type {
    ETNA_ML_TP_DETRANSPOSE,
    ETNA_ML_TP_RESHUFFLE,
    ETNA_ML_TP_PAD,
+   ETNA_ML_TP_RELU,
+   ETNA_ML_TP_ABSOLUTE,
+   ETNA_ML_TP_LOGISTIC,
+};
+
+enum etna_ml_tensor_layout {
+   ETNA_ML_LAYOUT_ANY = 0,
+   ETNA_ML_LAYOUT_NHWC,
+   ETNA_ML_LAYOUT_NCHW,
+};
+
+struct etna_ml_tensor {
+   struct pipe_resource *resource;
+   unsigned offset;
+   unsigned size;
+   enum etna_ml_tensor_layout exp_layout; /* expected */
+   enum etna_ml_tensor_layout act_layout; /* actual */
 };
 
 struct etna_ml_subgraph {
    struct pipe_ml_subgraph base;
+   struct etna_screen *screen;
 
    struct util_dynarray operations;
 
-   /* The three are indexed by tensor index */
-   struct util_dynarray tensors; /* Contains struct pipe_resource* */
-   struct util_dynarray offsets; /* These are integers */
-   struct util_dynarray sizes; /* These are integers */
+   /* Indexed by tensor index */
+   struct util_dynarray tensors; /* Contains struct etna_ml_tensor */
 };
 
 struct etna_vip_instruction {
@@ -53,6 +71,7 @@ struct etna_vip_instruction {
 
    struct etna_bo *configs[MAX_CONFIG_BOS];
    struct etna_bo *coefficients;
+   struct etna_bo *pwl_lut;
    struct pipe_resource *input;
    unsigned input_offset;
    struct pipe_resource *output;
@@ -100,7 +119,8 @@ struct etna_operation {
    uint8_t output_zero_point;
    float output_scale;
 
-   struct pipe_resource *weight_tensor;
+   uint8_t *weight_tensor;
+   unsigned weight_tensor_size;
    unsigned weight_width;
    unsigned weight_height;
    uint8_t weight_zero_point;
@@ -109,7 +129,15 @@ struct etna_operation {
 
    uint8_t addition_offset;
 
-   struct pipe_resource *bias_tensor;
+   uint8_t *bias_tensor;
+   unsigned bias_tensor_size;
+
+   unsigned pad_before_x;
+   unsigned pad_after_x;
+   unsigned pad_before_y;
+   unsigned pad_after_y;
+   unsigned pad_before_z;
+   unsigned pad_after_z;
 };
 
 #define ML_DBG(fmt, ...)                                  \
@@ -119,18 +147,24 @@ struct etna_operation {
    } while (0)
 
 unsigned etna_ml_allocate_tensor(struct etna_ml_subgraph *subgraph);
-struct pipe_resource *etna_ml_get_tensor(struct etna_ml_subgraph *subgraph, unsigned idx);
+void etna_ml_create_tensor(struct etna_ml_subgraph *subgraph, unsigned idx, unsigned size);
+struct etna_ml_tensor *etna_ml_get_tensor(struct etna_ml_subgraph *subgraph, unsigned idx);
+struct pipe_resource *etna_ml_get_resource(struct etna_ml_subgraph *subgraph, unsigned idx);
 unsigned etna_ml_get_offset(struct etna_ml_subgraph *subgraph, unsigned idx);
 unsigned etna_ml_get_size(struct etna_ml_subgraph *subgraph, unsigned idx);
 
-struct etna_bo *etna_ml_create_bo(struct pipe_context *pctx, size_t size);
+struct etna_bo *etna_ml_create_bo(struct etna_screen *screen, size_t size);
 
-struct pipe_resource *etna_ml_create_resource(struct pipe_context *pctx, size_t size);
+struct pipe_resource *etna_ml_create_resource(struct pipe_screen *pscreen, size_t size);
 
-struct etna_core_npu_info *etna_ml_get_core_info(struct etna_context *context);
+struct etna_core_npu_info *etna_ml_get_core_info(struct etna_screen *screen);
+
+bool
+etna_ml_operation_supported(struct pipe_ml_device *pdevice,
+                            const struct pipe_ml_operation *operation);
 
 struct pipe_ml_subgraph *
-etna_ml_subgraph_create(struct pipe_context *context,
+etna_ml_subgraph_create(struct pipe_ml_device *pdevice,
                         const struct pipe_ml_operation *operations,
                         unsigned count);
 
@@ -144,6 +178,6 @@ etna_ml_subgraph_read_outputs(struct pipe_context *context, struct pipe_ml_subgr
                               bool is_signed[]);
 
 void
-etna_ml_subgraph_destroy(struct pipe_context *context, struct pipe_ml_subgraph *subgraph);
+etna_ml_subgraph_destroy(struct pipe_ml_device *pdevice, struct pipe_ml_subgraph *subgraph);
 
 #endif

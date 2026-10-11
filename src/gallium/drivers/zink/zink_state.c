@@ -42,11 +42,12 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
                                   const struct pipe_vertex_element *elements)
 {
    struct zink_screen *screen = zink_screen(pctx->screen);
+   struct zink_context *ctx = zink_context(pctx);
    unsigned int i;
    struct zink_vertex_elements_state *ves = CALLOC_STRUCT(zink_vertex_elements_state);
    if (!ves)
       return NULL;
-   ves->hw_state.hash = _mesa_hash_pointer(ves);
+   ves->hw_state.id = ++ctx->vertex_element_state_counter;
 
    int buffer_map[PIPE_MAX_ATTRIBS];
    for (int j = 0; j < ARRAY_SIZE(buffer_map); ++j)
@@ -178,66 +179,6 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
 }
 
 static void
-zink_bind_vertex_elements_state(struct pipe_context *pctx,
-                                void *cso)
-{
-   struct zink_context *ctx = zink_context(pctx);
-   struct zink_gfx_pipeline_state *state = &ctx->gfx_pipeline_state;
-   ctx->element_state = cso;
-   if (cso) {
-      if (state->element_state != &ctx->element_state->hw_state) {
-         ctx->vertex_state_changed = !zink_screen(pctx->screen)->info.have_EXT_vertex_input_dynamic_state;
-         ctx->vertex_buffers_dirty = ctx->element_state->hw_state.num_bindings > 0;
-      }
-      state->element_state = &ctx->element_state->hw_state;
-      if (zink_screen(pctx->screen)->optimal_keys)
-         return;
-      const struct zink_vs_key *vs = zink_get_vs_key(ctx);
-      uint32_t decomposed_attrs = 0, decomposed_attrs_without_w = 0;
-      switch (vs->size) {
-      case 1:
-         decomposed_attrs = vs->u8.decomposed_attrs;
-         decomposed_attrs_without_w = vs->u8.decomposed_attrs_without_w;
-         break;
-      case 2:
-         decomposed_attrs = vs->u16.decomposed_attrs;
-         decomposed_attrs_without_w = vs->u16.decomposed_attrs_without_w;
-         break;
-      case 4:
-         decomposed_attrs = vs->u16.decomposed_attrs;
-         decomposed_attrs_without_w = vs->u16.decomposed_attrs_without_w;
-         break;
-      }
-      if (ctx->element_state->decomposed_attrs != decomposed_attrs ||
-          ctx->element_state->decomposed_attrs_without_w != decomposed_attrs_without_w) {
-         unsigned size = MAX2(ctx->element_state->decomposed_attrs_size, ctx->element_state->decomposed_attrs_without_w_size);
-         struct zink_shader_key *key = (struct zink_shader_key *)zink_set_vs_key(ctx);
-         key->size -= 2 * key->key.vs.size;
-         switch (size) {
-         case 1:
-            key->key.vs.u8.decomposed_attrs = ctx->element_state->decomposed_attrs;
-            key->key.vs.u8.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
-            break;
-         case 2:
-            key->key.vs.u16.decomposed_attrs = ctx->element_state->decomposed_attrs;
-            key->key.vs.u16.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
-            break;
-         case 4:
-            key->key.vs.u32.decomposed_attrs = ctx->element_state->decomposed_attrs;
-            key->key.vs.u32.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
-            break;
-         default: break;
-         }
-         key->key.vs.size = size;
-         key->size += 2 * size;
-      }
-   } else {
-     state->element_state = NULL;
-     ctx->vertex_buffers_dirty = false;
-   }
-}
-
-static void
 zink_delete_vertex_elements_state(struct pipe_context *pctx,
                                   void *ves)
 {
@@ -280,7 +221,7 @@ blend_factor(enum pipe_blendfactor factor)
    case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
       return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
    }
-   unreachable("unexpected blend factor");
+   UNREACHABLE("unexpected blend factor");
 }
 
 
@@ -294,7 +235,7 @@ blend_op(enum pipe_blend_func func)
    case PIPE_BLEND_MIN: return VK_BLEND_OP_MIN;
    case PIPE_BLEND_MAX: return VK_BLEND_OP_MAX;
    }
-   unreachable("unexpected blend function");
+   UNREACHABLE("unexpected blend function");
 }
 
 static VkLogicOp
@@ -318,7 +259,7 @@ logic_op(enum pipe_logicop func)
    case PIPE_LOGICOP_OR: return VK_LOGIC_OP_OR;
    case PIPE_LOGICOP_SET: return VK_LOGIC_OP_SET;
    }
-   unreachable("unexpected logicop function");
+   UNREACHABLE("unexpected logicop function");
 }
 
 /* from iris */
@@ -340,10 +281,11 @@ static void *
 zink_create_blend_state(struct pipe_context *pctx,
                         const struct pipe_blend_state *blend_state)
 {
+   struct zink_context *ctx = zink_context(pctx);
    struct zink_blend_state *cso = CALLOC_STRUCT(zink_blend_state);
    if (!cso)
       return NULL;
-   cso->hash = _mesa_hash_pointer(cso);
+   cso->id = ++ctx->blend_state_counter;
 
    if (blend_state->logicop_enable) {
       cso->logicop_enable = VK_TRUE;
@@ -419,7 +361,7 @@ zink_bind_blend_state(struct pipe_context *pctx, void *cso)
    if (state->blend_state != cso) {
       state->blend_state = cso;
       if (!screen->have_full_ds3) {
-         state->blend_id = blend ? blend->hash : 0;
+         state->blend_id = blend ? blend->id : 0;
          state->dirty = true;
       }
       bool force_dual_color_blend = screen->driconf.dual_color_blend_by_location &&
@@ -473,7 +415,7 @@ compare_op(enum pipe_compare_func func)
    case PIPE_FUNC_GEQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
    case PIPE_FUNC_ALWAYS: return VK_COMPARE_OP_ALWAYS;
    }
-   unreachable("unexpected func");
+   UNREACHABLE("unexpected func");
 }
 
 static VkStencilOp
@@ -489,7 +431,7 @@ stencil_op(enum pipe_stencil_op op)
    case PIPE_STENCIL_OP_DECR_WRAP: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
    case PIPE_STENCIL_OP_INVERT: return VK_STENCIL_OP_INVERT;
    }
-   unreachable("unexpected op");
+   UNREACHABLE("unexpected op");
 }
 
 static VkStencilOpState
@@ -539,7 +481,43 @@ zink_create_depth_stencil_alpha_state(struct pipe_context *pctx,
 
    cso->hw_state.depth_write = depth_stencil_alpha->depth_writemask;
 
+   if (cso->hw_state.depth_test && cso->hw_state.depth_write && cso->hw_state.depth_compare_op == VK_COMPARE_OP_ALWAYS && zink_debug & ZINK_DEBUG_PERFINFO)
+      mesa_loge("zink: perf warning: depth test enabled with depth write and compareOp=ALWAYS may disable depth buffer compression\n");
+
    return cso;
+}
+
+void
+zink_update_depth_state(struct zink_context *ctx)
+{
+   if (!ctx->dsa_state)
+      return;
+
+   VkCompareOp prev_op = ctx->dsa_state->hw_state.depth_compare_op;
+   assert(ctx->in_rp);
+
+   if (ctx->can_promote_depth_op && ctx->fb_state.zsbuf.texture &&
+       ctx->dynamic_fb.attachments[PIPE_MAX_COLOR_BUFS].loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+       ctx->dsa_state->base.depth_enabled &&
+       ctx->dsa_state->base.depth_writemask &&
+       ctx->dsa_state->base.depth_func == PIPE_FUNC_ALWAYS) {
+      float val = ctx->dynamic_fb.attachments[PIPE_MAX_COLOR_BUFS].clearValue.depthStencil.depth;
+      /* if depth clear is 0.0, use >= */
+      if (fabs(val) < FLT_EPSILON) {
+         ctx->dsa_state->hw_state.depth_compare_op = VK_COMPARE_OP_GREATER_OR_EQUAL;
+      /* if depth clear is 1.0, use <= */
+      } else if (fabs(val - 1.0) < FLT_EPSILON) {
+         ctx->dsa_state->hw_state.depth_compare_op = VK_COMPARE_OP_LESS_OR_EQUAL;
+      } else {
+         ctx->dsa_state->hw_state.depth_compare_op = compare_op(ctx->dsa_state->base.depth_func);
+      }
+      ctx->depth_op_promoted = ctx->dsa_state->hw_state.depth_compare_op != compare_op(ctx->dsa_state->base.depth_func);
+   } else {
+      ctx->dsa_state->hw_state.depth_compare_op = compare_op(ctx->dsa_state->base.depth_func);
+      ctx->depth_op_promoted = false;
+      ctx->can_promote_depth_op = false;
+   }
+   ctx->dsa_state_changed |= prev_op != ctx->dsa_state->hw_state.depth_compare_op;
 }
 
 static void
@@ -555,6 +533,11 @@ zink_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *cso)
          state->dyn_state1.depth_stencil_alpha_state = &ctx->dsa_state->hw_state;
          state->dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
          ctx->dsa_state_changed = true;
+         ctx->dsa_state->hw_state.depth_compare_op = compare_op(ctx->dsa_state->base.depth_func);
+         if (ctx->in_rp)
+            zink_update_depth_state(ctx);
+         else
+            ctx->depth_op_promoted = false;
       }
    }
    if (!ctx->track_renderpasses && !ctx->blitting)
@@ -614,11 +597,18 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
       debug_printf("BUG: vulkan doesn't support different front and back fill modes\n");
 
    if (rs_state->fill_front == PIPE_POLYGON_MODE_POINT &&
-       screen->driver_workarounds.no_hw_gl_point) {
+       !screen->info.maint5_props.polygonModePointSize) {
       state->hw_state.polygon_mode = VK_POLYGON_MODE_FILL;
       state->cull_mode = VK_CULL_MODE_NONE;
    } else {
-      state->hw_state.polygon_mode = rs_state->fill_front; // same values
+      if (rs_state->fill_front != PIPE_POLYGON_MODE_FILL &&
+          !screen->info.feats.features.fillModeNonSolid) {
+         static bool warned = false;
+         warn_missing_feature(warned, "fillModeNonSolid");
+         state->hw_state.polygon_mode = VK_POLYGON_MODE_FILL;
+      } else {
+         state->hw_state.polygon_mode = rs_state->fill_front; // same values
+      }
       state->cull_mode = rs_state->cull_face; // same bits
    }
 
@@ -659,9 +649,7 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    }
 
    state->offset_fill = util_get_offset(rs_state, rs_state->fill_front);
-   state->offset_units = rs_state->offset_units;
-   if (!rs_state->offset_units_unscaled)
-      state->offset_units *= 2;
+   state->offset_units = rs_state->offset_units * 2;
    state->offset_clamp = rs_state->offset_clamp;
    state->offset_scale = rs_state->offset_scale;
 
@@ -685,6 +673,8 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
    bool clip_halfz = ctx->rast_state ? ctx->rast_state->hw_state.clip_halfz : false;
    bool rasterizer_discard = ctx->rast_state ? ctx->rast_state->base.rasterizer_discard : false;
    bool half_pixel_center = ctx->rast_state ? ctx->rast_state->base.half_pixel_center : true;
+   bool representative_fragment_test = ctx->rast_state ? ctx->rast_state->base.representative_fragment_test : false;
+   bool multisample = ctx->rast_state ? ctx->rast_state->base.multisample : false;
    float line_width = ctx->rast_state ? ctx->rast_state->base.line_width : 1.0;
    ctx->rast_state = cso;
 
@@ -700,12 +690,15 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
       ctx->rast_state_changed = true;
 
       if (clip_halfz != ctx->rast_state->base.clip_halfz) {
-         if (screen->info.have_EXT_depth_clip_control)
-            ctx->gfx_pipeline_state.dirty = true;
+         if (screen->info.have_EXT_depth_clip_control) {
+            ctx->gfx_pipeline_state.dirty |= !screen->have_full_ds3;
+            ctx->gfx_pipeline_state.mesh_dirty |= !screen->have_full_ds3;
+         }
          else
             zink_set_last_vertex_key(ctx)->clip_halfz = ctx->rast_state->base.clip_halfz;
          ctx->vp_state_changed = true;
       }
+      ctx->sample_locations_changed |= screen->base.caps.programmable_sample_locations && (multisample != ctx->rast_state->base.multisample);
 
       if (screen->info.have_EXT_extended_dynamic_state3) {
 #define STATE_CHECK(NAME, FLAG) \
@@ -733,10 +726,13 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 #undef STATE_CHECK
       }
 
+      if (representative_fragment_test != ctx->rast_state->base.representative_fragment_test)
+         VKCTX(CmdSetRepresentativeFragmentTestEnableNV)(ctx->bs->cmdbuf, ctx->rast_state->base.representative_fragment_test);
+
       if (fabs(ctx->rast_state->base.line_width - line_width) > FLT_EPSILON)
          ctx->line_width_changed = true;
 
-      bool lower_gl_point = screen->driver_workarounds.no_hw_gl_point;
+      bool lower_gl_point = !screen->info.maint5_props.polygonModePointSize;
       lower_gl_point &= ctx->rast_state->base.fill_front == PIPE_POLYGON_MODE_POINT;
       if (zink_get_gs_key(ctx)->lower_gl_point != lower_gl_point)
          zink_set_gs_key(ctx)->lower_gl_point = lower_gl_point;
@@ -768,6 +764,21 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 
       if (ctx->rast_state->base.half_pixel_center != half_pixel_center)
          ctx->vp_state_changed = true;
+
+#define FLT_DIFF(a) (fabs(prev_state->a - ctx->rast_state->a) > FLT_EPSILON)
+      if (prev_state)
+         ctx->depth_bias_changed = prev_state->offset_fill != ctx->rast_state->offset_fill ||
+                                   FLT_DIFF(offset_units) ||
+                                   FLT_DIFF(offset_clamp) ||
+                                   FLT_DIFF(offset_scale);
+      else
+         ctx->depth_bias_changed = true;
+      if (ctx->depth_bias_changed && ctx->rast_state->offset_fill) {
+         /* tricky to calculate this, safer to skip entirely */
+         ctx->can_promote_depth_op = false;
+         if (ctx->in_rp)
+            zink_update_depth_state(ctx);
+      }
 
       if (!screen->optimal_keys)
          zink_update_gs_key_rectangular_line(ctx);
@@ -843,7 +854,6 @@ void
 zink_context_state_init(struct pipe_context *pctx)
 {
    pctx->create_vertex_elements_state = zink_create_vertex_elements_state;
-   pctx->bind_vertex_elements_state = zink_bind_vertex_elements_state;
    pctx->delete_vertex_elements_state = zink_delete_vertex_elements_state;
 
    pctx->create_blend_state = zink_create_blend_state;

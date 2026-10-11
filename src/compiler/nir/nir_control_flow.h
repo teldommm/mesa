@@ -145,6 +145,8 @@ void nir_cf_delete(nir_cf_list *cf_list);
 void nir_cf_list_clone(nir_cf_list *dst, nir_cf_list *src, nir_cf_node *parent,
                        struct hash_table *remap_table);
 
+void nir_cf_list_detach_ssa(nir_cf_list *cf_list);
+
 static inline void
 nir_cf_list_clone_and_reinsert(nir_cf_list *src_list, nir_cf_node *parent,
                                nir_cursor cursor,
@@ -171,17 +173,8 @@ nir_cf_node_remove(nir_cf_node *node)
    nir_cf_delete(&list);
 }
 
-static inline void
-nir_remove_after_cf_node(nir_cf_node *node)
-{
-   nir_cf_node *end = node;
-   while (!nir_cf_node_is_last(end))
-      end = nir_cf_node_next(end);
-
-   nir_cf_list list;
-   nir_cf_extract(&list, nir_after_cf_node(node), nir_after_cf_node(end));
-   nir_cf_delete(&list);
-}
+/** removes instructions after a control flow node, also removing any phis immediately after it */
+void nir_remove_after_cf_node(nir_cf_node *node);
 
 /** inserts undef phi sources from predcessor into phis of the block */
 void nir_insert_phi_undef(nir_block *block, nir_block *pred);

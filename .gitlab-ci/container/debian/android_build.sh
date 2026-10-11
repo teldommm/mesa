@@ -19,11 +19,13 @@ EPHEMERAL=(
 
 apt-get install -y --no-remove "${EPHEMERAL[@]}"
 
+. .gitlab-ci/container/container_pre_build.sh
+
 # Fetch the NDK and extract just the toolchain we want.
-ndk=$ANDROID_NDK
+ndk="android-ndk-${ANDROID_NDK_VERSION}"
 curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
   -o $ndk.zip https://dl.google.com/android/repository/$ndk-linux.zip
-unzip -d / $ndk.zip "$ndk/toolchains/llvm/*"
+unzip -d / $ndk.zip "$ndk/source.properties" "$ndk/build/cmake/*" "$ndk/toolchains/llvm/*"
 rm $ndk.zip
 # Since it was packed as a zip file, symlinks/hardlinks got turned into
 # duplicate files.  Turn them into hardlinks to save on container space.
@@ -33,11 +35,24 @@ find /${ndk}/ -type f \( -iname '*clang-check*' -o -iname '*clang-tidy*' -o -ina
 
 sh .gitlab-ci/container/create-android-ndk-pc.sh /$ndk zlib.pc "" "-lz" "1.2.3" $ANDROID_SDK_VERSION
 
+# Install android Rust targets
+rustup target add \
+    x86_64-linux-android \
+    i686-linux-android \
+    aarch64-linux-android \
+    armv7-linux-androideabi
+
 sh .gitlab-ci/container/create-android-cross-file.sh /$ndk x86_64-linux-android x86_64 x86_64 $ANDROID_SDK_VERSION
 sh .gitlab-ci/container/create-android-cross-file.sh /$ndk i686-linux-android x86 x86 $ANDROID_SDK_VERSION
 sh .gitlab-ci/container/create-android-cross-file.sh /$ndk aarch64-linux-android aarch64 armv8 $ANDROID_SDK_VERSION
 sh .gitlab-ci/container/create-android-cross-file.sh /$ndk arm-linux-androideabi arm armv7hl $ANDROID_SDK_VERSION armv7a-linux-androideabi
 
+# Build libdrm for the host (Debian) environment, so it's available for
+# binaries we'll run as part of the build process
+. .gitlab-ci/container/build-libdrm.sh
+
+# Build libdrm for the NDK environment, so it's available when building for
+# the Android target
 for arch in \
         x86_64-linux-android \
         i686-linux-android \
@@ -89,9 +104,24 @@ for arch in \
                 --libdir=/usr/local/lib/${arch}
     make install
     make distclean
+
+    unset CC
+    unset CC
+    unset CXX
+    unset LD
+    unset RANLIB
 done
 
 cd ..
 rm -rf $LIBELF_VERSION
 
+
+# Build LLVM libraries for Android only if necessary, uploading a copy to S3
+# to avoid rebuilding it in a future run if the version does not change.
+bash .gitlab-ci/container/build-android-x86_64-llvm.sh
+
+. .gitlab-ci/container/build-bindgen.sh
+
 apt-get purge -y "${EPHEMERAL[@]}"
+
+. .gitlab-ci/container/container_post_build.sh

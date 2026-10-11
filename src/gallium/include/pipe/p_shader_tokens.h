@@ -204,8 +204,6 @@ enum tgsi_semantic {
    TGSI_SEMANTIC_SUBGROUP_LT_MASK,
    TGSI_SEMANTIC_CS_USER_DATA_AMD,
    TGSI_SEMANTIC_VIEWPORT_MASK,
-   TGSI_SEMANTIC_TESS_DEFAULT_OUTER_LEVEL, /**< from set_tess_state */
-   TGSI_SEMANTIC_TESS_DEFAULT_INNER_LEVEL, /**< from set_tess_state */
    TGSI_SEMANTIC_COUNT,       /**< number of semantic values */
 };
 
@@ -233,7 +231,6 @@ enum tgsi_return_type {
    TGSI_RETURN_TYPE_SINT,
    TGSI_RETURN_TYPE_UINT,
    TGSI_RETURN_TYPE_FLOAT,
-   TGSI_RETURN_TYPE_UNKNOWN,
    TGSI_RETURN_TYPE_COUNT
 };
 
@@ -360,7 +357,7 @@ enum tgsi_opcode {
    TGSI_OPCODE_SLT                = 14,
    TGSI_OPCODE_SGE                = 15,
    TGSI_OPCODE_MAD                = 16,
-   TGSI_OPCODE_TEX_LZ             = 17,
+   /* gap */
    TGSI_OPCODE_LRP                = 18,
    TGSI_OPCODE_FMA                = 19,
    TGSI_OPCODE_SQRT               = 20,
@@ -368,7 +365,7 @@ enum tgsi_opcode {
    TGSI_OPCODE_F2U64              = 22,
    TGSI_OPCODE_F2I64              = 23,
    TGSI_OPCODE_FRC                = 24,
-   TGSI_OPCODE_TXF_LZ             = 25,
+   /* gap */
    TGSI_OPCODE_FLR                = 26,
    TGSI_OPCODE_ROUND              = 27,
    TGSI_OPCODE_EX2                = 28,
@@ -703,8 +700,7 @@ struct tgsi_instruction_texture
 {
    unsigned Texture  : 8;    /* TGSI_TEXTURE_ */
    unsigned NumOffsets : 4;
-   unsigned ReturnType : 3; /* TGSI_RETURN_TYPE_x */
-   unsigned Padding : 17;
+   unsigned Padding : 20;
 };
 
 /* for texture offsets in GLSL and DirectX.

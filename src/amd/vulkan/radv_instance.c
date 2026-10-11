@@ -16,76 +16,83 @@
 #define VG(x) ((void)0)
 #endif
 
-#include "radv_instance.h"
-#include "radv_debug.h"
+#include "tools/radv_debug.h"
+#include "tools/radv_debug_hang.h"
 #include "radv_entrypoints.h"
+#include "radv_instance.h"
 #include "radv_wsi.h"
-
-#include "util/driconf.h"
 
 #include "vk_instance.h"
 #include "vk_log.h"
-#include "vk_util.h"
 
-static const struct debug_control radv_debug_options[] = {{"nofastclears", RADV_DEBUG_NO_FAST_CLEARS},
-                                                          {"nodcc", RADV_DEBUG_NO_DCC},
-                                                          {"shaders", RADV_DEBUG_DUMP_SHADERS},
-                                                          {"nocache", RADV_DEBUG_NO_CACHE},
-                                                          {"shaderstats", RADV_DEBUG_DUMP_SHADER_STATS},
-                                                          {"nohiz", RADV_DEBUG_NO_HIZ},
-                                                          {"nocompute", RADV_DEBUG_NO_COMPUTE_QUEUE},
-                                                          {"allbos", RADV_DEBUG_ALL_BOS},
-                                                          {"noibs", RADV_DEBUG_NO_IBS},
-                                                          {"spirv", RADV_DEBUG_DUMP_SPIRV},
-                                                          {"zerovram", RADV_DEBUG_ZERO_VRAM},
-                                                          {"syncshaders", RADV_DEBUG_SYNC_SHADERS},
-                                                          {"preoptir", RADV_DEBUG_DUMP_PREOPT_IR},
-                                                          {"nodynamicbounds", RADV_DEBUG_NO_DYNAMIC_BOUNDS},
-                                                          {"info", RADV_DEBUG_INFO},
-                                                          {"startup", RADV_DEBUG_STARTUP},
-                                                          {"checkir", RADV_DEBUG_CHECKIR},
-                                                          {"nobinning", RADV_DEBUG_NOBINNING},
-                                                          {"nongg", RADV_DEBUG_NO_NGG},
-                                                          {"metashaders", RADV_DEBUG_DUMP_META_SHADERS},
-                                                          {"llvm", RADV_DEBUG_LLVM},
-                                                          {"forcecompress", RADV_DEBUG_FORCE_COMPRESS},
-                                                          {"hang", RADV_DEBUG_HANG},
-                                                          {"img", RADV_DEBUG_IMG},
-                                                          {"noumr", RADV_DEBUG_NO_UMR},
-                                                          {"invariantgeom", RADV_DEBUG_INVARIANT_GEOM},
-                                                          {"splitfma", RADV_DEBUG_SPLIT_FMA},
-                                                          {"nodisplaydcc", RADV_DEBUG_NO_DISPLAY_DCC},
-                                                          {"notccompatcmask", RADV_DEBUG_NO_TC_COMPAT_CMASK},
-                                                          {"novrsflatshading", RADV_DEBUG_NO_VRS_FLAT_SHADING},
-                                                          {"noatocdithering", RADV_DEBUG_NO_ATOC_DITHERING},
-                                                          {"nonggc", RADV_DEBUG_NO_NGGC},
-                                                          {"prologs", RADV_DEBUG_DUMP_PROLOGS},
-                                                          {"nodma", RADV_DEBUG_NO_DMA_BLIT},
-                                                          {"epilogs", RADV_DEBUG_DUMP_EPILOGS},
-                                                          {"nofmask", RADV_DEBUG_NO_FMASK},
-                                                          {"shadowregs", RADV_DEBUG_SHADOW_REGS},
-                                                          {"extra_md", RADV_DEBUG_EXTRA_MD},
-                                                          {"nogpl", RADV_DEBUG_NO_GPL},
-                                                          {"videoarraypath", RADV_DEBUG_VIDEO_ARRAY_PATH},
-                                                          {"nort", RADV_DEBUG_NO_RT},
-                                                          {"nomeshshader", RADV_DEBUG_NO_MESH_SHADER},
-                                                          {"nongg_gs", RADV_DEBUG_NO_NGG_GS},
-                                                          {"noeso", RADV_DEBUG_NO_ESO},
-                                                          {"psocachestats", RADV_DEBUG_PSO_CACHE_STATS},
-                                                          {"nirdebuginfo", RADV_DEBUG_NIR_DEBUG_INFO},
-                                                          {"dump_trap_handler", RADV_DEBUG_DUMP_TRAP_HANDLER},
-                                                          {"vs", RADV_DEBUG_DUMP_VS},
-                                                          {"tcs", RADV_DEBUG_DUMP_TCS},
-                                                          {"tes", RADV_DEBUG_DUMP_TES},
-                                                          {"gs", RADV_DEBUG_DUMP_GS},
-                                                          {"ps", RADV_DEBUG_DUMP_PS},
-                                                          {"task", RADV_DEBUG_DUMP_TASK},
-                                                          {"mesh", RADV_DEBUG_DUMP_MESH},
-                                                          {"cs", RADV_DEBUG_DUMP_CS},
-                                                          {"nir", RADV_DEBUG_DUMP_NIR},
-                                                          {"asm", RADV_DEBUG_DUMP_ASM},
-                                                          {"ir", RADV_DEBUG_DUMP_BACKEND_IR},
-                                                          {NULL, 0}};
+static const struct debug_control radv_debug_options[] = {
+   {"nofastclears", RADV_DEBUG_NO_FAST_CLEARS},
+   {"nodcc", RADV_DEBUG_NO_DCC},
+   {"shaders", RADV_DEBUG_DUMP_SHADERS},
+   {"nocachecompat", RADV_DEBUG_NO_CACHE_COMPAT},
+   {"nocache", RADV_DEBUG_NO_CACHE},
+   {"shaderstats", RADV_DEBUG_DUMP_SHADER_STATS},
+   {"nohiz", RADV_DEBUG_NO_HIZ},
+   {"nocompute", RADV_DEBUG_NO_COMPUTE_QUEUE},
+   {"allbos", RADV_DEBUG_ALL_BOS},
+   {"noibchaining", RADV_DEBUG_NO_IB_CHAINING},
+   {"spirv", RADV_DEBUG_DUMP_SPIRV},
+   {"zerovram", RADV_DEBUG_ZERO_VRAM},
+   {"syncshaders", RADV_DEBUG_SYNC_SHADERS},
+   {"preoptir", RADV_DEBUG_DUMP_PREOPT_IR},
+   {"info", RADV_DEBUG_INFO},
+   {"startup", RADV_DEBUG_STARTUP},
+   {"checkir", RADV_DEBUG_CHECKIR},
+   {"nobinning", RADV_DEBUG_NOBINNING},
+   {"nongg", RADV_DEBUG_NO_NGG},
+   {"metashaders", RADV_DEBUG_DUMP_META_SHADERS},
+   {"llvm", RADV_DEBUG_LLVM},
+   {"forcecompress", RADV_DEBUG_FORCE_COMPRESS},
+   {"hang", RADV_DEBUG_HANG},
+   {"img", RADV_DEBUG_IMG},
+   {"noumr", RADV_DEBUG_NO_UMR},
+   {"nodisplaydcc", RADV_DEBUG_NO_DISPLAY_DCC},
+   {"notccompatcmask", RADV_DEBUG_NO_TC_COMPAT_CMASK},
+   {"novrsflatshading", RADV_DEBUG_NO_VRS_FLAT_SHADING},
+   {"noatocdithering", RADV_DEBUG_NO_ATOC_DITHERING},
+   {"nonggc", RADV_DEBUG_NO_NGGC},
+   {"prologs", RADV_DEBUG_DUMP_PROLOGS},
+   {"nodma", RADV_DEBUG_NO_DMA_BLIT},
+   {"epilogs", RADV_DEBUG_DUMP_EPILOGS},
+   {"nofmask", RADV_DEBUG_NO_FMASK},
+   {"shadowregs", RADV_DEBUG_SHADOW_REGS},
+   {"extra_md", RADV_DEBUG_EXTRA_MD},
+   {"nogpl", RADV_DEBUG_NO_GPL},
+   {"nort", RADV_DEBUG_NO_RT},
+   {"nomeshshader", RADV_DEBUG_NO_MESH_SHADER},
+   {"noeso", RADV_DEBUG_NO_ESO},
+   {"psocachestats", RADV_DEBUG_PSO_CACHE_STATS},
+   {"nirdebuginfo", RADV_DEBUG_NIR_DEBUG_INFO},
+   {"dump_trap_handler", RADV_DEBUG_DUMP_TRAP_HANDLER},
+   {"vs", RADV_DEBUG_DUMP_VS},
+   {"tcs", RADV_DEBUG_DUMP_TCS},
+   {"tes", RADV_DEBUG_DUMP_TES},
+   {"gs", RADV_DEBUG_DUMP_GS},
+   {"ps", RADV_DEBUG_DUMP_PS},
+   {"task", RADV_DEBUG_DUMP_TASK},
+   {"mesh", RADV_DEBUG_DUMP_MESH},
+   {"cs", RADV_DEBUG_DUMP_CS},
+   {"nir", RADV_DEBUG_DUMP_NIR},
+   {"asm", RADV_DEBUG_DUMP_ASM},
+   {"ir", RADV_DEBUG_DUMP_BACKEND_IR},
+   {"pso_history", RADV_DEBUG_PSO_HISTORY},
+   {"bvh4", RADV_DEBUG_BVH4},
+   {"novideo", RADV_DEBUG_NO_VIDEO},
+   {"validatevas", RADV_DEBUG_VALIDATE_VAS},
+   {"bo_history", RADV_DEBUG_DUMP_BO_HISTORY},
+   {"dumpibs", RADV_DEBUG_DUMP_IBS},
+   {"vm", RADV_DEBUG_VM},
+   {"nosmemmitigation", RADV_DEBUG_NO_SMEM_MITIGATION},
+   {"fullsync", RADV_DEBUG_FULL_SYNC},
+   {"notmz", RADV_DEBUG_NO_TMZ},
+   {"noheap", RADV_DEBUG_NO_HEAP},
+   {NULL, 0},
+};
 
 const char *
 radv_get_debug_option_name(int id)
@@ -98,32 +105,62 @@ radv_get_debug_option_name(int id)
    return NULL;
 }
 
-static const struct debug_control radv_perftest_options[] = {{"localbos", RADV_PERFTEST_LOCAL_BOS},
-                                                             {"dccmsaa", RADV_PERFTEST_DCC_MSAA},
-                                                             {"bolist", RADV_PERFTEST_BO_LIST},
-                                                             {"cswave32", RADV_PERFTEST_CS_WAVE_32},
-                                                             {"pswave32", RADV_PERFTEST_PS_WAVE_32},
-                                                             {"gewave32", RADV_PERFTEST_GE_WAVE_32},
-                                                             {"nosam", RADV_PERFTEST_NO_SAM},
-                                                             {"sam", RADV_PERFTEST_SAM},
-                                                             {"nggc", RADV_PERFTEST_NGGC},
-                                                             {"emulate_rt", RADV_PERFTEST_EMULATE_RT},
-                                                             {"rtwave64", RADV_PERFTEST_RT_WAVE_64},
-                                                             {"video_decode", RADV_PERFTEST_VIDEO_DECODE},
-                                                             {"dmashaders", RADV_PERFTEST_DMA_SHADERS},
-                                                             {"transfer_queue", RADV_PERFTEST_TRANSFER_QUEUE},
-                                                             {"nircache", RADV_PERFTEST_NIR_CACHE},
-                                                             {"rtwave32", RADV_PERFTEST_RT_WAVE_32},
-                                                             {"video_encode", RADV_PERFTEST_VIDEO_ENCODE},
-                                                             {NULL, 0}};
-
-static const struct debug_control radv_trap_excp_options[] = {
-   {"mem_viol", RADV_PERFTEST_LOCAL_BOS},
-   {"float_div_by_zero", RADV_PERFTEST_DCC_MSAA},
-   {"float_overflow", RADV_PERFTEST_BO_LIST},
-   {"float_underflow", RADV_PERFTEST_CS_WAVE_32},
+static const struct debug_control radv_perftest_options[] = {
+   {"localbos", RADV_PERFTEST_LOCAL_BOS},
+   {"dccmsaa", RADV_PERFTEST_DCC_MSAA},
+   {"cswave32", RADV_PERFTEST_CS_WAVE_32},
+   {"pswave32", RADV_PERFTEST_PS_WAVE_32},
+   {"gewave32", RADV_PERFTEST_GE_WAVE_32},
+   {"nosam", RADV_PERFTEST_NO_SAM},
+   {"sam", RADV_PERFTEST_SAM},
+   {"nggc", RADV_PERFTEST_NGGC},
+   {"emulate_rt", RADV_PERFTEST_EMULATE_RT},
+   {"rtwave64", RADV_PERFTEST_RT_WAVE_64},
+   {"video_decode", RADV_PERFTEST_VIDEO_DECODE},
+   {"dmashaders", RADV_PERFTEST_DMA_SHADERS},
+   {"transfer_queue", RADV_PERFTEST_TRANSFER_QUEUE},
+   {"nircache", RADV_PERFTEST_NIR_CACHE},
+   {"video_encode", RADV_PERFTEST_VIDEO_ENCODE},
+   {"nogttspill", RADV_PERFTEST_NO_GTT_SPILL},
+   {"hic", RADV_PERFTEST_HIC},
+   {"sparse", RADV_PERFTEST_SPARSE},
+   {"rtcps", RADV_PERFTEST_RT_CPS},
+   {"bfloat16", RADV_PERFTEST_BFLOAT16},
+   {"lowlatencydec", RADV_PERFTEST_LOWLATENCYDEC},
+   {"lowlatencyenc", RADV_PERFTEST_LOWLATENCYENC},
    {NULL, 0},
 };
+
+static const struct debug_control radv_experimental_options[] = {
+   {"emulate_rt", RADV_EXPERIMENTAL_EMULATE_RT},
+   {"video_decode", RADV_EXPERIMENTAL_VIDEO_DECODE},
+   {"transfer_queue", RADV_EXPERIMENTAL_TRANSFER_QUEUE},
+   {"video_encode", RADV_EXPERIMENTAL_VIDEO_ENCODE},
+   {"hic", RADV_EXPERIMENTAL_HIC},
+   {"sparse", RADV_EXPERIMENTAL_SPARSE},
+   {"bfloat16", RADV_EXPERIMENTAL_BFLOAT16},
+   {"msrtss", RADV_EXPERIMENTAL_MSRTSS},
+   {NULL, 0},
+};
+
+static const struct debug_control radv_trap_excp_options[] = {
+   {"mem_viol", RADV_TRAP_EXCP_MEM_VIOL},
+   {"float_div_by_zero", RADV_TRAP_EXCP_FLOAT_DIV_BY_ZERO},
+   {"float_overflow", RADV_TRAP_EXCP_FLOAT_OVERFLOW},
+   {"float_underflow", RADV_TRAP_EXCP_FLOAT_UNDERFLOW},
+   {NULL, 0},
+};
+
+// clang-format off
+static const struct debug_control radv_queue_disable_options[] = {
+   {"gfx", RADV_QUEUE_DISABLE_GENERAL},
+   {"compute", RADV_QUEUE_DISABLE_COMPUTE},
+   {"vdec", RADV_QUEUE_DISABLE_VIDEO_DEC},
+   {"venc", RADV_QUEUE_DISABLE_VIDEO_ENC},
+   {"transfer", RADV_QUEUE_DISABLE_TRANSFER},
+   {"sparse", RADV_QUEUE_DISABLE_SPARSE},
+};
+// clang-format on
 
 const char *
 radv_get_perftest_option_name(int id)
@@ -139,155 +176,37 @@ radv_get_perftest_option_name(int id)
 static const struct debug_control trace_options[] = {
    {"rgp", RADV_TRACE_MODE_RGP},
    {"rra", RADV_TRACE_MODE_RRA},
+   {"gamma", RADV_TRACE_MODE_GAMMA},
    {"ctxroll", RADV_TRACE_MODE_CTX_ROLLS},
+   {"ranges", RADV_TRACE_MODE_RANGES},
    {NULL, 0},
 };
-
-// clang-format off
-static const driOptionDescription radv_dri_options[] = {
-   DRI_CONF_SECTION_PERFORMANCE
-      DRI_CONF_ADAPTIVE_SYNC(true)
-      DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
-      DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
-      DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
-      DRI_CONF_VK_KHR_PRESENT_WAIT(false)
-      DRI_CONF_VK_XWAYLAND_WAIT_READY(false)
-      DRI_CONF_RADV_REPORT_LLVM9_VERSION_STRING(false)
-      DRI_CONF_RADV_ENABLE_MRT_OUTPUT_NAN_FIXUP(false)
-      DRI_CONF_RADV_DISABLE_SHRINK_IMAGE_STORE(false)
-      DRI_CONF_RADV_NO_DYNAMIC_BOUNDS(false)
-      DRI_CONF_RADV_OVERRIDE_UNIFORM_OFFSET_ALIGNMENT(0)
-      DRI_CONF_RADV_CLEAR_LDS(false)
-      DRI_CONF_RADV_DISABLE_NGG_GS(false)
-   DRI_CONF_SECTION_END
-
-   DRI_CONF_SECTION_DEBUG
-      DRI_CONF_OVERRIDE_VRAM_SIZE()
-      DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
-      DRI_CONF_VK_WSI_FORCE_SWAPCHAIN_TO_CURRENT_EXTENT(false)
-      DRI_CONF_VK_X11_IGNORE_SUBOPTIMAL(false)
-      DRI_CONF_VK_REQUIRE_ETC2(false)
-      DRI_CONF_VK_REQUIRE_ASTC(false)
-      DRI_CONF_RADV_ZERO_VRAM(false)
-      DRI_CONF_RADV_INVARIANT_GEOM(false)
-      DRI_CONF_RADV_SPLIT_FMA(false)
-      DRI_CONF_RADV_DISABLE_TC_COMPAT_HTILE_GENERAL(false)
-      DRI_CONF_RADV_DISABLE_DCC(false)
-      DRI_CONF_RADV_DISABLE_DCC_MIPS(false)
-      DRI_CONF_RADV_DISABLE_DCC_STORES(false)
-      DRI_CONF_RADV_DISABLE_ANISO_SINGLE_LEVEL(false)
-      DRI_CONF_RADV_DISABLE_TRUNC_COORD(false)
-      DRI_CONF_RADV_DISABLE_SINKING_LOAD_INPUT_FS(false)
-      DRI_CONF_RADV_DISABLE_DEPTH_STORAGE(false)
-      DRI_CONF_RADV_FLUSH_BEFORE_QUERY_COPY(false)
-      DRI_CONF_RADV_ENABLE_UNIFIED_HEAP_ON_APU(false)
-      DRI_CONF_RADV_TEX_NON_UNIFORM(false)
-      DRI_CONF_RADV_FLUSH_BEFORE_TIMESTAMP_WRITE(false)
-      DRI_CONF_RADV_RT_WAVE64(false)
-      DRI_CONF_RADV_LEGACY_SPARSE_BINDING(false)
-      DRI_CONF_RADV_FORCE_PSTATE_PEAK_GFX11_DGPU(false)
-      DRI_CONF_RADV_OVERRIDE_GRAPHICS_SHADER_VERSION(0)
-      DRI_CONF_RADV_OVERRIDE_COMPUTE_SHADER_VERSION(0)
-      DRI_CONF_RADV_OVERRIDE_RAY_TRACING_SHADER_VERSION(0)
-      DRI_CONF_RADV_SSBO_NON_UNIFORM(false)
-      DRI_CONF_RADV_LOWER_TERMINATE_TO_DISCARD(false)
-      DRI_CONF_RADV_APP_LAYER()
-   DRI_CONF_SECTION_END
-};
-// clang-format on
 
 static void
 radv_init_dri_options(struct radv_instance *instance)
 {
-   driParseOptionInfo(&instance->drirc.available_options, radv_dri_options, ARRAY_SIZE(radv_dri_options));
-   driParseConfigFiles(&instance->drirc.options, &instance->drirc.available_options, 0, "radv", NULL, NULL,
-                       instance->vk.app_info.app_name, instance->vk.app_info.app_version,
-                       instance->vk.app_info.engine_name, instance->vk.app_info.engine_version);
+   struct radv_drirc *drirc = &instance->drirc;
 
-   instance->drirc.enable_mrt_output_nan_fixup =
-      driQueryOptionb(&instance->drirc.options, "radv_enable_mrt_output_nan_fixup");
+   radv_parse_dri_options(drirc, &(driConfigFileParseParams){
+                                    .driverName = "radv",
+                                    .applicationName = instance->vk.app_info.app_name,
+                                    .applicationVersion = instance->vk.app_info.app_version,
+                                    .engineName = instance->vk.app_info.engine_name,
+                                    .engineVersion = instance->vk.app_info.engine_version,
+                                 });
 
-   instance->drirc.disable_shrink_image_store =
-      driQueryOptionb(&instance->drirc.options, "radv_disable_shrink_image_store");
+   if (instance->vk.app_info.engine_name && !strcmp(instance->vk.app_info.engine_name, "DXVK")) {
+      /* Since 2.3.1+, DXVK uses the application version to notify the driver about D3D9. */
+      const bool is_d3d9 = instance->vk.app_info.app_version & 0x1;
 
-   instance->drirc.disable_tc_compat_htile_in_general =
-      driQueryOptionb(&instance->drirc.options, "radv_disable_tc_compat_htile_general");
+      drirc->debug.disable_trunc_coord &= !is_d3d9;
+   }
+}
 
-   if (driQueryOptionb(&instance->drirc.options, "radv_no_dynamic_bounds"))
-      instance->debug_flags |= RADV_DEBUG_NO_DYNAMIC_BOUNDS;
-
-   if (driQueryOptionb(&instance->drirc.options, "radv_invariant_geom"))
-      instance->debug_flags |= RADV_DEBUG_INVARIANT_GEOM;
-
-   if (driQueryOptionb(&instance->drirc.options, "radv_split_fma"))
-      instance->debug_flags |= RADV_DEBUG_SPLIT_FMA;
-
-   if (driQueryOptionb(&instance->drirc.options, "radv_disable_dcc"))
-      instance->debug_flags |= RADV_DEBUG_NO_DCC;
-
-   if (driQueryOptionb(&instance->drirc.options, "radv_disable_ngg_gs"))
-      instance->debug_flags |= RADV_DEBUG_NO_NGG_GS;
-
-   instance->drirc.clear_lds = driQueryOptionb(&instance->drirc.options, "radv_clear_lds");
-
-   instance->drirc.zero_vram = driQueryOptionb(&instance->drirc.options, "radv_zero_vram");
-
-   instance->drirc.disable_aniso_single_level =
-      driQueryOptionb(&instance->drirc.options, "radv_disable_aniso_single_level");
-
-   instance->drirc.disable_trunc_coord = driQueryOptionb(&instance->drirc.options, "radv_disable_trunc_coord");
-
-   instance->drirc.disable_sinking_load_input_fs =
-      driQueryOptionb(&instance->drirc.options, "radv_disable_sinking_load_input_fs");
-
-   instance->drirc.disable_depth_storage = driQueryOptionb(&instance->drirc.options, "radv_disable_depth_storage");
-
-   instance->drirc.flush_before_query_copy = driQueryOptionb(&instance->drirc.options, "radv_flush_before_query_copy");
-
-   instance->drirc.enable_unified_heap_on_apu =
-      driQueryOptionb(&instance->drirc.options, "radv_enable_unified_heap_on_apu");
-
-   instance->drirc.tex_non_uniform = driQueryOptionb(&instance->drirc.options, "radv_tex_non_uniform");
-
-   instance->drirc.ssbo_non_uniform = driQueryOptionb(&instance->drirc.options, "radv_ssbo_non_uniform");
-
-   instance->drirc.app_layer = driQueryOptionstr(&instance->drirc.options, "radv_app_layer");
-
-   instance->drirc.flush_before_timestamp_write =
-      driQueryOptionb(&instance->drirc.options, "radv_flush_before_timestamp_write");
-
-   instance->drirc.force_rt_wave64 = driQueryOptionb(&instance->drirc.options, "radv_rt_wave64");
-
-   instance->drirc.legacy_sparse_binding = driQueryOptionb(&instance->drirc.options, "radv_legacy_sparse_binding");
-
-   instance->drirc.force_pstate_peak_gfx11_dgpu =
-      driQueryOptionb(&instance->drirc.options, "radv_force_pstate_peak_gfx11_dgpu");
-
-   instance->drirc.override_graphics_shader_version =
-      driQueryOptioni(&instance->drirc.options, "radv_override_graphics_shader_version");
-   instance->drirc.override_compute_shader_version =
-      driQueryOptioni(&instance->drirc.options, "radv_override_compute_shader_version");
-   instance->drirc.override_ray_tracing_shader_version =
-      driQueryOptioni(&instance->drirc.options, "radv_override_ray_tracing_shader_version");
-
-   instance->drirc.override_vram_size = driQueryOptioni(&instance->drirc.options, "override_vram_size");
-
-   instance->drirc.enable_khr_present_wait = driQueryOptionb(&instance->drirc.options, "vk_khr_present_wait");
-
-   instance->drirc.override_uniform_offset_alignment =
-      driQueryOptioni(&instance->drirc.options, "radv_override_uniform_offset_alignment");
-
-   instance->drirc.report_llvm9_version_string =
-      driQueryOptionb(&instance->drirc.options, "radv_report_llvm9_version_string");
-
-   instance->drirc.vk_require_etc2 = driQueryOptionb(&instance->drirc.options, "vk_require_etc2");
-   instance->drirc.vk_require_astc = driQueryOptionb(&instance->drirc.options, "vk_require_astc");
-
-   instance->drirc.disable_dcc_mips = driQueryOptionb(&instance->drirc.options, "radv_disable_dcc_mips");
-   instance->drirc.disable_dcc_stores = driQueryOptionb(&instance->drirc.options, "radv_disable_dcc_stores");
-
-   instance->drirc.lower_terminate_to_discard =
-      driQueryOptionb(&instance->drirc.options, "radv_lower_terminate_to_discard");
+bool
+radv_is_rt_wave64_enabled(const struct radv_instance *instance)
+{
+   return instance->perftest_flags & RADV_PERFTEST_RT_WAVE_64 || instance->drirc.debug.rt_wave64;
 }
 
 static const struct vk_instance_extension_table radv_instance_extensions_supported = {
@@ -302,6 +221,7 @@ static const struct vk_instance_extension_table radv_instance_extensions_support
 #ifdef RADV_USE_WSI_PLATFORM
    .KHR_get_surface_capabilities2 = true,
    .KHR_surface = true,
+   .KHR_surface_maintenance1 = true,
    .KHR_surface_protected_capabilities = true,
    .EXT_surface_maintenance1 = true,
    .EXT_swapchain_colorspace = true,
@@ -331,7 +251,7 @@ static const struct vk_instance_extension_table radv_instance_extensions_support
 };
 
 static enum radeon_ctx_pstate
-radv_parse_pstate(const char* str)
+radv_parse_pstate(const char *str)
 {
    if (!strcmp(str, "peak")) {
       return RADEON_CTX_PSTATE_PEAK;
@@ -344,6 +264,27 @@ radv_parse_pstate(const char* str)
    } else {
       return RADEON_CTX_PSTATE_NONE;
    }
+}
+
+static void
+radv_convert_perftest_to_experimental(struct radv_instance *instance)
+{
+#define CONVERT(name, flag)                                                                                            \
+   if (instance->perftest_flags & RADV_PERFTEST_##flag) {                                                              \
+      fprintf(stderr, "radv: RADV_PERFTEST=" #name " is deprecated and will be removed in future Mesa releases. "      \
+                      "Please use RADV_EXPERIMENTAL=" #name " instead.\n");                                            \
+      instance->experimental_flags |= RADV_EXPERIMENTAL_##flag;                                                        \
+   }
+
+   CONVERT(emulate_rt, EMULATE_RT);
+   CONVERT(video_decode, VIDEO_DECODE);
+   CONVERT(video_encode, VIDEO_ENCODE);
+   CONVERT(transfer_queue, TRANSFER_QUEUE);
+   CONVERT(hic, HIC);
+   CONVERT(sparse, SPARSE);
+   CONVERT(bfloat16, BFLOAT16);
+
+#undef CONVERT
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -375,10 +316,12 @@ radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationC
 
    simple_mtx_init(&instance->shader_dump_mtx, mtx_plain);
 
-   instance->debug_flags = parse_debug_string(getenv("RADV_DEBUG"), radv_debug_options);
-   instance->perftest_flags = parse_debug_string(getenv("RADV_PERFTEST"), radv_perftest_options);
-   instance->trap_excp_flags = parse_debug_string(getenv("RADV_TRAP_HANDLER_EXCP"), radv_trap_excp_options);
+   instance->debug_flags = parse_debug_string(os_get_option("RADV_DEBUG"), radv_debug_options);
+   instance->perftest_flags = parse_debug_string(os_get_option("RADV_PERFTEST"), radv_perftest_options);
+   instance->experimental_flags = parse_debug_string(os_get_option("RADV_EXPERIMENTAL"), radv_experimental_options);
+   instance->trap_excp_flags = parse_debug_string(os_get_option("RADV_TRAP_HANDLER_EXCP"), radv_trap_excp_options);
    instance->profile_pstate = radv_parse_pstate(debug_get_option("RADV_PROFILE_PSTATE", "peak"));
+   instance->queue_disable_flags = parse_debug_string(os_get_option("RADV_QUEUE_DISABLE"), radv_queue_disable_options);
 
    const uint64_t shader_stage_flags = RADV_DEBUG_DUMP_VS | RADV_DEBUG_DUMP_TCS | RADV_DEBUG_DUMP_TES |
                                        RADV_DEBUG_DUMP_GS | RADV_DEBUG_DUMP_PS | RADV_DEBUG_DUMP_TASK |
@@ -399,21 +342,29 @@ radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationC
       instance->debug_flags |= shader_stage_flags;
    }
 
-   /* When RADV_FORCE_FAMILY is set, the driver creates a null
-    * device that allows to test the compiler without having an
-    * AMDGPU instance.
-    */
-   if (getenv("RADV_FORCE_FAMILY"))
-      instance->vk.physical_devices.enumerate = create_null_physical_device;
-   else
-      instance->vk.physical_devices.try_create_for_drm = create_drm_physical_device;
+   if (instance->debug_flags & RADV_DEBUG_PSO_HISTORY) {
+      const char *filename = "/tmp/radv_pso_history.log";
 
+      instance->pso_history_logfile = fopen(filename, "w");
+      if (!instance->pso_history_logfile)
+         fprintf(stderr, "radv: Failed to open log file: %s.\n", filename);
+   }
+
+   instance->vk.physical_devices.try_create_for_drm = create_drm_physical_device;
    instance->vk.physical_devices.destroy = radv_physical_device_destroy;
 
    if (instance->debug_flags & RADV_DEBUG_STARTUP)
       fprintf(stderr, "radv: info: Created an instance.\n");
 
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
+
+   radv_convert_perftest_to_experimental(instance);
+
+   if (instance->debug_flags & RADV_DEBUG_NO_COMPUTE_QUEUE) {
+      fprintf(stderr, "radv: RADV_DEBUG=nocompute is deprecated and will be removed in future Mesa Releases.\n"
+                      "Please use RADV_QUEUE_DISABLE=compute instead.\n");
+      instance->queue_disable_flags |= RADV_QUEUE_DISABLE_COMPUTE;
+   }
 
    radv_init_dri_options(instance);
 
@@ -431,6 +382,9 @@ radv_DestroyInstance(VkInstance _instance, const VkAllocationCallbacks *pAllocat
       return;
 
    VG(VALGRIND_DESTROY_MEMPOOL(instance));
+
+   if (instance->pso_history_logfile)
+      fclose(instance->pso_history_logfile);
 
    simple_mtx_destroy(&instance->shader_dump_mtx);
 
@@ -476,12 +430,6 @@ radv_GetInstanceProcAddr(VkInstance _instance, const char *pName)
    VK_FROM_HANDLE(vk_instance, instance, _instance);
    return vk_instance_get_proc_addr(instance, &radv_instance_entrypoints, pName);
 }
-
-/* Windows will use a dll definition file to avoid build errors. */
-#ifdef _WIN32
-#undef PUBLIC
-#define PUBLIC
-#endif
 
 /* The loader wants us to expose a second GetInstanceProcAddr function
  * to work around certain LD_PRELOAD issues seen in apps.

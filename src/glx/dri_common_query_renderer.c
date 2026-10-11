@@ -21,7 +21,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#if defined(GLX_DIRECT_RENDERING) && (!defined(GLX_USE_APPLEGL) || defined(GLX_USE_APPLE))
+#if defined(GLX_DIRECT_RENDERING)
 
 #include "glxclient.h"
 #include "glx_error.h"
@@ -74,7 +74,7 @@ dri_convert_context_profile_bits(int attribute, unsigned int *value)
    }
 }
 
-_X_HIDDEN int
+int
 glx_dri_query_renderer_integer(struct glx_screen *base, int attribute,
                             unsigned int *value)
 {
@@ -92,7 +92,7 @@ glx_dri_query_renderer_integer(struct glx_screen *base, int attribute,
    return ret;
 }
 
-_X_HIDDEN int
+int
 glx_dri_query_renderer_string(struct glx_screen *base, int attribute,
                            const char **value)
 {

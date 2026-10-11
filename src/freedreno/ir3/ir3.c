@@ -36,6 +36,7 @@ ir3_create(struct ir3_compiler *compiler, struct ir3_shader_variant *v)
 
    shader->compiler = compiler;
    shader->type = v->type;
+   shader->lin_ctx = linear_context(shader);
 
    list_inithead(&shader->block_list);
    list_inithead(&shader->array_list);
@@ -67,19 +68,14 @@ is_shared_consts(struct ir3_compiler *compiler,
 }
 
 static void
-collect_reg_info(struct ir3_instruction *instr, struct ir3_register *reg,
+collect_reg_info(struct ir3_shader_variant *v,
+                 struct ir3_instruction *instr, struct ir3_register *reg,
                  struct ir3_info *info)
 {
-   struct ir3_shader_variant *v = info->data;
-
-   if (reg->flags & IR3_REG_IMMED) {
+   if (reg->flags & (IR3_REG_IMMED | IR3_REG_CONST)) {
       /* nothing to do */
       return;
    }
-
-   /* Shared consts don't need to be included into constlen. */
-   if (is_shared_consts(v->compiler, ir3_const_state(v), reg))
-      return;
 
    unsigned components;
    int16_t max;
@@ -92,9 +88,7 @@ collect_reg_info(struct ir3_instruction *instr, struct ir3_register *reg,
       max = (reg->num + components - 1);
    }
 
-   if (reg->flags & IR3_REG_CONST) {
-      info->max_const = MAX2(info->max_const, max >> 2);
-   } else if (max < regid(48, 0)) {
+   if (max < regid(48, 0)) {
       if (reg->flags & IR3_REG_HALF) {
          if (v->mergedregs) {
             /* starting w/ a6xx, half regs conflict with full regs: */
@@ -108,6 +102,96 @@ collect_reg_info(struct ir3_instruction *instr, struct ir3_register *reg,
    }
 }
 
+/* Returns whether the shader uses a significant amount of 16-bit ALU ops, for
+ * the purposes of double_threadsize heuristics.
+ */
+static bool
+uses_significant_16bit_alu(struct ir3_shader_variant *v)
+{
+   uint32_t full = 0, half = 0;
+
+   foreach_block (block, &v->ir->block_list) {
+      foreach_instr (instr, &block->instr_list) {
+         /* Consider only ALU and EFU opcodes, not tex/buffer or most importantly meta ,*/
+         if (opc_cat(instr->opc) <= 4) {
+            bool is_half = false;
+
+            /* The size of the operation is determined by the src sizes (which
+             * must match) and there's an implicit conversion after the
+             * operation to the dest size. But cwabbott thinks a 32-bit
+             * upconversion does limit the throughput to being single-wide,
+             * since the HW can't write a 32-bit register in a single cycle in
+             * double-wide mode.
+             */
+            foreach_dst(dst, instr) {
+               if (dst->flags & IR3_REG_HALF) {
+                  foreach_src(src, instr) {
+                     if (src->flags & IR3_REG_HALF) {
+                        is_half = true;
+                        break;
+                     }
+                  }
+               }
+            }
+
+            if (is_half)
+               half++;
+            else
+               full++;
+         }
+      }
+   }
+
+   /* We don't just check for nonzero 16-bit, because comparisons produce HALF
+    * results, so mostly-fp32 shaders will have a nonzero amount.  So check if
+    * we have 1/5 half ALUs as a compromise.  The number didn't matter much,
+    * because shaders in testing tended to be mostly fp16 for GLES2 and mostly
+    * fp32 otherwise.
+    */
+   return full < (half * 4);
+}
+
+/**
+ * Use compiled shader parameters to determine if the shader should be run with
+ * double_threadsize, where the instructions and footprint in the register file
+ * expand to operate on (e.g. for a6xx+) 128 instead of 64 instances of the
+ * shader at a time.  Sometimes doubling threadsize is impossible (when we run
+ * up against HW limits), and sometimes it is required to hit API requirements
+ * (large CS workgroup sizes), but most of the time we can choose.
+ *
+ * Doubling threadsize doesn't change the compiled shader instructions, but it
+ * has complicated effects on performance:
+ *
+ * - Non-16bit ALU instructions go from 1 cycle per ALU op to 2, while 16-bit
+ *   instructions run at double rate and still take 1 cycle.
+ *
+ * - Increasing threadsize increases the latency of requests to the EFU or
+ *   memory accesses.
+ *
+ * - Increasing threadsize can reduce the number of waves executing in parallel
+ *   when we exceed the register file size, reducing the ability to hide latency
+ *   by switching waves.
+ *
+ * - Increasing threadsize can increase the cost of dynamic branching because it
+ *   increases the likelihood that the wave executes both sides of a branch.
+ *   (this effect is expected to be tiny, see
+ *   https://gfxstrand.net/faith/blog/2020/10/does-subgroup-wave-size-matter/)
+ *
+ * - Increasing threadsize reduces icache missees for large shaders by executing
+ *   half the waves.
+ *
+ * - Increasing threadsize reduces the overhead of scalar operations, uniform
+ *   branching, and uniform memory accesses that may exist in a shader by
+ *   running those instructions half as often.
+ *
+ * - Increasing threadsize increases the overhead of small waves when the second
+ *   half of the wave is unused -- we can detect this in compute shaders
+ *   sometimes (small workgroup size set), but it is workload-dependent in pixel
+ *   shaders.
+ *
+ * Thus, the performance impact of doubling threadsize is quite complicated, and
+ * we use heuristics when the choice is available to us.
+ */
 bool
 ir3_should_double_threadsize(struct ir3_shader_variant *v, unsigned regs_count)
 {
@@ -118,48 +202,40 @@ ir3_should_double_threadsize(struct ir3_shader_variant *v, unsigned regs_count)
       return false;
    if (v->shader_options.real_wavesize == IR3_DOUBLE_ONLY)
       return true;
+   if (ir3_shader_debug & IR3_DBG_THREAD64)
+      return false;
 
-   /* We can't support more than compiler->branchstack_size diverging threads
+   /* We can't support more than compiler->max_branchstack diverging threads
     * in a wave. Thus, doubling the threadsize is only possible if we don't
     * exceed the branchstack size limit.
     */
-   if (MIN2(v->branchstack, compiler->threadsize_base * 2) >
-       compiler->branchstack_size) {
+   if (MIN2(v->branchstack, compiler->info->threadsize_base * 2) >
+       compiler->max_branchstack) {
       return false;
    }
 
    switch (v->type) {
    case MESA_SHADER_KERNEL:
-   case MESA_SHADER_COMPUTE: {
-      unsigned threads_per_wg =
-         v->local_size[0] * v->local_size[1] * v->local_size[2];
-
-      /* For a5xx, if the workgroup size is greater than the maximum number
-       * of threads per core with 32 threads per wave (512) then we have to
-       * use the doubled threadsize because otherwise the workgroup wouldn't
-       * fit. For smaller workgroup sizes, we follow the blob and use the
-       * smaller threadsize.
-       */
-      if (compiler->gen < 6) {
-         return v->local_size_variable ||
-                threads_per_wg >
-                   compiler->threadsize_base * compiler->max_waves;
-      }
-
-      /* On a6xx, we prefer the larger threadsize unless the workgroup is
-       * small enough that it would be useless. Note that because
-       * threadsize_base is bumped to 64, we don't have to worry about the
-       * workgroup fitting, unlike the a5xx case.
-       */
-      if (!v->local_size_variable) {
-         if (threads_per_wg <= compiler->threadsize_base)
-            return false;
-      }
-   }
-      FALLTHROUGH;
+   case MESA_SHADER_COMPUTE:
    case MESA_SHADER_FRAGMENT: {
-      /* Check that doubling the threadsize wouldn't exceed the regfile size */
-      return regs_count * 2 <= compiler->reg_size_vec4;
+      /* One of the limits on maximum waves of the shader running in parallel is
+       * the register count used in the shader compared to the hardware's
+       * register file size.  The absolute limit is if doubling the threadsize
+       * would exceed regfile size (regs*2 <= reg_size_vec4, producing just
+       * wave_granularity max_waves).  However, testing on X1-85 found that the
+       * sweet spot for non-fp16 apps was when max_waves would still be >= 8
+       * (4*wave_granularity) -- presumably reduced waves meant less ability to
+       * hide latency through switching to another wave (and the increased
+       * shader complexity that comes with low max_waves probably also
+       * correlated with dynamic branching).  For fp16 apps, the increased ALU
+       * rate made it worth it regardless.
+       */
+      if (!v->ir || uses_significant_16bit_alu(v)) {
+         /* Check that doubling the threadsize wouldn't exceed the regfile size */
+         return regs_count * 2 <= compiler->reg_size_vec4;
+      } else {
+         return regs_count * 2 <= compiler->reg_size_vec4 / 4;
+      }
    }
 
    default:
@@ -179,33 +255,32 @@ ir3_get_reg_independent_max_waves(struct ir3_shader_variant *v,
                                   bool double_threadsize)
 {
    const struct ir3_compiler *compiler = v->compiler;
-   unsigned max_waves = compiler->max_waves;
+   unsigned max_waves = compiler->info->max_waves;
 
    /* Compute the limit based on branchstack */
    if (v->branchstack > 0) {
+      unsigned branchstack = ir3_shader_branchstack_hw(v);
       unsigned branchstack_max_waves = compiler->branchstack_size /
-                                       v->branchstack *
-                                       compiler->wave_granularity;
+                                       branchstack;
       max_waves = MIN2(max_waves, branchstack_max_waves);
    }
 
    /* If this is a compute shader, compute the limit based on shared size */
-   if ((v->type == MESA_SHADER_COMPUTE) ||
-       (v->type == MESA_SHADER_KERNEL)) {
+   if (ir3_shader_compute(v)) {
       unsigned threads_per_wg =
          v->local_size[0] * v->local_size[1] * v->local_size[2];
       unsigned waves_per_wg =
-         DIV_ROUND_UP(threads_per_wg, compiler->threadsize_base *
+         DIV_ROUND_UP(threads_per_wg, compiler->info->threadsize_base *
                                          (double_threadsize ? 2 : 1) *
-                                         compiler->wave_granularity);
+                                         compiler->info->wave_granularity) *
+         compiler->info->wave_granularity;
 
       /* Shared is allocated in chunks of 1k */
       unsigned shared_per_wg = ALIGN_POT(v->shared_size, 1024);
       if (shared_per_wg > 0 && !v->local_size_variable) {
-         unsigned wgs_per_core = compiler->local_mem_size / shared_per_wg;
+         unsigned wgs_per_core = compiler->info->cs_shared_mem_size / shared_per_wg;
 
-         max_waves = MIN2(max_waves, waves_per_wg * wgs_per_core *
-                                        compiler->wave_granularity);
+         max_waves = MIN2(max_waves, waves_per_wg * wgs_per_core);
       }
 
       /* If we have a compute shader that has a big workgroup, a barrier, and
@@ -223,6 +298,20 @@ ir3_get_reg_independent_max_waves(struct ir3_shader_variant *v,
             v->name);
          exit(1);
       }
+
+      /* Due to round_robin_errata we may be unable to support forward progress
+       * guarantees between waves if there are more than 8 waves active.
+       */
+      if (v->cs.round_robin_mode && compiler->info->props.round_robin_errata) {
+         if (waves_per_wg > 8 && v->has_barrier) {
+            mesa_loge(
+               "Compute shader (%s) requires forward progress but uses more "
+               "than 8 waves.",
+               v->name);
+            exit(1);
+         }
+         max_waves = MIN2(max_waves, 8);
+      }
    }
 
    return max_waves;
@@ -236,8 +325,31 @@ ir3_get_reg_dependent_max_waves(const struct ir3_compiler *compiler,
 {
    return reg_count ? (compiler->reg_size_vec4 /
                        (reg_count * (double_threadsize ? 2 : 1)) *
-                       compiler->wave_granularity)
-                    : compiler->max_waves;
+                       compiler->info->wave_granularity)
+                    : compiler->info->max_waves;
+}
+
+/* Get the minimum number of registers a shader must declare, even if it doesn't
+ * actually use as many.
+ */
+unsigned
+ir3_get_min_reg_count(const struct ir3_shader_variant *v, bool double_threadsize)
+{
+   if (!ir3_shader_compute(v) || !v->cs.round_robin_mode ||
+       !v->compiler->info->props.round_robin_errata)
+      return 0;
+
+   /* Limit occupancy to work around the round-robin errata. */
+   unsigned max_waves = 8;
+
+   /* We want to find the smallest register size where no more than
+    * (max_waves / wave_granularity) waves fit in reg_size_vec4. Calculate the
+    * maximum register size where (max_waves / wave_granularity + 1) waves fit,
+    * then add 1.
+    */
+   return (v->compiler->info->props.reg_size_vec4 /
+      ((max_waves / v->compiler->info->wave_granularity) *
+       (double_threadsize ? 2 : 1) + 1)) + 1;
 }
 
 void
@@ -248,10 +360,8 @@ ir3_collect_info(struct ir3_shader_variant *v)
    const struct ir3_compiler *compiler = v->compiler;
 
    memset(info, 0, sizeof(*info));
-   info->data = v;
    info->max_reg = -1;
    info->max_half_reg = -1;
-   info->max_const = -1;
    info->multi_dword_ldp_stp = false;
 
    uint32_t instr_count = 0;
@@ -271,23 +381,59 @@ ir3_collect_info(struct ir3_shader_variant *v)
    info->sizedwords = info->size / 4;
 
    info->early_preamble = v->early_preamble;
+   info->loops = v->loops;
 
    bool in_preamble = false;
    bool has_eq = false;
 
+   /* Track which registers are currently aliases because they shouldn't be
+    * included in the GPR footprint.
+    */
+   regmask_t aliases;
+
+   /* Full and half aliases do not overlap so treat them as !mergedregs. */
+   regmask_init(&aliases, false);
+
+   struct block_data {
+      unsigned sfu_delay;
+      unsigned mem_delay;
+   };
+
+   void *mem_ctx = ralloc_context(NULL);
+
    foreach_block (block, &shader->block_list) {
-      int sfu_delay = 0, mem_delay = 0;
+      block->data = rzalloc(mem_ctx, struct block_data);
+   }
+
+   foreach_block (block, &shader->block_list) {
+      struct block_data *bd = block->data;
+
+      for (unsigned i = 0; i < block->predecessors_count; i++) {
+         struct block_data *pbd = block->predecessors[i]->data;
+         bd->sfu_delay = MAX2(bd->sfu_delay, pbd->sfu_delay);
+         bd->mem_delay = MAX2(bd->mem_delay, pbd->mem_delay);
+      }
 
       foreach_instr (instr, &block->instr_list) {
 
          foreach_src (reg, instr) {
-            collect_reg_info(instr, reg, info);
+            if (!is_reg_gpr(reg) || !regmask_get(&aliases, reg)) {
+               collect_reg_info(v, instr, reg, info);
+            }
          }
 
          foreach_dst (reg, instr) {
-            if (is_dest_gpr(reg)) {
-               collect_reg_info(instr, reg, info);
+            if (instr->opc == OPC_ALIAS &&
+                instr->cat7.alias_scope == ALIAS_TEX) {
+               regmask_set(&aliases, instr->dsts[0]);
+            } else if (is_dest_gpr(reg)) {
+               collect_reg_info(v, instr, reg, info);
             }
+         }
+
+         if (is_tex(instr)) {
+            /* All aliases are cleared after they are used. */
+            regmask_init(&aliases, false);
          }
 
          if ((instr->opc == OPC_STP || instr->opc == OPC_LDP)) {
@@ -351,29 +497,32 @@ ir3_collect_info(struct ir3_shader_variant *v)
 
             if (instr->flags & IR3_INSTR_SS) {
                info->ss++;
-               info->sstall += sfu_delay;
-               sfu_delay = 0;
+               info->sstall += bd->sfu_delay;
+               bd->sfu_delay = 0;
             }
 
             if (instr->flags & IR3_INSTR_SY) {
                info->sy++;
-               info->systall += mem_delay;
-               mem_delay = 0;
+               info->systall += bd->mem_delay;
+               bd->mem_delay = 0;
             }
 
             if (is_ss_producer(instr)) {
-               sfu_delay = soft_ss_delay(instr);
+               bd->sfu_delay = soft_ss_delay(instr);
             } else {
-               int n = MIN2(sfu_delay, 1 + instr->repeat + instr->nop);
-               sfu_delay -= n;
+               int n = MIN2(bd->sfu_delay, 1 + instr->repeat + instr->nop);
+               bd->sfu_delay -= n;
             }
 
             if (is_sy_producer(instr)) {
-               mem_delay = soft_sy_delay(instr, shader);
+               bd->mem_delay = soft_sy_delay(instr, shader);
             } else {
-               int n = MIN2(mem_delay, 1 + instr->repeat + instr->nop);
-               mem_delay -= n;
+               int n = MIN2(bd->mem_delay, 1 + instr->repeat + instr->nop);
+               bd->mem_delay -= n;
             }
+         } else {
+            unsigned instrs_count = 1 + instr->repeat + instr->nop;
+            info->preamble_instrs_count += instrs_count;
          }
 
          if (instr->opc == OPC_SHPE)
@@ -443,21 +592,29 @@ ir3_collect_info(struct ir3_shader_variant *v)
 
    info->double_threadsize = ir3_should_double_threadsize(v, regs_count);
 
+   /* Limit occupancy if necessary by increasing max_reg. */
+   unsigned min_reg_count = ir3_get_min_reg_count(v, info->double_threadsize);
+   if (min_reg_count > 0)
+      info->max_reg = MAX2(info->max_reg, min_reg_count - 1);
+
    /* TODO this is different for earlier gens, but earlier gens don't use this */
-   info->subgroup_size = v->info.double_threadsize ? 128 : 64;
+   info->subgroup_size = compiler->info->threadsize_base *
+                         (info->double_threadsize ? 2 : 1);
 
    unsigned reg_independent_max_waves =
       ir3_get_reg_independent_max_waves(v, info->double_threadsize);
    unsigned reg_dependent_max_waves = ir3_get_reg_dependent_max_waves(
       compiler, regs_count, info->double_threadsize);
    info->max_waves = MIN2(reg_independent_max_waves, reg_dependent_max_waves);
-   assert(info->max_waves <= v->compiler->max_waves);
+   assert(info->max_waves <= v->compiler->info->max_waves);
+
+   ralloc_free(mem_ctx);
 }
 
 static struct ir3_register *
 reg_create(struct ir3 *shader, int num, int flags)
 {
-   struct ir3_register *reg = ir3_alloc(shader, sizeof(struct ir3_register));
+   struct ir3_register *reg = linear_zalloc(shader->lin_ctx, struct ir3_register);
    reg->wrmask = 1;
    reg->flags = flags;
    reg->num = num;
@@ -494,13 +651,30 @@ struct ir3_block *
 ir3_block_create(struct ir3 *shader)
 {
    struct ir3_block *block = ir3_alloc(shader, sizeof(*block));
-#if MESA_DEBUG
-   block->serialno = ++shader->block_count;
-#endif
    block->shader = shader;
    list_inithead(&block->node);
    list_inithead(&block->instr_list);
    return block;
+}
+
+uint32_t
+block_id(struct ir3_block *block)
+{
+   if (block->nblock)
+      return block->nblock->index;
+   return (uint32_t)(unsigned long)block;
+}
+
+struct ir3_instruction *
+ir3_find_end(struct ir3 *ir)
+{
+   foreach_block_rev (block, &ir->block_list) {
+      foreach_instr_rev (instr, &block->instr_list) {
+         if (instr->opc == OPC_END || instr->opc == OPC_CHMASK)
+            return instr;
+      }
+   }
+   UNREACHABLE("couldn't find end instruction");
 }
 
 static struct ir3_instruction *
@@ -565,6 +739,112 @@ ir3_block_get_last_phi(struct ir3_block *block)
    return last_phi;
 }
 
+struct ir3_instruction *
+ir3_block_get_first_instr(struct ir3_block *block)
+{
+   if (list_is_empty(&block->instr_list)) {
+      return NULL;
+   }
+
+   return list_first_entry(&block->instr_list, struct ir3_instruction, node);
+}
+
+struct ir3_instruction *
+ir3_find_shpe(struct ir3 *ir)
+{
+   if (!ir3_has_preamble(ir)) {
+      return NULL;
+   }
+
+   foreach_block (block, &ir->block_list) {
+      struct ir3_instruction *last = ir3_block_get_terminator(block);
+
+      if (last && last->opc == OPC_SHPE) {
+         return last;
+      }
+   }
+
+   UNREACHABLE("preamble without shpe");
+}
+
+struct ir3_instruction *
+ir3_create_empty_preamble(struct ir3 *ir)
+{
+   assert(!ir3_has_preamble(ir));
+
+   struct ir3_block *main_start_block = ir3_start_block(ir);
+
+   /* Create a preamble CFG similar to what the frontend would generate. Note
+    * that the empty else_block is important for ir3_after_preamble to work.
+    *
+    * shps_block:
+    * if (shps) {
+    *    getone_block:
+    *    if (getone) {
+    *       body_block:
+    *       shpe
+    *    }
+    * } else {
+    *    else_block:
+    * }
+    * main_start_block:
+    */
+   struct ir3_block *shps_block = ir3_block_create(ir);
+   struct ir3_block *getone_block = ir3_block_create(ir);
+   struct ir3_block *body_block = ir3_block_create(ir);
+   struct ir3_block *else_block = ir3_block_create(ir);
+   list_add(&else_block->node, &ir->block_list);
+   list_add(&body_block->node, &ir->block_list);
+   list_add(&getone_block->node, &ir->block_list);
+   list_add(&shps_block->node, &ir->block_list);
+
+   struct ir3_builder b = ir3_builder_at(ir3_after_block(shps_block));
+   ir3_SHPS(&b);
+   shps_block->successors[0] = getone_block;
+   ir3_block_add_predecessor(getone_block, shps_block);
+   ir3_block_link_physical(shps_block, getone_block);
+   shps_block->successors[1] = else_block;
+   ir3_block_add_predecessor(else_block, shps_block);
+   ir3_block_link_physical(shps_block, else_block);
+
+   b.cursor = ir3_after_block(getone_block);
+   ir3_GETONE(&b);
+   getone_block->divergent_condition = true;
+   getone_block->successors[0] = body_block;
+   ir3_block_add_predecessor(body_block, getone_block);
+   ir3_block_link_physical(getone_block, body_block);
+   getone_block->successors[1] = main_start_block;
+   ir3_block_add_predecessor(main_start_block, getone_block);
+   ir3_block_link_physical(getone_block, main_start_block);
+
+   b.cursor = ir3_after_block(body_block);
+   struct ir3_instruction *shpe = ir3_SHPE(&b);
+   body_block->successors[0] = main_start_block;
+   ir3_block_add_predecessor(main_start_block, body_block);
+   ir3_block_link_physical(body_block, main_start_block);
+
+   b.cursor = ir3_after_block(else_block);
+   ir3_JUMP(&b);
+   else_block->successors[0] = main_start_block;
+   ir3_block_add_predecessor(main_start_block, else_block);
+   ir3_block_link_physical(else_block, main_start_block);
+
+   main_start_block->reconvergence_point = true;
+
+   /* Inputs are always expected to be in the first block so move them there. */
+   struct ir3_cursor inputs_cursor = ir3_before_terminator(shps_block);
+
+   foreach_instr_safe (instr, &main_start_block->instr_list) {
+      if (instr->opc == OPC_META_INPUT || instr->opc == OPC_META_TEX_PREFETCH) {
+         list_del(&instr->node);
+         insert_instr(inputs_cursor, instr);
+         instr->block = shps_block;
+      }
+   }
+
+   return shpe;
+}
+
 void
 ir3_block_add_predecessor(struct ir3_block *block, struct ir3_block *pred)
 {
@@ -604,7 +884,7 @@ ir3_block_get_pred_index(struct ir3_block *block, struct ir3_block *pred)
       }
    }
 
-   unreachable("ir3_block_get_pred_index() invalid predecessor");
+   UNREACHABLE("ir3_block_get_pred_index() invalid predecessor");
 }
 
 static struct ir3_instruction *
@@ -616,7 +896,7 @@ instr_create(struct ir3_block *block, opc_t opc, int ndst, int nsrc)
    struct ir3_instruction *instr;
    unsigned sz = sizeof(*instr) + (ndst * sizeof(instr->dsts[0])) +
                  (nsrc * sizeof(instr->srcs[0]));
-   char *ptr = ir3_alloc(block->shader, sz);
+   char *ptr = linear_zalloc_child(block->shader->lin_ctx, sz);
 
    instr = (struct ir3_instruction *)ptr;
    ptr += sizeof(*instr);
@@ -628,7 +908,6 @@ instr_create(struct ir3_block *block, opc_t opc, int ndst, int nsrc)
    instr->srcs_max = nsrc;
 #endif
 
-   list_inithead(&instr->rpt_node);
    return instr;
 }
 
@@ -649,25 +928,10 @@ add_to_address_users(struct ir3_instruction *instr)
    }
 }
 
-static struct ir3_block *
-get_block(struct ir3_cursor cursor)
-{
-   switch (cursor.option) {
-   case IR3_CURSOR_BEFORE_BLOCK:
-   case IR3_CURSOR_AFTER_BLOCK:
-      return cursor.block;
-   case IR3_CURSOR_BEFORE_INSTR:
-   case IR3_CURSOR_AFTER_INSTR:
-      return cursor.instr->block;
-   }
-
-   unreachable("illegal cursor option");
-}
-
 struct ir3_instruction *
 ir3_instr_create_at(struct ir3_cursor cursor, opc_t opc, int ndst, int nsrc)
 {
-   struct ir3_block *block = get_block(cursor);
+   struct ir3_block *block = ir3_cursor_current_block(cursor);
    struct ir3_instruction *instr = instr_create(block, opc, ndst, nsrc);
    instr->block = block;
    instr->opc = opc;
@@ -721,7 +985,9 @@ ir3_instr_clone(struct ir3_instruction *instr)
    *new_instr = *instr;
    new_instr->dsts = dsts;
    new_instr->srcs = srcs;
-   list_inithead(&new_instr->rpt_node);
+   new_instr->uses = NULL;
+   new_instr->rpt_prev = NULL;
+   new_instr->rpt_next = NULL;
 
    insert_instr(ir3_before_terminator(instr->block), new_instr);
 
@@ -759,14 +1025,21 @@ ir3_instr_add_dep(struct ir3_instruction *instr, struct ir3_instruction *dep)
          return;
    }
 
-   array_insert(instr, instr->deps, dep);
+   array_insert(instr->block->shader, instr->deps, dep);
 }
 
 void
 ir3_instr_remove(struct ir3_instruction *instr)
 {
    list_delinit(&instr->node);
-   list_delinit(&instr->rpt_node);
+
+   if (instr->rpt_prev) {
+      instr->rpt_prev->rpt_next = instr->rpt_next;
+   }
+
+   if (instr->rpt_next) {
+      instr->rpt_next->rpt_prev = instr->rpt_prev;
+   }
 }
 
 void
@@ -775,28 +1048,25 @@ ir3_instr_create_rpt(struct ir3_instruction **instrs, unsigned n)
    assert(n > 0 && !ir3_instr_is_rpt(instrs[0]));
 
    for (unsigned i = 1; i < n; ++i) {
-      assert(!ir3_instr_is_rpt(instrs[i]));
-      assert(instrs[i]->serialno > instrs[i - 1]->serialno);
+      struct ir3_instruction *instr = instrs[i];
+      struct ir3_instruction *prev = instrs[i - 1];
+      assert(!ir3_instr_is_rpt(instr));
 
-      list_addtail(&instrs[i]->rpt_node, &instrs[0]->rpt_node);
+      prev->rpt_next = instr;
+      instr->rpt_prev = prev;
    }
 }
 
 bool
 ir3_instr_is_rpt(const struct ir3_instruction *instr)
 {
-   return !list_is_empty(&instr->rpt_node);
+   return instr->rpt_prev || instr->rpt_next;
 }
 
 bool
 ir3_instr_is_first_rpt(const struct ir3_instruction *instr)
 {
-   if (!ir3_instr_is_rpt(instr))
-      return false;
-
-   struct ir3_instruction *prev_rpt =
-      list_entry(instr->rpt_node.prev, struct ir3_instruction, rpt_node);
-   return prev_rpt->serialno > instr->serialno;
+   return instr->rpt_next && !instr->rpt_prev;
 }
 
 struct ir3_instruction *
@@ -804,9 +1074,7 @@ ir3_instr_prev_rpt(const struct ir3_instruction *instr)
 {
    assert(ir3_instr_is_rpt(instr));
 
-   if (ir3_instr_is_first_rpt(instr))
-      return NULL;
-   return list_entry(instr->rpt_node.prev, struct ir3_instruction, rpt_node);
+   return instr->rpt_prev;
 }
 
 struct ir3_instruction *
@@ -827,7 +1095,14 @@ ir3_instr_rpt_length(const struct ir3_instruction *instr)
 {
    assert(ir3_instr_is_first_rpt(instr));
 
-   return list_length(&instr->rpt_node) + 1;
+   unsigned length = 1;
+
+   while (instr->rpt_next) {
+      length++;
+      instr = instr->rpt_next;
+   }
+
+   return length;
 }
 
 struct ir3_register *
@@ -889,6 +1164,216 @@ ir3_instr_set_address(struct ir3_instruction *instr,
    }
 }
 
+struct ir3_instruction *
+ir3_create_addr1(struct ir3_builder *build, unsigned const_val)
+{
+   struct ir3_instruction *immed =
+      create_immed_typed(build, const_val, TYPE_U16);
+   struct ir3_instruction *instr = ir3_MOV(build, immed, TYPE_U16);
+   instr->dsts[0]->num = regid(REG_A0, 1);
+   return instr;
+}
+
+static unsigned
+dest_flags(struct ir3_instruction *instr)
+{
+   return instr->dsts[0]->flags & (IR3_REG_HALF | IR3_REG_SHARED);
+}
+
+struct ir3_instruction *
+ir3_create_collect(struct ir3_builder *build,
+                   struct ir3_instruction *const *arr, unsigned arrsz)
+{
+   struct ir3_instruction *collect;
+
+   if (arrsz == 0)
+      return NULL;
+
+   if (arrsz == 1)
+      return arr[0];
+
+   int non_undef_src = -1;
+   for (unsigned i = 0; i < arrsz; i++) {
+      if (arr[i]) {
+         non_undef_src = i;
+         break;
+      }
+   }
+
+   /* There should be at least one non-undef source to determine the type of the
+    * destination.
+    */
+   assert(non_undef_src != -1);
+   unsigned flags = dest_flags(arr[non_undef_src]);
+
+   /* If any of the sources are themselves collects, flatten their sources into
+    * the new collect. This is mainly useful for collects used for 64b values,
+    * as we can treat them just like non-64b values when collecting them.
+    */
+   unsigned srcs_count = 0;
+
+   for (unsigned i = 0; i < arrsz; i++) {
+      if (arr[i] && arr[i]->opc == OPC_META_COLLECT) {
+         srcs_count += arr[i]->srcs_count;
+      } else {
+         srcs_count++;
+      }
+   }
+
+   struct ir3_instruction *srcs[srcs_count];
+
+   for (unsigned i = 0, s = 0; i < arrsz; i++) {
+      if (arr[i] && arr[i]->opc == OPC_META_COLLECT) {
+         foreach_src (collect_src, arr[i]) {
+            srcs[s++] = collect_src->def->instr;
+         }
+      } else {
+         srcs[s++] = arr[i];
+      }
+   }
+
+   collect = ir3_build_instr(build, OPC_META_COLLECT, 1, srcs_count);
+   __ssa_dst(collect)->flags |= flags;
+   for (unsigned i = 0; i < srcs_count; i++) {
+      struct ir3_instruction *elem = srcs[i];
+
+      /* Since arrays are pre-colored in RA, we can't assume that
+       * things will end up in the right place.  (Ie. if a collect
+       * joins elements from two different arrays.)  So insert an
+       * extra mov.
+       *
+       * We could possibly skip this if all the collected elements
+       * are contiguous elements in a single array.. not sure how
+       * likely that is to happen.
+       *
+       * Fixes a problem with glamor shaders, that in effect do
+       * something like:
+       *
+       *   if (foo)
+       *     texcoord = ..
+       *   else
+       *     texcoord = ..
+       *   color = texture2D(tex, texcoord);
+       *
+       * In this case, texcoord will end up as nir registers (which
+       * translate to ir3 array's of length 1.  And we can't assume
+       * the two (or more) arrays will get allocated in consecutive
+       * scalar registers.
+       *
+       */
+      if (elem && elem->dsts[0]->flags & IR3_REG_ARRAY) {
+         type_t type = (flags & IR3_REG_HALF) ? TYPE_U16 : TYPE_U32;
+         elem = ir3_MOV(build, elem, type);
+      }
+
+      if (elem) {
+         assert(dest_flags(elem) == flags);
+         __ssa_src(collect, elem, flags);
+      } else {
+         ir3_src_create(collect, INVALID_REG, flags | IR3_REG_SSA);
+      }
+   }
+
+   collect->dsts[0]->wrmask = MASK(srcs_count);
+
+   return collect;
+}
+
+/* helper for instructions that produce multiple consecutive scalar
+ * outputs which need to have a split meta instruction inserted
+ */
+void
+ir3_split_dest(struct ir3_builder *build, struct ir3_instruction **dst,
+               struct ir3_instruction *src, unsigned base, unsigned n)
+{
+   if ((n == 1) && (src->dsts[0]->wrmask == 0x1) &&
+       /* setup_input needs ir3_split_dest to generate a SPLIT instruction */
+       src->opc != OPC_META_INPUT) {
+      dst[0] = src;
+      return;
+   }
+
+   if (src->opc == OPC_META_COLLECT) {
+      assert((base + n) <= src->srcs_count);
+
+      for (int i = 0; i < n; i++) {
+         dst[i] = ssa(src->srcs[i + base]);
+      }
+
+      return;
+   }
+
+   unsigned flags = dest_flags(src);
+
+   for (int i = 0, j = 0; i < n; i++) {
+      struct ir3_instruction *split =
+         ir3_build_instr(build, OPC_META_SPLIT, 1, 1);
+      __ssa_dst(split)->flags |= flags;
+      __ssa_src(split, src, flags);
+      split->split.off = i + base;
+
+      if (src->dsts[0]->wrmask & (1 << (i + base)))
+         dst[j++] = split;
+   }
+}
+
+/* Split off the first 1 (bit_size < 64) or 2 (bit_size == 64) components from
+ * src and create a new 32b or 64b value.
+ */
+struct ir3_instruction *
+ir3_split_off_scalar(struct ir3_builder *build, struct ir3_instruction *src,
+                     unsigned bit_size)
+{
+   unsigned num_comps = bit_size == 64 ? 2 : 1;
+   assert((src->dsts[0]->wrmask & MASK(num_comps)) == MASK(num_comps));
+
+   if (num_comps == 1 && src->dsts[0]->wrmask == 0x1) {
+      return src;
+   }
+
+   struct ir3_instruction *comps[num_comps];
+   ir3_split_dest(build, comps, src, 0, num_comps);
+   return bit_size == 64 ? ir3_64b(build, comps[0], comps[1]) : comps[0];
+}
+
+struct ir3_instruction *
+ir3_store_const(struct ir3_shader_variant *so, struct ir3_builder *build,
+                struct ir3_instruction *src, unsigned dst)
+{
+   unsigned dst_lo = dst & 0xff;
+   unsigned dst_hi = dst >> 8;
+   unsigned components = util_last_bit(src->dsts[0]->wrmask);
+
+   struct ir3_instruction *a1 = NULL;
+   if (dst_hi) {
+      /* Encode only the high part of the destination in a1.x to increase the
+       * chance that we can reuse the a1.x value in subsequent stc
+       * instructions.
+       */
+      a1 = ir3_create_addr1(build, dst_hi << 8);
+   }
+
+   struct ir3_instruction *stc =
+      ir3_STC(build, create_immed(build, dst_lo), 0, src, 0);
+   stc->cat6.iim_val = components;
+   stc->cat6.type = TYPE_U32;
+   stc->barrier_conflict = IR3_BARRIER_CONST_W;
+
+   /* This isn't necessary for instruction encoding but is used by ir3_sched to
+    * set up dependencies between stc and const reads.
+    */
+   stc->cat6.dst_offset = dst;
+
+   if (a1) {
+      ir3_instr_set_address(stc, a1);
+      stc->flags |= IR3_INSTR_A1EN;
+   }
+
+   struct ir3_block *block = ir3_cursor_current_block(build->cursor);
+   array_insert(block, block->keeps, stc);
+   return stc;
+}
+
 /* Does this instruction use the scalar ALU?
  */
 bool
@@ -900,7 +1385,9 @@ is_scalar_alu(struct ir3_instruction *instr,
    return instr->opc != OPC_MOVMSK &&
       instr->opc != OPC_SCAN_CLUSTERS_MACRO &&
       instr->opc != OPC_SCAN_MACRO &&
-      is_alu(instr) && (instr->dsts[0]->flags & IR3_REG_SHARED) &&
+      instr->opc != OPC_MOVS &&
+      is_alu(instr) &&
+      (instr->dsts[0]->flags & (IR3_REG_SHARED | IR3_REG_UNIFORM)) &&
       /* scalar->scalar mov instructions (but NOT cov) were supported before the
        * scalar ALU was supported, but they still required (ss) whereas on GPUs
        * that have a scalar ALU they are executed on it and do not require (ss).
@@ -908,7 +1395,7 @@ is_scalar_alu(struct ir3_instruction *instr,
        * supported, so that we treat them like vector->scalar mov instructions
        * (such as requiring (ss)).
        */
-      compiler->has_scalar_alu &&
+      compiler->info->props.has_scalar_alu &&
       /* moves from normal to shared seem to use a separate ALU as before and
        * require a (ss) on dependent instructions.
        */
@@ -1231,6 +1718,13 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
          else
             return flags == 0;
          break;
+      case OPC_MOVS:
+         if (n == 0) {
+            valid_flags = IR3_REG_SHARED;
+         } else {
+            valid_flags = IR3_REG_IMMED;
+         }
+         break;
       default: {
          valid_flags =
             IR3_REG_IMMED | IR3_REG_CONST | IR3_REG_RELATIV | IR3_REG_SHARED;
@@ -1251,7 +1745,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
          /* Conversions seem not to work in shared->shared copies before scalar
           * ALU is supported.
           */
-         if (!compiler->has_scalar_alu &&
+         if (!compiler->info->props.has_scalar_alu &&
              (flags & IR3_REG_SHARED) &&
              (instr->dsts[0]->flags & IR3_REG_SHARED) &&
              instr->cat1.src_type != instr->cat1.dst_type)
@@ -1274,7 +1768,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
          return true;
 
       /* cat2/cat3 scalar ALU instructions must not have regular sources. */
-      if (instr->dsts[0]->flags & IR3_REG_SHARED) {
+      if (instr->dsts[0]->flags & (IR3_REG_SHARED | IR3_REG_UNIFORM)) {
          if (!(flags & (IR3_REG_SHARED | IR3_REG_IMMED | IR3_REG_CONST)))
             return false;
       }
@@ -1286,10 +1780,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
           */
          if (m < instr->srcs_count) {
             struct ir3_register *reg = instr->srcs[m];
-            if (instr->dsts[0]->flags & IR3_REG_SHARED) {
-               if ((flags & IR3_REG_CONST) && (reg->flags & IR3_REG_CONST))
-                  return false;
-            } else {
+            if (!(instr->dsts[0]->flags & IR3_REG_SHARED)) {
                if ((flags & (IR3_REG_CONST | IR3_REG_SHARED)) &&
                    (reg->flags & (IR3_REG_CONST | IR3_REG_SHARED)))
                   return false;
@@ -1300,8 +1791,8 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
       }
       break;
    case 3:
-      valid_flags =
-         ir3_cat3_absneg(instr->opc, n) | IR3_REG_RELATIV | IR3_REG_SHARED;
+      valid_flags = ir3_cat3_absneg(compiler, instr->opc, n) | IR3_REG_RELATIV |
+                    IR3_REG_SHARED;
 
       switch (instr->opc) {
       case OPC_SHRM:
@@ -1391,6 +1882,12 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
          else if (n == 1)
             valid_flags |= IR3_REG_SHARED;
       }
+      if (compiler->gen >= 7 &&
+          (instr->opc == OPC_LDG_A || instr->opc == OPC_STG_A ||
+           instr->opc == OPC_RAY_INTERSECTION) &&
+          n == 0) {
+         valid_flags |= IR3_REG_CONST;
+      }
 
       if (flags & ~valid_flags)
          return false;
@@ -1427,11 +1924,13 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
          /* disallow immediates in anything but the SSBO slot argument for
           * cat6 instructions:
           */
-         if (is_global_a3xx_atomic(instr->opc) && (n != 0))
+         if ((is_global_a3xx_atomic(instr->opc) ||
+              is_bindless_atomic(instr->opc)) &&
+             (n != 0)) {
             return false;
+         }
 
-         if (is_local_atomic(instr->opc) || is_global_a6xx_atomic(instr->opc) ||
-             is_bindless_atomic(instr->opc))
+         if (is_local_atomic(instr->opc) || is_global_a6xx_atomic(instr->opc))
             return false;
 
          if (instr->opc == OPC_STG && (n == 2))
@@ -1450,7 +1949,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
             return false;
 
          /* as with atomics, these cat6 instrs can only have an immediate
-          * for SSBO/IBO slot argument
+          * for SSBO/UAV slot argument
           */
          switch (instr->opc) {
          case OPC_LDIB:
@@ -1459,6 +1958,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
                return false;
             break;
          case OPC_RESINFO:
+         case OPC_RESBASE:
             if (n != 0)
                return false;
             break;
@@ -1476,7 +1976,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
 bool
 ir3_valid_immediate(struct ir3_instruction *instr, int32_t immed)
 {
-   if (instr->opc == OPC_MOV || is_meta(instr))
+   if (instr->opc == OPC_MOV || is_meta(instr) || instr->opc == OPC_ALIAS)
       return true;
 
    if (is_mem(instr)) {
@@ -1513,7 +2013,26 @@ ir3_valid_immediate(struct ir3_instruction *instr, int32_t immed)
    }
 
    /* Other than cat1 (mov) we can only encode up to 10 bits, sign-extended: */
-   return !(immed & ~0x1ff) || !(-immed & ~0x1ff);
+   return !(immed & ~0x1ff) || !(-(uint32_t)immed & ~0x1ff);
+}
+
+/* Some instructions (e.g., cat6) don't support the full range of const
+ * registers as src.
+ */
+bool
+ir3_valid_const(struct ir3_instruction *instr, unsigned src_n, unsigned num)
+{
+   assert(ir3_valid_flags(instr, src_n, IR3_REG_CONST));
+
+   switch (instr->opc) {
+   case OPC_LDG_A:
+   case OPC_STG_A:
+   case OPC_RAY_INTERSECTION:
+      assert(src_n == 0);
+      return num < (1 << 8);
+   default:
+      return true;
+   }
 }
 
 struct ir3_instruction *
@@ -1549,5 +2068,148 @@ ir3_supports_rpt(struct ir3_compiler *compiler, unsigned opc)
       return opc != OPC_RCP;
    default:
       return false;
+   }
+}
+
+static bool
+is_unmodified_full_gpr(struct ir3_register *src)
+{
+   return !(src->flags & (IR3_REG_HALF | IR3_REG_CONST | IR3_REG_IMMED |
+                          IR3_REG_RELATIV | IR3_REG_FNEG | IR3_REG_FABS |
+                          IR3_REG_SNEG | IR3_REG_SABS | IR3_REG_BNOT));
+}
+
+/* Does `instr` move half of its full GPR src to its half dst? If this is the
+ * case, and RA assigns overlapping registers to src and dst, the instruction
+ * can be removed in mergedregs mode.
+ */
+enum ir3_subreg_move
+ir3_is_subreg_move(struct ir3_instruction *instr)
+{
+   if (instr->opc == OPC_MOV) {
+      /* `cov.u32u16 hdst, src`: moves lower half of src to hdst. */
+      struct ir3_register *src = instr->srcs[0];
+      struct ir3_register *dst = instr->dsts[0];
+
+      if (instr->cat1.src_type == TYPE_U32 &&
+          instr->cat1.dst_type == TYPE_U16 && is_unmodified_full_gpr(src) &&
+          (src->flags & IR3_REG_SHARED) == (dst->flags & IR3_REG_SHARED)) {
+         return IR3_SUBREG_MOVE_LOWER;
+      }
+   } else if (instr->opc == OPC_SHR_B || instr->opc == OPC_ASHR_B) {
+      /* `[a]shr.b hdst, src, 16`: moves upper half of src to hdst. */
+      struct ir3_register *src = instr->srcs[0];
+      struct ir3_register *shamt = instr->srcs[1];
+      struct ir3_register *dst = instr->dsts[0];
+
+      if ((dst->flags & IR3_REG_HALF) && is_unmodified_full_gpr(src) &&
+          ((src->flags & IR3_REG_SHARED) == (dst->flags & IR3_REG_SHARED)) &&
+          (shamt->flags & IR3_REG_IMMED) && shamt->uim_val == 16) {
+         return IR3_SUBREG_MOVE_UPPER;
+      }
+   }
+
+   return IR3_SUBREG_MOVE_NONE;
+}
+
+inline unsigned
+ir3_cat2_absneg(opc_t opc)
+{
+   switch (opc) {
+   case OPC_ADD_F:
+   case OPC_MIN_F:
+   case OPC_MAX_F:
+   case OPC_MUL_F:
+   case OPC_SIGN_F:
+   case OPC_CMPS_F:
+   case OPC_ABSNEG_F:
+   case OPC_CMPV_F:
+   case OPC_FLOOR_F:
+   case OPC_CEIL_F:
+   case OPC_RNDNE_F:
+   case OPC_RNDAZ_F:
+   case OPC_TRUNC_F:
+   case OPC_BARY_F:
+      return IR3_REG_FABS | IR3_REG_FNEG;
+
+   case OPC_ADD_U:
+   case OPC_ADD_S:
+   case OPC_SUB_U:
+   case OPC_SUB_S:
+   case OPC_CMPS_U:
+   case OPC_CMPS_S:
+   case OPC_MIN_U:
+   case OPC_MIN_S:
+   case OPC_MAX_U:
+   case OPC_MAX_S:
+   case OPC_CMPV_U:
+   case OPC_CMPV_S:
+   case OPC_MUL_U24:
+   case OPC_MUL_S24:
+   case OPC_MULL_U:
+   case OPC_CLZ_S:
+      return 0;
+
+   case OPC_ABSNEG_S:
+      return IR3_REG_SABS | IR3_REG_SNEG;
+
+   case OPC_AND_B:
+   case OPC_OR_B:
+   case OPC_NOT_B:
+   case OPC_XOR_B:
+   case OPC_BFREV_B:
+   case OPC_CLZ_B:
+   case OPC_SHL_B:
+   case OPC_SHR_B:
+   case OPC_ASHR_B:
+   case OPC_MGEN_B:
+   case OPC_GETBIT_B:
+   case OPC_CBITS_B:
+      return IR3_REG_BNOT;
+
+   default:
+      return 0;
+   }
+}
+
+/* map cat3 instructions to valid abs/neg flags: */
+inline unsigned
+ir3_cat3_absneg(struct ir3_compiler *compiler, opc_t opc, unsigned src_n)
+{
+   switch (opc) {
+   case OPC_MAD_F16:
+   case OPC_MAD_F32:
+   case OPC_SEL_F16:
+   case OPC_SEL_F32:
+      return IR3_REG_FNEG;
+
+   case OPC_SEL_B16:
+   case OPC_SEL_B32:
+      return compiler->info->props.has_sel_b_fneg ? IR3_REG_FNEG : 0;
+
+   case OPC_SAD_S16:
+   case OPC_SAD_S32:
+      return src_n == 1 ? IR3_REG_SNEG : 0;
+
+   case OPC_MAD_U16:
+   case OPC_MADSH_U16:
+   case OPC_MAD_S16:
+   case OPC_MADSH_M16:
+   case OPC_MAD_U24:
+   case OPC_MAD_S24:
+   case OPC_SEL_S16:
+   case OPC_SEL_S32:
+      /* neg *may* work on 3rd src.. */
+
+   case OPC_SHRM:
+   case OPC_SHLM:
+   case OPC_SHRG:
+   case OPC_SHLG:
+   case OPC_ANDG:
+   case OPC_WMM:
+   case OPC_WMM_ACCU:
+
+   default:
+      return 0;
    }
 }

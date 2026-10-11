@@ -1,7 +1,7 @@
 /*
 ************************************************************************************************************************
 *
-*  Copyright (C) 2007-2022 Advanced Micro Devices, Inc.  All rights reserved.
+*  Copyright (C) 2007-2026 Advanced Micro Devices, Inc. All rights reserved.
 *  SPDX-License-Identifier: MIT
 *
 ***********************************************************************************************************************/
@@ -220,11 +220,12 @@ ADDR_E_RETURNCODE Lib::Create(
                         pLib = Gfx10HwlInit(&client);
                         break;
                     case FAMILY_NV3:
-                    case FAMILY_GFX1150:
+                    case FAMILY_STX:
                     case FAMILY_PHX:
+                    case FAMILY_GFX1170:
                         pLib = Gfx11HwlInit(&client);
                         break;
-                    case FAMILY_GFX12:
+                    case FAMILY_NV4:
                         pLib = Gfx12HwlInit(&client);
                         break;
                     default:
@@ -306,6 +307,44 @@ ADDR_E_RETURNCODE Lib::Create(
 
 /**
 ****************************************************************************************************
+*   Lib::GetFormatProperties
+*
+*   @brief
+*       Returns the properties of the format as specifed in the input.
+*   @return
+*       ADDR_E_RETURNCODE
+****************************************************************************************************
+*/
+ADDR_E_RETURNCODE Lib::GetFormatProperties(
+    const ADDR_FORMAT_PROPERTIES_IN&  in,
+    ADDR_FORMAT_PROPERTIES_OUT*       pOut
+    ) const
+{
+    ADDR_E_RETURNCODE  returnCode = ADDR_OK;
+
+    if (GetFillSizeFieldsFlags() == TRUE)
+    {
+        if ((in.size    != sizeof(ADDR_FORMAT_PROPERTIES_IN)) ||
+            (pOut->size != sizeof(ADDR_FORMAT_PROPERTIES_OUT)))
+        {
+            returnCode = ADDR_PARAMSIZEMISMATCH;
+        }
+    }
+
+    if (returnCode == ADDR_OK)
+    {
+        pOut->bpp = GetElemLib()->GetBitsPerPixel(in.format,
+                                                  nullptr,                  // elemMode, unused
+                                                  &pOut->expand.width,
+                                                  &pOut->expand.height,
+                                                  nullptr);                 // unused bits
+    }
+
+    return returnCode;
+}
+
+/**
+****************************************************************************************************
 *   Lib::SetChipFamily
 *
 *   @brief
@@ -315,7 +354,7 @@ ADDR_E_RETURNCODE Lib::Create(
 ****************************************************************************************************
 */
 VOID Lib::SetChipFamily(
-    UINT_32 uChipFamily,        ///< [in] chip family defined in atiih.h
+    UINT_32 uChipFamily,        ///< [in] chip family defined in atiid.h
     UINT_32 uChipRevision)      ///< [in] chip revision defined in "asic_family"_id.h
 {
     ChipFamily family = HwlConvertChipFamily(uChipFamily, uChipRevision);
@@ -666,6 +705,148 @@ BOOL_32 Lib::GetExportNorm(
 UINT_32 Lib::GetBpe(AddrFormat format) const
 {
     return GetElemLib()->GetBitsPerPixel(format);
+}
+
+/**
+****************************************************************************************************
+*   Lib::GetSwizzleModePreferenceRatio
+*
+*   @brief
+*       Get ratio driving swizzle mode selection heuristic. Ratio is returned as fraction nominator
+*       and denominator
+*   @return
+*       void
+****************************************************************************************************
+*/
+void Lib::GetSwizzleModePreferenceRatio(
+    const ADDR2_GET_PREFERRED_SURF_SETTING_INPUT* pIn,
+    UINT_32*                                      pOutRatioLo,
+    UINT_32*                                      pOutRatioHi
+    ) const
+{
+    const BOOL_32 computeMinSize = (pIn->flags.minimizeAlign == 1) || (pIn->memoryBudget >= 1.0);
+
+    if (computeMinSize)
+    {
+        *pOutRatioLo = 1;
+        *pOutRatioHi = 1;
+    }
+    else if (pIn->flags.opt4space)
+    {
+        *pOutRatioLo = 3;
+        *pOutRatioHi = 2;
+    }
+    else if (pIn->flags.computeMaxSize)
+    {
+        *pOutRatioLo = 1024;
+        *pOutRatioHi = 1;
+    }
+    else
+    {
+        *pOutRatioLo = 2;
+        *pOutRatioHi = 1;
+    }
+}
+
+/**
+************************************************************************************************************************
+*   Lib::ComputeOffsetFromSwizzlePattern
+*
+*   @brief
+*       Compute offset from swizzle pattern
+*
+*   @return
+*       Offset
+************************************************************************************************************************
+*/
+UINT_32 Lib::ComputeOffsetFromSwizzlePattern(
+    const UINT_64* pPattern,    ///< Swizzle pattern
+    UINT_32        numBits,     ///< Number of bits in pattern
+    UINT_32        x,           ///< x coord in pixel
+    UINT_32        y,           ///< y coord in pixel
+    UINT_32        z,           ///< z coord in slice
+    UINT_32        s            ///< sample id
+    )
+{
+    UINT_32                 offset          = 0;
+    const ADDR_BIT_SETTING* pSwizzlePattern = reinterpret_cast<const ADDR_BIT_SETTING*>(pPattern);
+
+    for (UINT_32 i = 0; i < numBits; i++)
+    {
+        UINT_32 v = 0;
+
+        if (pSwizzlePattern[i].x != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].x;
+            UINT_32 xBits = x;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= xBits & 1;
+                }
+
+                xBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        if (pSwizzlePattern[i].y != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].y;
+            UINT_32 yBits = y;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= yBits & 1;
+                }
+
+                yBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        if (pSwizzlePattern[i].z != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].z;
+            UINT_32 zBits = z;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= zBits & 1;
+                }
+
+                zBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        if (pSwizzlePattern[i].s != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].s;
+            UINT_32 sBits = s;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= sBits & 1;
+                }
+
+                sBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        offset |= (v << i);
+    }
+
+    return offset;
 }
 
 } // Addr

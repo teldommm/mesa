@@ -399,7 +399,7 @@ dump_constants(struct dxil_dumper *d, struct list_head *list)
             _mesa_string_buffer_append(d->buf, "}\n");
             break;
          default:
-            unreachable("Unsupported const type");
+            UNREACHABLE("Unsupported const type");
          }
       } else
          _mesa_string_buffer_append(d->buf, " undef\n");
@@ -450,8 +450,8 @@ dump_instrs(struct dxil_dumper *d, struct list_head *list)
 static void
 dump_instr_binop(struct dxil_dumper *d, struct dxil_instr_binop *binop)
 {
-   const char *str = binop->opcode < DXIL_BINOP_INSTR_COUNT ?
-                        binop_strings[binop->opcode] : "INVALID";
+   const char *str = (unsigned)binop->opcode < DXIL_BINOP_INSTR_COUNT ?
+                        binop_strings[(unsigned)binop->opcode] : "INVALID";
 
    _mesa_string_buffer_printf(d->buf, "%s ", str);
    dump_instr_print_operands(d, 2, binop->operands);

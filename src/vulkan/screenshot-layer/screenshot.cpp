@@ -65,6 +65,7 @@
 #include "util/os_socket.h"
 #include "util/simple_mtx.h"
 #include "util/u_math.h"
+#include "util/u_queue.h"
 
 #include "vk_enum_to_str.h"
 #include "vk_dispatch_table.h"
@@ -103,10 +104,6 @@ struct instance_data {
    const char *filename;
 };
 
-pthread_cond_t ptCondition = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t ptLock = PTHREAD_MUTEX_INITIALIZER;
-
-VkFence copyDone;
 const VkPipelineStageFlags dstStageWaitBeforeSubmission = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 const VkSemaphore *pSemaphoreWaitBeforePresent;
 uint32_t semaphoreWaitBeforePresentCount;
@@ -126,15 +123,17 @@ struct device_data {
    VkPhysicalDeviceProperties properties;
 
    struct queue_data *graphic_queue;
-   struct queue_data **queues;
-   uint32_t n_queues;
+   struct queue_data* queue_data_head;
+   struct queue_data* queue_data_tail;
+   struct util_queue png_write_queue;
 };
 
 /* Mapped from VkQueue */
 struct queue_data {
    struct device_data *device;
+   struct queue_data *next;
    VkQueue queue;
-   VkQueueFlags flags;
+   uint32_t familyIndex;
    uint32_t index;
 };
 
@@ -230,7 +229,7 @@ static VkLayerInstanceCreateInfo *get_instance_chain_info(const VkInstanceCreate
           ((VkLayerInstanceCreateInfo *) item)->function == func)
          return (VkLayerInstanceCreateInfo *) item;
    }
-   unreachable("instance chain info not found");
+   UNREACHABLE("instance chain info not found");
    return NULL;
 }
 
@@ -242,7 +241,7 @@ static VkLayerDeviceCreateInfo *get_device_chain_info(const VkDeviceCreateInfo *
           ((VkLayerDeviceCreateInfo *) item)->function == func)
          return (VkLayerDeviceCreateInfo *)item;
    }
-   unreachable("device chain info not found");
+   UNREACHABLE("device chain info not found");
    return NULL;
 }
 
@@ -296,91 +295,63 @@ static struct device_data *new_device_data(VkDevice device, struct instance_data
    struct device_data *data = rzalloc(NULL, struct device_data);
    data->instance = instance;
    data->device = device;
+   data->graphic_queue = VK_NULL_HANDLE;
+   data->queue_data_head = VK_NULL_HANDLE;
+   data->queue_data_tail = VK_NULL_HANDLE;
+   util_queue_init(&data->png_write_queue, "screenshot_png_write", 4, 1,
+                   UTIL_QUEUE_INIT_RESIZE_IF_FULL, data);
    map_object(HKEY(data->device), data);
    return data;
 }
 
 static struct queue_data *new_queue_data(VkQueue queue,
-                                         const VkQueueFamilyProperties *family_props,
                                          struct device_data *device_data,
-                                         uint32_t index)
+                                         uint32_t index,
+                                         uint32_t familyIndex)
 {
    struct queue_data *data = rzalloc(device_data, struct queue_data);
    data->device = device_data;
    data->queue = queue;
-   data->flags = family_props->queueFlags;
    data->index = index;
+   data->familyIndex = familyIndex;
+   data->next = VK_NULL_HANDLE;
    map_object(HKEY(data->queue), data);
-
-   if ((data->flags & VK_QUEUE_GRAPHICS_BIT) != 0) {
-      device_data->graphic_queue = data;
+   if (device_data->queue_data_head == VK_NULL_HANDLE) {
+      device_data->queue_data_head = data;
+      device_data->queue_data_tail = data;
+   } else {
+      device_data->queue_data_tail->next = data;
+      device_data->queue_data_tail = data;
    }
    return data;
 }
 
 static void destroy_queue(struct queue_data *data)
 {
-   struct device_data *device_data = data->device;
    unmap_object(HKEY(data->queue));
    ralloc_free(data);
-}
-
-static void device_map_queues(struct device_data *data,
-                              const VkDeviceCreateInfo *pCreateInfo)
-{
-   loader_platform_thread_lock_mutex(&globalLock);
-   for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++)
-      data->n_queues += pCreateInfo->pQueueCreateInfos[i].queueCount;
-   data->queues = ralloc_array(data, struct queue_data *, data->n_queues);
-
-   struct instance_data *instance_data = data->instance;
-   uint32_t n_family_props;
-   instance_data->pd_vtable.GetPhysicalDeviceQueueFamilyProperties(data->physical_device,
-                                                                   &n_family_props,
-                                                                   NULL);
-   VkQueueFamilyProperties *family_props =
-      (VkQueueFamilyProperties *)malloc(sizeof(VkQueueFamilyProperties) * n_family_props);
-   instance_data->pd_vtable.GetPhysicalDeviceQueueFamilyProperties(data->physical_device,
-                                                                   &n_family_props,
-                                                                   family_props);
-
-   uint32_t queue_index = 0;
-   for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++) {
-      for (uint32_t j = 0; j < pCreateInfo->pQueueCreateInfos[i].queueCount; j++) {
-         VkQueue queue;
-         data->vtable.GetDeviceQueue(data->device,
-                                     pCreateInfo->pQueueCreateInfos[i].queueFamilyIndex,
-                                     j, &queue);
-         VK_CHECK(data->set_device_loader_data(data->device, queue));
-
-         data->queues[queue_index] =
-            new_queue_data(queue, family_props, data, queue_index);
-         queue_index++;
-      }
-   }
-
-   free(family_props);
-   loader_platform_thread_unlock_mutex(&globalLock);
-}
-
-static void device_unmap_queues(struct device_data *data)
-{
-   for (uint32_t i = 0; i < data->n_queues; i++)
-      destroy_queue(data->queues[i]);
 }
 
 static void destroy_device_data(struct device_data *data)
 {
    loader_platform_thread_lock_mutex(&globalLock);
+
+   struct queue_data *tmp_queue = VK_NULL_HANDLE;
+   for (auto it = data->queue_data_head; it != VK_NULL_HANDLE;) {
+      tmp_queue = it->next;
+      destroy_queue(it);
+      it = tmp_queue;
+   }
+
    unmap_object(HKEY(data->device));
    ralloc_free(data);
+
    loader_platform_thread_unlock_mutex(&globalLock);
 }
 
 static struct swapchain_data *new_swapchain_data(VkSwapchainKHR swapchain,
                                                  struct device_data *device_data)
 {
-   struct instance_data *instance_data = device_data->instance;
    struct swapchain_data *data = rzalloc(NULL, struct swapchain_data);
    data->device = device_data;
    data->swapchain = swapchain;
@@ -600,6 +571,30 @@ static void process_control_socket(struct instance_data *instance_data)
    }
 }
 
+static void screenshot_GetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue *pQueue) {
+   struct device_data *device_data = FIND(struct device_data, device);
+   device_data->vtable.GetDeviceQueue(device, queueFamilyIndex, queueIndex, pQueue);
+   loader_platform_thread_lock_mutex(&globalLock);
+   struct queue_data *it = device_data->queue_data_head;
+   while (it != VK_NULL_HANDLE) {
+      if (it->queue == *pQueue) {
+         break;
+      }
+      it = it->next;
+   }
+   if (it == VK_NULL_HANDLE) {
+      new_queue_data(*pQueue, device_data, queueIndex, queueFamilyIndex);
+   } else {
+      it->familyIndex = queueFamilyIndex;
+      it->index = queueIndex;
+   }
+   loader_platform_thread_unlock_mutex(&globalLock);
+}
+
+static void screenshot_GetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2 *pQueueInfo, VkQueue *pQueue) {
+   if (pQueueInfo) screenshot_GetDeviceQueue(device, pQueueInfo->queueFamilyIndex, pQueueInfo->queueIndex, pQueue);
+}
+
 static VkResult screenshot_CreateSwapchainKHR(
     VkDevice                                    device,
     const VkSwapchainCreateInfoKHR*             pCreateInfo,
@@ -667,13 +662,6 @@ static void screenshot_DestroySwapchainKHR(
    destroy_swapchain_data(swapchain_data);
 }
 
-/* Convert long int to string */
-static void itoa(uint32_t integer, char *dest_str)
-{
-   // Our sizes are limited to uin32_t max value: 4,294,967,295 (10 digits)
-   sprintf(dest_str, "%u", integer);
-}
-
 static bool get_mem_type_from_properties(
    VkPhysicalDeviceMemoryProperties*         mem_properties,
    uint32_t                                  bits_type,
@@ -692,10 +680,41 @@ static bool get_mem_type_from_properties(
    return false;
 }
 
+VkQueue getQueueForScreenshot(struct device_data *device_data,
+                              struct instance_data *instance_data) {
+   // Find a queue that we can use for taking a screenshot
+   VkQueue queue = VK_NULL_HANDLE;
+   uint32_t n_family_props;
+   instance_data->pd_vtable.GetPhysicalDeviceQueueFamilyProperties(device_data->physical_device,
+                                                                   &n_family_props,
+                                                                   NULL);
+   if (n_family_props > 0) {
+      VkQueueFamilyProperties *family_props =
+      (VkQueueFamilyProperties *)malloc(sizeof(VkQueueFamilyProperties) * n_family_props);
+      instance_data->pd_vtable.GetPhysicalDeviceQueueFamilyProperties(device_data->physical_device,
+                                                                      &n_family_props,
+                                                                      family_props);
+
+      // Iterate over all queues for this device, searching for a queue that is graphics capable
+      for (auto it = device_data->queue_data_head; it != VK_NULL_HANDLE; it = it->next) {
+         queue = it->queue;
+         if((family_props[it->familyIndex].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+            break;
+         } else {
+            // Clear the queue if it's not graphics capable
+            queue = VK_NULL_HANDLE;
+         }
+      }
+      free(family_props);
+   }
+   return queue;
+}
+
 // Track allocated resources in writeFile()
 // and clean them up when they go out of scope.
 struct WriteFileCleanupData {
     device_data *dev_data;
+    VkFence fence;
     VkImage image2;
     VkImage image3;
     VkDeviceMemory mem2;
@@ -715,6 +734,8 @@ WriteFileCleanupData::~WriteFileCleanupData() {
     if (mem3mapped) dev_data->vtable.UnmapMemory(dev_data->device, mem3);
     if (mem3) dev_data->vtable.FreeMemory(dev_data->device, mem3, NULL);
     if (image3) dev_data->vtable.DestroyImage(dev_data->device, image3, NULL);
+
+    if (fence) dev_data->vtable.DestroyFence(dev_data->device, fence, NULL);
 
     if (commandBuffer) dev_data->vtable.FreeCommandBuffers(dev_data->device, commandPool, 1, &commandBuffer);
     if (commandPool) dev_data->vtable.DestroyCommandPool(dev_data->device, commandPool, NULL);
@@ -741,37 +762,38 @@ static void print_time_difference(long int start_time, long int end_time) {
 
 // Store all data required for threading the saving to file functionality
 struct ThreadSaveData {
-    struct device_data *device_data;
     const char *filename;
     const char *pFramebuffer;
     VkSubresourceLayout srLayout;
-    VkFence fence;
-    uint32_t const width;
-    uint32_t const height;
+    uint32_t width;
+    uint32_t height;
+    uint32_t numChannels;
+    WriteFileCleanupData cleanup;
 };
 
 /* Write the copied image to a PNG file */
-void *writePNG(void *data) {
-   struct ThreadSaveData *threadData = (struct ThreadSaveData*)data;
+void writePNG(void *job, void *gdata, UNUSED int thread_index) {
+   struct ThreadSaveData *threadData = (struct ThreadSaveData*)job;
+   struct device_data *device_data = (struct device_data*)gdata;
    FILE *file;
-   size_t length = sizeof(char[LARGE_BUFFER_SIZE+STANDARD_BUFFER_SIZE]);
    const char *tmpStr = ".tmp";
-   char *filename    = (char *)malloc(length);
-   char *tmpFilename = (char *)malloc(length + 4); // Allow for ".tmp"
-   VkResult res;
+   char *tmpFilename = (char *)malloc(strlen(threadData->filename) + 1 + 4); // Allow for ".tmp"
    png_byte *row_pointer;
-   png_infop info;
+   png_infop info = NULL;
    png_struct* png;
    uint64_t rowPitch = threadData->srLayout.rowPitch;
    uint64_t start_time, end_time;
    const int RGB_NUM_CHANNELS = 3;
+   const int RGBA_NUM_CHANNELS = 4;
    int localHeight = threadData->height;
    int localWidth = threadData->width;
+   int numChannels = threadData->numChannels;
    int matrixSize = localHeight * rowPitch;
-   bool checks_failed = true;
-   memcpy(filename, threadData->filename, length);
-   memcpy(tmpFilename, threadData->filename, length);
+   strcpy(tmpFilename, threadData->filename);
    strcat(tmpFilename, tmpStr);
+
+   device_data->vtable.WaitForFences(device_data->device, 1, &threadData->cleanup.fence, VK_TRUE, UINT64_MAX);
+
    file = fopen(tmpFilename, "wb"); //create file for output
    if (!file) {
       LOG(ERROR, "Failed to open output file, '%s', error(%d): %s\n", tmpFilename, errno, strerror(errno));
@@ -792,16 +814,21 @@ void *writePNG(void *data) {
       LOG(ERROR, "setjmp() failed\n");
       goto cleanup;
    }
-   threadData->device_data->vtable.WaitForFences(threadData->device_data->device, 1, &threadData->fence, VK_TRUE, UINT64_MAX);
    threadData->pFramebuffer += threadData->srLayout.offset;
    start_time = get_time();
+
+   // Copy from the image data to a temporary, in case we have a non-cached
+   // buffer that we wouldn't want to be png encoding from.
    row_pointer = (png_byte *)malloc(sizeof(png_byte) * matrixSize);
    memcpy(row_pointer, threadData->pFramebuffer, matrixSize);
+   /* Ensure alpha bits are set to 'opaque' if image is of RGBA format */
+   if (numChannels == RGBA_NUM_CHANNELS) {
+      for (int i = 3; i < matrixSize; i += RGBA_NUM_CHANNELS) {
+         row_pointer[i] = 0xFF;
+      }
+   }
    end_time = get_time();
    print_time_difference(start_time, end_time);
-   // We've created all local copies of data,
-   // so let's signal main thread to continue
-   pthread_cond_signal(&ptCondition);
    png_init_io(png, file); // Initialize file output
    png_set_IHDR( // Set image properties
       png,    // Pointer to png_struct
@@ -809,7 +836,7 @@ void *writePNG(void *data) {
       localWidth, // Image width
       localHeight, // Image height
       8,      // Color depth
-      PNG_COLOR_TYPE_RGB,
+      numChannels == RGB_NUM_CHANNELS ? PNG_COLOR_TYPE_RGB : PNG_COLOR_TYPE_RGBA,
       PNG_INTERLACE_NONE,
       PNG_COMPRESSION_TYPE_DEFAULT,
       PNG_FILTER_TYPE_DEFAULT
@@ -826,25 +853,26 @@ void *writePNG(void *data) {
    png_write_end(png, NULL);          // End image writing
    free(row_pointer);
 
+   // Close before renaming, to ensure the writes are flushed (in case of app
+   // exit without vkDestroyDevice() to join our thread).
+   fclose(file);
+   file = NULL;
+
    // Rename file, indicating completion, client should be
    // checking for the final file exists.
-   if (rename(tmpFilename, filename) != 0 )
-      LOG(ERROR, "Could not rename from '%s' to '%s'\n", tmpFilename, filename);
+   if (rename(tmpFilename, threadData->filename) != 0 )
+      LOG(ERROR, "Could not rename from '%s' to '%s'\n", tmpFilename, threadData->filename);
    else
-      LOG(INFO, "Successfully renamed from '%s' to '%s'\n", tmpFilename, filename);
-   checks_failed = false;
+      LOG(INFO, "Successfully renamed from '%s' to '%s'\n", tmpFilename, threadData->filename);
 cleanup:
-   if (checks_failed)
-      pthread_cond_signal(&ptCondition);
    if (info)
       png_destroy_write_struct(&png, &info);
    if (file)
       fclose(file);
-   if (filename)
-      free(filename);
-   if (tmpFilename)
-      free(tmpFilename);
-   return nullptr;
+   threadData->cleanup.~WriteFileCleanupData();
+   free((void *)threadData->filename);
+   free(threadData);
+   free(tmpFilename);
 }
 
 /* Write an image to file. Upon encountering issues, do not impact the
@@ -854,11 +882,11 @@ static bool write_image(
    VkImage                 image,
    struct device_data*     device_data,
    struct instance_data*   instance_data,
+   struct queue_data*      queue_data,
    struct swapchain_data*  swapchain_data)
 {
    VkDevice device = device_data->device;
    VkPhysicalDevice physical_device = device_data->physical_device;
-   VkInstance instance = instance_data->instance;
 
    uint32_t const width  = swapchain_data->imageExtent.width;
    uint32_t const height = swapchain_data->imageExtent.height;
@@ -884,34 +912,65 @@ static bool write_image(
           instance_data->params.region.endY*100, regionEndY);
    }
 
-   queue_data* queue_data = device_data->graphic_queue;
-   VkQueue queue = queue_data->queue;
+   VkQueue queue = getQueueForScreenshot(device_data, instance_data);
+   if (!queue) {
+      LOG(ERROR, "Unable to find a valid graphics-enabled queue\n");
+      return false;
+   }
 
-   VkResult err;
-
-   /* Force destination format to be RGB to make writing to file much faster */
-   VkFormat destination_format = VK_FORMAT_R8G8B8_UNORM;
-
-   VkFormatProperties device_format_properties;
-   instance_data->pd_vtable.GetPhysicalDeviceFormatProperties(physical_device,
-                                                              destination_format,
-                                                              &device_format_properties);
+   /* Attempt to set destination format to RGB to make writing to file much faster.
+      If not available, try to fall back to RGBA. If both fail, abort the screenshot */
+   VkFormat supported_formats[] = {VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED};
+   uint32_t supported_formats_count = sizeof(supported_formats) / sizeof(VkFormat);
+   VkFormat destination_format;
+   uint32_t numChannels = 0;
    /* If origin and destination formats are the same, no need to convert */
    bool copyOnly = false;
    bool needs_2_steps = false;
-   if (destination_format == format && not instance_data->region_enabled) {
-      copyOnly = true;
-      LOG(DEBUG, "Only copying since the src/dest formats are the same\n");
-   } else {
-      bool const blt_linear = device_format_properties.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT ? true : false;
-      bool const blt_optimal = device_format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT ? true : false;
-      if (!blt_linear && !blt_optimal) {
+   bool blt_linear, blt_optimal;
+   VkFormatProperties device_format_properties;
+
+   for (uint32_t i = 0; i < supported_formats_count; i++) {
+      destination_format = supported_formats[i];
+      instance_data->pd_vtable.GetPhysicalDeviceFormatProperties(physical_device,
+                                                                 destination_format,
+                                                                 &device_format_properties);
+      if(destination_format == VK_FORMAT_UNDEFINED) {
+         LOG(ERROR, "Could not use the supported surface formats!\n");
          return false;
-      } else if (!blt_linear && blt_optimal) {
-         // Can't blit to linear target, but can blit to optimal
-         needs_2_steps = true;
-         LOG(DEBUG, "Needs 2 steps\n");
       }
+      if (destination_format == format && not instance_data->region_enabled) {
+         copyOnly = true;
+         LOG(DEBUG, "Only copying since the src/dest surface formats are the same.\n");
+         break;
+      } else {
+         blt_linear = device_format_properties.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT ? true : false;
+         blt_optimal = device_format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT ? true : false;
+         if (!blt_linear && !blt_optimal) {
+            LOG(DEBUG, "Can't blit to linear nor optimal with surface format '%s'\n", vk_Format_to_str(supported_formats[i]));
+         } else if (blt_linear) {
+            break;
+         } else if (blt_optimal) {
+            // Can't blit to linear target, but can blit to optimal
+            needs_2_steps = true;
+            LOG(DEBUG, "Needs 2 steps\n");
+            break;
+         }
+      }
+   }
+   LOG(DEBUG, "Using surface format '%s' for copy.\n", vk_Format_to_str(destination_format));
+
+   switch (destination_format)
+   {
+   case VK_FORMAT_R8G8B8_UNORM:
+      numChannels = 3;
+      break;
+   case VK_FORMAT_R8G8B8A8_UNORM:
+      numChannels = 4;
+      break;
+   default:
+      LOG(ERROR, "Unsupported format, aborting screenshot!\n");
+      break;
    }
 
    WriteFileCleanupData data = {};
@@ -985,7 +1044,7 @@ static bool write_image(
    VkCommandPoolCreateInfo cmd_pool_info = {};
    cmd_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
    cmd_pool_info.pNext = NULL;
-   cmd_pool_info.queueFamilyIndex = queue_data->index;
+   cmd_pool_info.queueFamilyIndex = queue_data->familyIndex;
    cmd_pool_info.flags = 0;
 
    VK_CHECK(device_data->vtable.CreateCommandPool(device, &cmd_pool_info, NULL, &data.commandPool));
@@ -1072,7 +1131,7 @@ static bool write_image(
       imageBlitRegion.srcSubresource.mipLevel = 0;
       imageBlitRegion.srcOffsets[0].x = regionStartX;
       imageBlitRegion.srcOffsets[0].y = regionStartY;
-      imageBlitRegion.srcOffsets[0].z = 1;
+      imageBlitRegion.srcOffsets[0].z = 0;
       imageBlitRegion.srcOffsets[1].x = regionEndX;
       imageBlitRegion.srcOffsets[1].y = regionEndY;
       imageBlitRegion.srcOffsets[1].z = 1;
@@ -1124,6 +1183,10 @@ static bool write_image(
                         &presentMemoryBarrier);
    VK_CHECK(device_data->vtable.EndCommandBuffer(data.commandBuffer));
 
+   VkFenceCreateInfo fenceInfo = {};
+   fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+   device_data->vtable.CreateFence(device_data->device, &fenceInfo, nullptr, &data.fence);
+
    VkSubmitInfo submitInfo;
    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
    submitInfo.pNext = NULL;
@@ -1134,7 +1197,7 @@ static bool write_image(
    submitInfo.pCommandBuffers = &data.commandBuffer;
    submitInfo.signalSemaphoreCount = 1;
    submitInfo.pSignalSemaphores = &semaphoreWaitAfterSubmission;
-   VK_CHECK(device_data->vtable.QueueSubmit(queue, 1, &submitInfo, copyDone));
+   VK_CHECK(device_data->vtable.QueueSubmit(queue, 1, &submitInfo, data.fence));
 
    // Map the final image so that the CPU can read it.
    const VkImageSubresource img_subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
@@ -1150,16 +1213,21 @@ static bool write_image(
       data.mem3mapped = true;
    }
 
-   // Thread off I/O operations
-   pthread_t ioThread;
-   pthread_mutex_lock(&ptLock); // Grab lock, we need to wait until thread has copied values of pointers
-   struct ThreadSaveData threadData = {device_data, filename, pFramebuffer, srLayout, copyDone, newWidth, newHeight};
+   struct ThreadSaveData *threadData = (struct ThreadSaveData *)calloc(1, sizeof(*threadData));
+   threadData->filename = strdup(filename);
+   threadData->pFramebuffer = pFramebuffer;
+   threadData->srLayout = srLayout;
+   threadData->width = newWidth;
+   threadData->height = newHeight;
+   threadData->numChannels = numChannels;
+   // Transfer ownership of VK resources to the thread so they remain valid
+   // until writePNG is done with them.  Zero out data so its destructor is
+   // a no-op when write_image() returns.
+   threadData->cleanup = data;
+   data = WriteFileCleanupData {};
 
    // Write the data to a PNG file.
-   pthread_create(&ioThread, NULL, writePNG, (void *)&threadData);
-   pthread_detach(ioThread); // Reclaim resources once thread terminates
-   pthread_cond_wait(&ptCondition, &ptLock);
-   pthread_mutex_unlock(&ptLock);
+   util_queue_add_job(&device_data->png_write_queue, threadData, NULL, writePNG, NULL, 0);
 
    return true;
 }
@@ -1178,6 +1246,8 @@ static VkResult screenshot_QueuePresentKHR(
 
    VkResult result = VK_SUCCESS;
    loader_platform_thread_lock_mutex(&globalLock);
+   VkSemaphoreCreateInfo semaphoreInfo = {};
+
    if (pPresentInfo && pPresentInfo->swapchainCount > 0) {
       VkSwapchainKHR swapchain = pPresentInfo->pSwapchains[0];
 
@@ -1235,7 +1305,7 @@ static VkResult screenshot_QueuePresentKHR(
          char filename[STANDARD_BUFFER_SIZE] = "";
          char frame_counter_str[11];
          bool rename_file = true;
-         itoa(frame_counter, frame_counter_str);
+         snprintf(frame_counter_str, ARRAY_SIZE(frame_counter_str), "%u", frame_counter);
 
          /* Check if we have an output directory given from the env options */
          if (instance_data->params.output_dir &&
@@ -1264,16 +1334,13 @@ static VkResult screenshot_QueuePresentKHR(
             strcat(full_path, filename);
             pSemaphoreWaitBeforePresent = pPresentInfo->pWaitSemaphores;
             semaphoreWaitBeforePresentCount = pPresentInfo->waitSemaphoreCount;
-            VkSemaphoreCreateInfo semaphoreInfo = {};
             semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             device_data->vtable.CreateSemaphore(device_data->device, &semaphoreInfo, nullptr, &semaphoreWaitAfterSubmission);
-            VkFenceCreateInfo fenceInfo = {};
-            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            device_data->vtable.CreateFence(device_data->device, &fenceInfo, nullptr, &copyDone);
             if(write_image(full_path,
                            swapchain_data->image,
                            device_data,
                            instance_data,
+                           queue_data,
                            swapchain_data)) {
                present_info.pWaitSemaphores = &semaphoreWaitAfterSubmission; // Make semaphore here
                present_info.waitSemaphoreCount = 1;
@@ -1296,10 +1363,6 @@ static VkResult screenshot_QueuePresentKHR(
    if (semaphoreWaitAfterSubmission != VK_NULL_HANDLE) {
       device_data->vtable.DestroySemaphore(device_data->device, semaphoreWaitAfterSubmission, nullptr);
       semaphoreWaitAfterSubmission = VK_NULL_HANDLE;
-   }
-   if (copyDone != VK_NULL_HANDLE) {
-      device_data->vtable.DestroyFence(device_data->device, copyDone, nullptr);
-      copyDone = VK_NULL_HANDLE;
    }
    return result;
 }
@@ -1368,8 +1431,6 @@ static VkResult screenshot_CreateDevice(
       get_device_chain_info(pCreateInfo, VK_LOADER_DATA_CALLBACK);
 
    device_data->set_device_loader_data = load_data_info->u.pfnSetDeviceLoaderData;
-
-   device_map_queues(device_data, pCreateInfo);
    return result;
 }
 
@@ -1378,7 +1439,9 @@ static void screenshot_DestroyDevice(
     const VkAllocationCallbacks*                pAllocator)
 {
    struct device_data *device_data = FIND(struct device_data, device);
-   device_unmap_queues(device_data);
+
+   util_queue_destroy(&device_data->png_write_queue);
+
    device_data->vtable.DestroyDevice(device, pAllocator);
    destroy_device_data(device_data);
 }
@@ -1415,12 +1478,12 @@ static VkResult screenshot_CreateInstance(
                                           instance_data->instance);
    instance_data_map_physical_devices(instance_data, true);
 
-   parse_screenshot_env(&instance_data->params, getenv("VK_LAYER_MESA_SCREENSHOT_CONFIG"));
+   parse_screenshot_env(&instance_data->params, os_get_option("VK_LAYER_MESA_SCREENSHOT_CONFIG"));
 
    if (!globalLockInitialized) {
       loader_platform_thread_create_mutex(&globalLock);
-      globalLockInitialized = 1;
    }
+   globalLockInitialized++;
 
    return result;
 }
@@ -1433,6 +1496,10 @@ static void screenshot_DestroyInstance(
    instance_data_map_physical_devices(instance_data, false);
    instance_data->vtable.DestroyInstance(instance, pAllocator);
    destroy_instance_data(instance_data);
+
+   if (--globalLockInitialized == 0) {
+      loader_platform_thread_delete_mutex(&globalLock);
+   }
 }
 
 static const struct {
@@ -1450,6 +1517,8 @@ static const struct {
    ADD_HOOK(AcquireNextImageKHR),
 
    ADD_HOOK(CreateDevice),
+   ADD_HOOK(GetDeviceQueue),
+   ADD_HOOK(GetDeviceQueue2),
    ADD_HOOK(DestroyDevice),
 
    ADD_HOOK(CreateInstance),

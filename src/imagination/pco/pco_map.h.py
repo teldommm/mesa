@@ -33,24 +33,51 @@ template = """/*
 static inline
 ${enum_map.type_to} ${enum_map.name}(${enum_map.type_from} val)
 {
-   switch (val) {
-   % for elem_from, elem_to in enum_map.mappings:
-   case ${elem_from}:
-      return ${elem_to};
+   uint64_t to = 0;
 
-   % endfor
-   default: break;
+   % if enum_map.pass_zero_val is not None:
+   if (!val)
+      return ${enum_map.pass_zero_val};
+
+   % endif
+   % if enum_map.both_bitsets:
+   u_foreach_bit64 (b, val) {
+      switch (b) {
+      % for elem_from, elem_to in enum_map.mappings:
+      case ${elem_from}:
+         to |= ${elem_to};
+         break;
+
+      % endfor
+      default:
+         UNREACHABLE("");
+      }
    }
+   % else:
+   switch (val) {
+      % for elem_from, elem_to in enum_map.mappings:
+   case ${elem_from}:
+      to = ${elem_to};
+      break;
 
-   unreachable();
+      % endfor
+   default:
+      UNREACHABLE("");
+   }
+   % endif
+
+   return to;
 }
 
 % endfor
 static inline
 enum pco_regbank pco_map_reg_bank(pco_ref ref)
 {
-   enum pco_regbank regbank = pco_map_reg_class_to_regbank(pco_ref_get_reg_class(ref));
-   return pco_ref_is_idx_reg(ref) ? regbank + ref.idx_reg.num : regbank;
+   if (pco_ref_is_idx_reg(ref)) {
+      return PCO_REGBANK_IDX0 + ref.idx_reg.num;
+   }
+
+   return pco_map_reg_class_to_regbank(pco_ref_get_reg_class(ref));
 }
 
 static inline
@@ -100,7 +127,7 @@ static inline unsigned pco_map_reg_index(pco_ref ref)
       return pco_map_idx_bank(ref) | (ref.idx_reg.offset << 3);
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 static inline unsigned pco_map_reg_index_bits(pco_ref ref)
@@ -110,7 +137,7 @@ static inline unsigned pco_map_reg_index_bits(pco_ref ref)
    else if (pco_ref_is_idx_reg(ref))
       return 11;
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 static inline
@@ -171,7 +198,7 @@ enum pco_src_variant pco_igrp_src_variant(const pco_igrp *igrp,
    }
 % endfor
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 static inline
@@ -224,16 +251,31 @@ enum pco_dst_variant pco_igrp_dest_variant(pco_igrp *igrp)
    }
 % endfor
 
-   unreachable();
+   UNREACHABLE("");
 }
 
-/* Instruction group mappings. */
-% for op_map in op_maps.values():
+% for encode_map in encode_maps.values():
 static inline
-void ${op_map.name}_map_igrp(pco_igrp *igrp, pco_instr *instr)
+unsigned ${encode_map.name}_variant(pco_instr *instr)
 {
-   % for mapping_group in op_map.igrp_mappings:
-      % for mapping in mapping_group:
+   % if len(encode_map.variants) > 1:
+      % for variant, _, conds in encode_map.variants[1:]:
+   ${conds.format('bin', 'instr', 'variant')}
+      return ${variant};
+      % endfor
+
+   % endif
+   return ${encode_map.variants[0][0]};
+}
+
+% endfor
+/* Instruction group mappings. */
+% for group_map in group_maps.values():
+static inline
+void ${group_map.name}_map_igrp(pco_igrp *igrp, pco_instr *instr)
+{
+   % for mapping_set in group_map.mapping_sets:
+      % for mapping in mapping_set:
    ${mapping.format('igrp', 'instr')}
       % endfor
 
@@ -250,9 +292,9 @@ static inline
 void pco_map_igrp(pco_igrp *igrp, pco_instr *instr)
 {
    switch (instr->op) {
-% for op_map in op_maps.values():
-   case ${op_map.cop_name}:
-      return ${op_map.name}_map_igrp(igrp, instr);
+% for group_map in group_maps.values():
+   case ${group_map.cop_name}:
+      return ${group_map.name}_map_igrp(igrp, instr);
 
 % endfor
    default:
@@ -264,7 +306,7 @@ void pco_map_igrp(pco_igrp *igrp, pco_instr *instr)
           info->type == PCO_OP_TYPE_PSEUDO ? "pseudo" : "hardware",
           info->str);
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 static inline unsigned pco_igrp_hdr_map_encode(uint8_t *bin, pco_igrp *igrp)
@@ -321,31 +363,30 @@ static inline unsigned pco_igrp_hdr_map_encode(uint8_t *bin, pco_igrp *igrp)
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 
-
-% for op_map in encode_maps.values():
+% for encode_map in encode_maps.values():
 static inline
-   % if len(op_map.encode_variants) > 1:
-unsigned ${op_map.name}_map_encode(uint8_t *bin, pco_instr *instr, unsigned variant)
+   % if len(encode_map.variants) > 1:
+unsigned ${encode_map.name}_map_encode(uint8_t *bin, pco_instr *instr, unsigned variant)
 {
    switch (variant) {
-   % for variant, mapping in op_map.encode_variants:
+      % for variant, mapping, _ in encode_map.variants:
    case ${variant}:
       return ${mapping.format('bin', 'instr', 'variant')};
 
-   % endfor
+      % endfor
    default:
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
    % else:
-unsigned ${op_map.name}_map_encode(uint8_t *bin, pco_instr *instr)
+unsigned ${encode_map.name}_map_encode(uint8_t *bin, pco_instr *instr)
 {
-   return ${op_map.encode_variants[0][1].format('bin', 'instr', 'variant')};
+   return ${encode_map.variants[0][1].format('bin', 'instr', 'variant')};
 }
    % endif
 
@@ -355,12 +396,12 @@ unsigned pco_instr_map_encode(uint8_t *bin, pco_igrp *igrp, enum pco_op_phase ph
 {
    pco_instr *instr = igrp->instrs[phase];
    switch (instr->op) {
-% for op_map in encode_maps.values():
-   case ${op_map.cop_name}:
-   % if len(op_map.encode_variants) > 1:
-      return ${op_map.name}_map_encode(bin, instr, pco_igrp_variant(igrp, phase));
+% for encode_map in encode_maps.values():
+   case ${encode_map.cop_name}:
+   % if len(encode_map.variants) > 1:
+      return ${encode_map.name}_map_encode(bin, instr, pco_igrp_variant(igrp, phase));
    % else:
-      return ${op_map.name}_map_encode(bin, instr);
+      return ${encode_map.name}_map_encode(bin, instr);
    % endif
 
 % endfor
@@ -368,7 +409,7 @@ unsigned pco_instr_map_encode(uint8_t *bin, pco_igrp *igrp, enum pco_op_phase ph
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 static inline
@@ -424,7 +465,7 @@ unsigned pco_srcs_map_encode(uint8_t *bin, pco_igrp *igrp, bool is_upper)
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 
 static inline
@@ -498,13 +539,13 @@ unsigned pco_dests_map_encode(uint8_t *bin, pco_igrp *igrp)
       break;
    }
 
-   unreachable();
+   UNREACHABLE("");
 }
 #endif /* PCO_MAP_H */"""
 
 def main():
    try:
-      print(Template(template).render(enum_maps=enum_maps, op_maps=op_maps, encode_maps=encode_maps, I_SRC=I_SRC, I_DST=I_DST))
+      print(Template(template).render(enum_maps=enum_maps, group_maps=group_maps, encode_maps=encode_maps, I_SRC=I_SRC, I_DST=I_DST))
    except:
        raise Exception(exceptions.text_error_template().render())
 

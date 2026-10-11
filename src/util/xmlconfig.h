@@ -30,10 +30,11 @@
 #ifndef __XMLCONFIG_H
 #define __XMLCONFIG_H
 
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/ralloc.h"
 #include <stdint.h>
 #include <string.h>
+#include <inttypes.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,13 +44,14 @@ extern "C" {
 
 /** \brief Option data types */
 typedef enum driOptionType {
-   DRI_BOOL, DRI_ENUM, DRI_INT, DRI_FLOAT, DRI_STRING, DRI_SECTION
+   DRI_BOOL, DRI_ENUM, DRI_INT, DRI_UINT64, DRI_FLOAT, DRI_STRING, DRI_SECTION
 } driOptionType;
 
 /** \brief Option value */
 typedef union driOptionValue {
    unsigned char _bool; /**< \brief Boolean */
    int _int;      /**< \brief Integer or Enum */
+   uint64_t _uint64;    /**< \brief Unsigned 64-bit Integer */
    float _float;  /**< \brief Floating-point */
    char *_string;   /**< \brief String */
 } driOptionValue;
@@ -105,7 +107,7 @@ typedef struct driOptionDescription {
 
    driOptionInfo info;
    driOptionValue value;
-   driEnumDescription enums[5];
+   driEnumDescription enums[20];
 } driOptionDescription;
 
 /** Returns an XML string describing the options for the driver. */
@@ -126,16 +128,33 @@ driGetOptionsXml(const driOptionDescription *configOptions, unsigned numOptions)
 void driParseOptionInfo(driOptionCache *info,
                         const driOptionDescription *configOptions,
                         unsigned numOptions);
+
+typedef void (*driShaderOptionCallback)(const void *hash_data,
+                                        uint32_t hash_size,
+                                        const driOptionInfo *option,
+                                        const driOptionValue *value,
+                                        void *shaderOptionCallbackData);
+
+typedef struct {
+   int screenNum;
+   const char *driverName;
+   const char *kernelDriverName;
+   const char *deviceName;
+   const char *applicationName;
+   uint32_t applicationVersion;
+   const char *engineName;
+   uint32_t engineVersion;
+
+   driShaderOptionCallback shaderOptionCallback;
+   void *shaderOptionCallbackData;
+} driConfigFileParseParams;
+
 /** \brief Initialize option cache from info and parse configuration files
  *
- * To be called in <driver>CreateContext. screenNum, driverName,
- * kernelDriverName, applicationName and engineName select device sections. */
+ * To be called in <driver>CreateContext. Fields in driConfigFileParseParams
+ * select which device/application/engine sections apply. */
 void driParseConfigFiles(driOptionCache *cache, const driOptionCache *info,
-                         int screenNum, const char *driverName,
-                         const char *kernelDriverName,
-                         const char *deviceName,
-                         const char *applicationName, uint32_t applicationVersion,
-                         const char *engineName, uint32_t engineVersion);
+                         const driConfigFileParseParams *params);
 /** \brief Destroy option info
  *
  * To be called in <driver>DestroyScreen */
@@ -153,6 +172,8 @@ unsigned char driCheckOption(const driOptionCache *cache, const char *name,
 unsigned char driQueryOptionb(const driOptionCache *cache, const char *name);
 /** \brief Query an integer option value */
 int driQueryOptioni(const driOptionCache *cache, const char *name);
+/** \brief Query a 64-bit unsigned integer option value */
+uint64_t driQueryOptionu64(const driOptionCache *cache, const char *name);
 /** \brief Query a floating-point option value */
 float driQueryOptionf(const driOptionCache *cache, const char *name);
 /** \brief Query a string option value */
@@ -165,7 +186,7 @@ void driInjectExecName(const char *exec);
  * Returns a hash of the options for this application.
  */
 static inline void
-driComputeOptionsSha1(const driOptionCache *cache, unsigned char *sha1)
+driComputeOptionsBlake3(const driOptionCache *cache, unsigned char *blake3)
 {
    void *ctx = ralloc_context(NULL);
    char *dri_options = ralloc_strdup(ctx, "");
@@ -187,6 +208,11 @@ driComputeOptionsSha1(const driOptionCache *cache, unsigned char *sha1)
                                       cache->info[i].name,
                                       cache->values[i]._int);
          break;
+      case DRI_UINT64:
+         ret = ralloc_asprintf_append(&dri_options, "%s:%" PRIu64 ",",
+                                      cache->info[i].name,
+                                      cache->values[i]._uint64);
+         break;
       case DRI_FLOAT:
          ret = ralloc_asprintf_append(&dri_options, "%s:%f,",
                                       cache->info[i].name,
@@ -198,7 +224,7 @@ driComputeOptionsSha1(const driOptionCache *cache, unsigned char *sha1)
                                       cache->values[i]._string);
          break;
       default:
-         unreachable("unsupported dri config type!");
+         UNREACHABLE("unsupported dri config type!");
       }
 
       if (!ret) {
@@ -206,7 +232,7 @@ driComputeOptionsSha1(const driOptionCache *cache, unsigned char *sha1)
       }
    }
 
-   _mesa_sha1_compute(dri_options, strlen(dri_options), sha1);
+   _mesa_blake3_compute(dri_options, strlen(dri_options), blake3);
    ralloc_free(ctx);
 }
 

@@ -36,8 +36,7 @@ enum pipe_video_format
 {
    PIPE_VIDEO_FORMAT_UNKNOWN = 0,
    PIPE_VIDEO_FORMAT_MPEG12,   /**< MPEG1, MPEG2 */
-   PIPE_VIDEO_FORMAT_MPEG4,    /**< DIVX, XVID */
-   PIPE_VIDEO_FORMAT_VC1,      /**< WMV */
+   PIPE_VIDEO_FORMAT_VC1 = 3,  /**< WMV */
    PIPE_VIDEO_FORMAT_MPEG4_AVC,/**< H.264 */
    PIPE_VIDEO_FORMAT_HEVC,     /**< H.265 */
    PIPE_VIDEO_FORMAT_JPEG,     /**< JPEG */
@@ -51,8 +50,6 @@ enum pipe_video_profile
    PIPE_VIDEO_PROFILE_MPEG1,
    PIPE_VIDEO_PROFILE_MPEG2_SIMPLE,
    PIPE_VIDEO_PROFILE_MPEG2_MAIN,
-   PIPE_VIDEO_PROFILE_MPEG4_SIMPLE,
-   PIPE_VIDEO_PROFILE_MPEG4_ADVANCED_SIMPLE,
    PIPE_VIDEO_PROFILE_VC1_SIMPLE,
    PIPE_VIDEO_PROFILE_VC1_MAIN,
    PIPE_VIDEO_PROFILE_VC1_ADVANCED,
@@ -68,6 +65,9 @@ enum pipe_video_profile
    PIPE_VIDEO_PROFILE_HEVC_MAIN_10,
    PIPE_VIDEO_PROFILE_HEVC_MAIN_STILL,
    PIPE_VIDEO_PROFILE_HEVC_MAIN_12,
+   PIPE_VIDEO_PROFILE_HEVC_MAIN10_444,
+   PIPE_VIDEO_PROFILE_HEVC_MAIN_422,
+   PIPE_VIDEO_PROFILE_HEVC_MAIN10_422,
    PIPE_VIDEO_PROFILE_HEVC_MAIN_444,
    PIPE_VIDEO_PROFILE_JPEG_BASELINE,
    PIPE_VIDEO_PROFILE_VP9_PROFILE0,
@@ -81,15 +81,9 @@ enum pipe_video_profile
 enum pipe_video_cap
 {
    PIPE_VIDEO_CAP_SUPPORTED = 0,
-   PIPE_VIDEO_CAP_NPOT_TEXTURES = 1,
    PIPE_VIDEO_CAP_MAX_WIDTH = 2,
    PIPE_VIDEO_CAP_MAX_HEIGHT = 3,
-   PIPE_VIDEO_CAP_PREFERED_FORMAT = 4,
-   PIPE_VIDEO_CAP_PREFERS_INTERLACED = 5,
    PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE = 6,
-   PIPE_VIDEO_CAP_SUPPORTS_INTERLACED = 7,
-   PIPE_VIDEO_CAP_MAX_LEVEL = 8,
-   PIPE_VIDEO_CAP_STACKED_FRAMES = 9,
    PIPE_VIDEO_CAP_MAX_MACROBLOCKS = 10,
    PIPE_VIDEO_CAP_MAX_TEMPORAL_LAYERS = 11,
    PIPE_VIDEO_CAP_SKIP_CLEAR_SURFACE = 12,
@@ -166,10 +160,104 @@ enum pipe_video_cap
     */
    PIPE_VIDEO_CAP_ENC_HEVC_RANGE_EXTENSION_FLAGS_SUPPORT = 52,
    /*
-    * Video Post Processing support HDR content
+    * Video encode max long term references supported
     */
-   PIPE_VIDEO_CAP_VPP_SUPPORT_HDR_INPUT = 53,
-   PIPE_VIDEO_CAP_VPP_SUPPORT_HDR_OUTPUT = 54,
+   PIPE_VIDEO_CAP_ENC_MAX_LONG_TERM_REFERENCES_PER_FRAME = 55,
+   /*
+    * Video encode max DPB size supported
+    */
+   PIPE_VIDEO_CAP_ENC_MAX_DPB_CAPACITY = 56,
+   /*
+    * Support for dirty rects in encoder picture params pipe_enc_cap_dirty_info
+    */
+   PIPE_VIDEO_CAP_ENC_DIRTY_RECTS = 57,
+   /*
+    * Support for move rects in encoder picture params pipe_enc_cap_move_rect
+    */
+   PIPE_VIDEO_CAP_ENC_MOVE_RECTS = 58,
+   /*
+    * Support for stats written into a pipe_resource (e.g GPU allocation) during
+    * the encoding of a frame, indicating QP values used for each block
+    *
+    * Note that this may be written during the encode operation, before the
+    * get_feedback operation, since it's written into a GPU memory allocation
+    *
+    * The returned value is pipe_enc_cap_gpu_stats_map
+    */
+   PIPE_VIDEO_CAP_ENC_GPU_STATS_QP_MAP = 59,
+   /*
+    * Support for stats written into a pipe_resource (e.g GPU allocation) during
+    * the encoding of a frame, indicating SATD values for each block
+    *
+    * Note that this may be written during the encode operation, before the
+    * get_feedback operation, since it's written into a GPU memory allocation
+    *
+    * The returned value is pipe_enc_cap_gpu_stats_map
+    */
+   PIPE_VIDEO_CAP_ENC_GPU_STATS_SATD_MAP = 60,
+   /*
+    * Support for stats written into a pipe_resource (e.g GPU allocation) during
+    * the encoding of a frame, indicating the rate control
+    * bit allocations used for each block
+    *
+    * Note that this may be written during the encode operation, before the
+    * get_feedback operation, since it's written into a GPU memory allocation
+    *
+    * The returned value is pipe_enc_cap_gpu_stats_map
+    */
+   PIPE_VIDEO_CAP_ENC_GPU_STATS_RATE_CONTROL_BITS_MAP = 61,
+   /*
+    * Support for encoding an entire frame with pipe_video_codec::encode_bitstream_sliced
+      for a given profile/codec
+    *
+    * The returned value is pipe_enc_cap_sliced_notifications
+    */
+   PIPE_VIDEO_CAP_ENC_SLICED_NOTIFICATIONS = 62,
+   /*
+    * Support for dirty maps in encoder picture params pipe_enc_cap_dirty_info
+    */
+   PIPE_VIDEO_CAP_ENC_DIRTY_MAPS = 63,
+   /*
+    * Support for QP maps in encoder picture params pipe_enc_cap_qpmap
+    */
+   PIPE_VIDEO_CAP_ENC_QP_MAPS = 64,
+   /*
+    * Support for motion vector maps in encoder picture params pipe_enc_cap_motion_vector_map
+    */
+   PIPE_VIDEO_CAP_ENC_MOTION_VECTOR_MAPS = 65,
+   /*
+    * Support for two pass encode in encoder picture params pipe_enc_cap_two_pass
+    */
+   PIPE_VIDEO_CAP_ENC_TWO_PASS = 66,
+   /*
+    * Support for the frame's PSNR to be written into a PIPE_BUFFER
+    * during the encoding of a frame
+    *
+    * Note that this may be written during the encode operation, before the
+    * get_feedback operation, since it's written into a GPU memory allocation
+    *
+    * The returned value is pipe_enc_cap_gpu_stats_psnr, which indicates
+    * more information about the number of PSNR components returned and their
+    * data layout
+    */
+   PIPE_VIDEO_CAP_ENC_GPU_STATS_PSNR = 67,
+   /*
+    * Support for the gallium driver to enable spatial adaptive quantization
+    * based on the rate control param spatial_adaptive_quantization_strength
+    *
+    * The returned value is pipe_enc_cap_spatial_adaptive_quantization
+    */
+   PIPE_VIDEO_CAP_ENC_SPATIAL_ADAPTIVE_QUANTIZATION = 68,
+   /*
+    * Support for readable reconstructed picture from DPB current picture
+    *
+    * Indicates whether dpb_curr_pic (index in dpb array from
+    * pipe_h264_enc_picture_desc, pipe_h265_enc_picture_desc, or
+    * pipe_av1_enc_picture_desc) is readable or uses an opaque
+    * non-readable memory layout. When true, the reconstructed
+    * picture can be read directly.
+    */
+   PIPE_VIDEO_CAP_ENC_READABLE_RECONSTRUCTED_PICTURE = 69,
 };
 
 enum pipe_video_h264_enc_dbk_filter_mode_flags
@@ -248,17 +336,7 @@ enum pipe_video_vpp_blend_mode
 {
    PIPE_VIDEO_VPP_BLEND_MODE_NONE = 0x0,
    PIPE_VIDEO_VPP_BLEND_MODE_GLOBAL_ALPHA = 0x1,
-};
-
-/* To be used for VPP state*/
-enum pipe_video_vpp_color_standard_type
-{
-   PIPE_VIDEO_VPP_COLOR_STANDARD_TYPE_NONE = 0x0,
-   PIPE_VIDEO_VPP_COLOR_STANDARD_TYPE_BT601 = 0x1,
-   PIPE_VIDEO_VPP_COLOR_STANDARD_TYPE_BT709 = 0x2,
-   PIPE_VIDEO_VPP_COLOR_STANDARD_TYPE_BT2020 = 0xC,
-   PIPE_VIDEO_VPP_COLOR_STANDARD_TYPE_EXPLICIT = 0xD,
-   PIPE_VIDEO_VPP_COLOR_STANDARD_TYPE_COUNT,
+   PIPE_VIDEO_VPP_BLEND_MODE_PREMULTIPLIED_ALPHA = 0x2,
 };
 
 /* To be used for VPP state*/
@@ -351,6 +429,14 @@ enum pipe_video_vpp_matrix_coefficients {
     PIPE_VIDEO_VPP_MCF_COUNT,
 };
 
+/* To be used for VPP state*/
+enum pipe_video_vpp_filter_flag {
+   PIPE_VIDEO_VPP_FILTER_FLAG_DEFAULT               = 0x00000000,
+   PIPE_VIDEO_VPP_FILTER_FLAG_SCALING_FAST          = 0x00000100,
+   PIPE_VIDEO_VPP_FILTER_FLAG_SCALING_HQ            = 0x00000200,
+   PIPE_VIDEO_VPP_FILTER_FLAG_SCALING_NL_ANAMORPHIC = 0x00000300
+};
+
 /* To be used with cap PIPE_VIDEO_CAP_ENC_SLICES_STRUCTURE*/
 /**
  * pipe_video_cap_slice_structure
@@ -383,6 +469,8 @@ enum pipe_video_cap_slice_structure
    *  for all slices except for the last one, which must be equal or smaller
    *  to the previous slices. */
    PIPE_VIDEO_CAP_SLICE_STRUCTURE_EQUAL_MULTI_ROWS = 0x00000020,
+   /* Driver supports PIPE_VIDEO_SLICE_MODE_AUTO. */
+   PIPE_VIDEO_CAP_SLICE_STRUCTURE_AUTO = 0x00000040,
 };
 
 enum pipe_video_enc_intra_refresh_mode
@@ -415,6 +503,10 @@ enum pipe_video_slice_mode
     * Partitions the frame using max slice size per coded slice
    */
    PIPE_VIDEO_SLICE_MODE_MAX_SLICE_SIZE = 1,
+   /*
+    * Partitions the frame are decided by gallium driver
+   */
+   PIPE_VIDEO_SLICE_MODE_AUTO = 2,
 };
 
 enum pipe_video_entrypoint

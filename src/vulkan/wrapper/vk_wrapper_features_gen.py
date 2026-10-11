@@ -32,12 +32,10 @@ import xml.etree.ElementTree as et
 
 import mako
 from mako.template import Template
-from vk_extensions import Requirements, get_all_required, filter_api
 
-def str_removeprefix(s, prefix):
-    if s.startswith(prefix):
-        return s[len(prefix):]
-    return s
+# The generator helpers live in src/vulkan/util
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'util'))
+from vk_extensions import Requirements, get_all_required, filter_api
 
 RENAMED_FEATURES = {
     # See https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/17272#note_1446477 for details
@@ -50,6 +48,13 @@ RENAMED_FEATURES = {
     ('CooperativeMatrixFeaturesNV', 'cooperativeMatrixRobustBufferAccess'): 'cooperativeMatrixRobustBufferAccessNV',
 
     ('DeviceGeneratedCommandsFeaturesNV', 'deviceGeneratedCommands'): 'deviceGeneratedCommandsNV',
+
+    ("RayTracingInvocationReorderFeaturesNV", "rayTracingInvocationReorder"): "rayTracingInvocationReorderNV",
+
+    ('FaultFeaturesEXT', 'deviceFault'): 'deviceFaultEXT',
+    ('FaultFeaturesEXT', 'deviceFaultVendorBinary'): 'deviceFaultVendorBinaryEXT',
+
+    ('OpacityMicromapFeaturesEXT', 'micromap'): 'micromapEXT',
 }
 
 KNOWN_ALIASES = [
@@ -154,7 +159,7 @@ for (feature_structs, features) in KNOWN_ALIASES:
             RENAMED_FEATURES[rename] = flag
 
 def get_renamed_feature(c_type, feature):
-    return RENAMED_FEATURES.get((str_removeprefix(c_type, 'VkPhysicalDevice'), feature), feature)
+    return RENAMED_FEATURES.get((c_type.removeprefix('VkPhysicalDevice'), feature), feature)
 
 @dataclass
 class FeatureStruct:
@@ -162,6 +167,29 @@ class FeatureStruct:
     c_type: str
     s_type: str
     features: typing.List[str]
+    guard: str
+
+    def condition(self, physical_dev):
+        conds = []
+        if self.reqs.core_version:
+            conds.append(physical_dev + '->properties.apiVersion >= ' +
+                         self.reqs.core_version.c_vk_version())
+        for ext in self.reqs.extensions:
+            conds.append(physical_dev + '->supported_extensions.' +
+                         ext.name[3:])
+        if not conds:
+            return None
+        return '(' + ' || '.join(conds) + ')'
+
+def wrapper_condition(f):
+    conds = []
+    if f.reqs.core_version:
+        conds.append('api_version >= ' + f.reqs.core_version.c_vk_version())
+    for ext in f.reqs.extensions:
+        conds.append('base_exts->' + ext.name[3:])
+    if not conds:
+        return None
+    return ' || '.join(conds)
 
 TEMPLATE_C = Template(COPYRIGHT + """
 /* This file generated from ${filename}, don't edit directly. */
@@ -170,22 +198,42 @@ TEMPLATE_C = Template(COPYRIGHT + """
 #include "vk_physical_device_features.h"
 #include "vk_util.h"
 
+/* Queries the features of the underlying driver into
+ * physical_device->vk.supported_features.  Only the feature structs the
+ * driver can know about (core version or extension supported) are chained.
+ */
 void
 wrapper_setup_device_features(struct wrapper_physical_device *physical_device)
 {
    VkPhysicalDevice vk_physical_device = physical_device->dispatch_handle;
+   const uint32_t api_version =
+      physical_device->properties2.properties.apiVersion;
+   const struct vk_device_extension_table *base_exts =
+      &physical_device->base_supported_extensions;
+   (void)api_version;
+   (void)base_exts;
 
-   /* Query the device what kind of features are supported. */
    VkPhysicalDeviceFeatures2 supported_features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
    };
 
 % for f in feature_structs:
+% if f.guard != None:
+#ifdef ${f.guard}
+% endif
    ${f.c_type} supported_${f.c_type} = {
       .sType = ${f.s_type},
       .pNext = NULL,
    };
+% if wrapper_condition(f) is not None:
+   if (${wrapper_condition(f)})
+      __vk_append_struct(&supported_features2, &supported_${f.c_type});
+% else:
    __vk_append_struct(&supported_features2, &supported_${f.c_type});
+% endif
+% if f.guard != None:
+#endif
+% endif
 % endfor
 
    physical_device->dispatch_table.GetPhysicalDeviceFeatures2(
@@ -225,9 +273,10 @@ def get_feature_structs(doc, api, beta):
             continue
 
         reqs = required[_type.attrib['name']]
-        # Skip extensions with a define for now
+        # Skip extensions with a define that isn't a platform define for now
         guard = reqs.guard
-        if guard is not None and (guard != "VK_ENABLE_BETA_EXTENSIONS" or beta != "true"):
+        if guard is not None and ((guard != "VK_ENABLE_BETA_EXTENSIONS" or beta != "true") and
+                                 (not guard.startswith("VK_USE_PLATFORM"))):
             continue
 
         # find Vulkan structure type
@@ -251,7 +300,7 @@ def get_feature_structs(doc, api, beta):
                 assert p.find('./type').text == 'VkBool32'
                 flags.append(m_name)
 
-        feature_struct = FeatureStruct(reqs=reqs, c_type=_type.attrib.get('name'), s_type=s_type, features=flags)
+        feature_struct = FeatureStruct(reqs=reqs, c_type=_type.attrib.get('name'), s_type=s_type, features=flags, guard=guard)
         feature_structs[feature_struct.c_type] = feature_struct
 
     return feature_structs.values()
@@ -281,12 +330,12 @@ def get_feature_structs_from_xml(xml_files, beta, api='vulkan'):
             if renamed_flag not in features:
                 features[renamed_flag] = f.c_type
             else:
-                a = str_removeprefix(features[renamed_flag], 'VkPhysicalDevice')
-                b = str_removeprefix(f.c_type, 'VkPhysicalDevice')
+                a = features[renamed_flag].removeprefix('VkPhysicalDevice')
+                b = f.c_type.removeprefix('VkPhysicalDevice')
                 if (a, flag) not in RENAMED_FEATURES or (b, flag) not in RENAMED_FEATURES:
                     diagnostics.append(f'{a} and {b} both define {flag}')
 
-            unused_renames.pop((str_removeprefix(f.c_type, 'VkPhysicalDevice'), flag), None)
+            unused_renames.pop((f.c_type.removeprefix('VkPhysicalDevice'), flag), None)
 
     for rename in unused_renames:
         diagnostics.append(f'unused rename {rename}')
@@ -313,6 +362,7 @@ def main():
         'feature_structs': feature_structs,
         'all_flags': all_flags,
         'get_renamed_feature': get_renamed_feature,
+        'wrapper_condition': wrapper_condition,
     }
 
     try:

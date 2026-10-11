@@ -36,6 +36,8 @@
 #include "util/u_atomic.h"
 #include "api_exec_decl.h"
 
+#include "pipe/p_screen.h"
+
 void
 _mesa_spirv_module_reference(struct gl_spirv_module **dest,
                              struct gl_spirv_module *src)
@@ -140,7 +142,7 @@ _mesa_spirv_link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
 
    for (unsigned i = 0; i < prog->NumShaders; i++) {
       struct gl_shader *shader = prog->Shaders[i];
-      gl_shader_stage shader_type = shader->Stage;
+      mesa_shader_stage shader_type = shader->Stage;
 
       /* We only support one shader per stage. The gl_spirv spec doesn't seem
        * to prevent this, but the way the API is designed, requiring all shaders
@@ -196,7 +198,7 @@ _mesa_spirv_link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
    /* Some shaders have to be linked with some other shaders present. */
    if (!prog->SeparateShader) {
       static const struct {
-         gl_shader_stage a, b;
+         mesa_shader_stage a, b;
       } stage_pairs[] = {
          { MESA_SHADER_GEOMETRY, MESA_SHADER_VERTEX },
          { MESA_SHADER_TESS_EVAL, MESA_SHADER_VERTEX },
@@ -205,8 +207,8 @@ _mesa_spirv_link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
       };
 
       for (unsigned i = 0; i < ARRAY_SIZE(stage_pairs); i++) {
-         gl_shader_stage a = stage_pairs[i].a;
-         gl_shader_stage b = stage_pairs[i].b;
+         mesa_shader_stage a = stage_pairs[i].a;
+         mesa_shader_stage b = stage_pairs[i].b;
          if ((prog->data->linked_stages & ((1 << a) | (1 << b))) == (1 << a)) {
             ralloc_asprintf_append(&prog->data->InfoLog,
                                    "%s shader must be linked with %s shader\n",
@@ -232,7 +234,7 @@ _mesa_spirv_link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
 nir_shader *
 _mesa_spirv_to_nir(struct gl_context *ctx,
                    const struct gl_shader_program *prog,
-                   gl_shader_stage stage,
+                   mesa_shader_stage stage,
                    const nir_shader_compiler_options *options)
 {
    struct gl_linked_shader *linked_shader = prog->_LinkedShaders[stage];
@@ -247,14 +249,14 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
    const char *entry_point_name = spirv_data->SpirVEntryPoint;
    assert(entry_point_name);
 
-   struct nir_spirv_specialization *spec_entries =
-      calloc(sizeof(*spec_entries),
-             spirv_data->NumSpecializationConstants);
+   struct nir_spirv_specialization *spec =
+      vtn_alloc_specialization(spirv_data->NumSpecializationConstants);
 
    for (unsigned i = 0; i < spirv_data->NumSpecializationConstants; ++i) {
-      spec_entries[i].id = spirv_data->SpecializationConstantsIndex[i];
-      spec_entries[i].value.u32 = spirv_data->SpecializationConstantsValue[i];
-      spec_entries[i].defined_on_module = false;
+      vtn_add_specialization_entry(spec, i, spirv_data->SpecializationConstantsIndex[i],
+                                   sizeof(uint32_t),
+                                   &spirv_data->SpecializationConstantsValue[i],
+                                   false);
    }
 
    struct spirv_capabilities spirv_caps;
@@ -264,7 +266,6 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
    struct spirv_to_nir_options spirv_options = {
       .environment = NIR_SPIRV_OPENGL,
       .capabilities = &spirv_caps,
-      .subgroup_size = SUBGROUP_SIZE_UNIFORM,
       .ubo_addr_format = nir_address_format_32bit_index_offset,
       .ssbo_addr_format = nir_address_format_32bit_index_offset,
 
@@ -274,16 +275,17 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
        */
       .shared_addr_format = nir_address_format_32bit_offset,
 
+      .group_non_uniform_subgroup_size = ctx->screen->caps.shader_subgroup_size,
    };
 
    nir_shader *nir =
       spirv_to_nir((const uint32_t *) &spirv_module->Binary[0],
                    spirv_module->Length / 4,
-                   spec_entries, spirv_data->NumSpecializationConstants,
+                   spec,
                    stage, entry_point_name,
                    &spirv_options,
                    options);
-   free(spec_entries);
+   vtn_free_specialization(spec);
 
    assert(nir);
    assert(nir->info.stage == stage);
@@ -297,12 +299,14 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
    nir_validate_shader(nir, "after spirv_to_nir");
 
    nir->info.separate_shader = linked_shader->Program->info.separate_shader;
+   nir->info.api_subgroup_size_draw_uniform = !mesa_shader_stage_uses_workgroup(stage);
 
    /* Convert some sysvals to input varyings. */
    const struct nir_lower_sysvals_to_varyings_options sysvals_to_varyings = {
       .frag_coord = !ctx->Const.GLSLFragCoordIsSysVal,
       .point_coord = !ctx->Const.GLSLPointCoordIsSysVal,
       .front_face = !ctx->Const.GLSLFrontFacingIsSysVal,
+      .primitive_id = nir->info.stage == MESA_SHADER_FRAGMENT,
    };
    NIR_PASS(_, nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
 
@@ -313,7 +317,7 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
    NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp);
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
-   NIR_PASS(_, nir, nir_copy_prop);
+   NIR_PASS(_, nir, nir_opt_copy_prop);
    NIR_PASS(_, nir, nir_opt_deref);
 
    /* Pick off the single entrypoint that we want */
@@ -332,10 +336,6 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_split_per_member_structs);
 
-   if (nir->info.stage == MESA_SHADER_VERTEX &&
-       !(nir->options->io_options & nir_io_has_intrinsics))
-      nir_remap_dual_slot_attributes(nir, &linked_shader->Program->DualSlotInputs);
-
    NIR_PASS(_, nir, nir_lower_frexp);
 
    return nir;
@@ -350,7 +350,6 @@ _mesa_SpecializeShaderARB(GLuint shader,
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_shader *sh;
-   struct nir_spirv_specialization *spec_entries = NULL;
 
    if (!ctx->Extensions.ARB_gl_spirv) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "glSpecializeShaderARB");
@@ -396,19 +395,18 @@ _mesa_SpecializeShaderARB(GLuint shader,
     * parsing the module. However, flagging them during specialization is okay,
     * since it makes no difference in terms of application-visible state.
     */
-   spec_entries = calloc(sizeof(*spec_entries), numSpecializationConstants);
+   struct nir_spirv_specialization *spec =
+      vtn_alloc_specialization(numSpecializationConstants);
 
    for (unsigned i = 0; i < numSpecializationConstants; ++i) {
-      spec_entries[i].id = pConstantIndex[i];
-      spec_entries[i].value.u32 = pConstantValue[i];
-      spec_entries[i].defined_on_module = false;
+      vtn_add_specialization_entry(spec, i, pConstantIndex[i], sizeof(uint32_t),
+                                   &pConstantValue[i], false);
    }
 
    enum spirv_verify_result r = spirv_verify_gl_specialization_constants(
       (uint32_t *)&spirv_data->SpirVModule->Binary[0],
       spirv_data->SpirVModule->Length / 4,
-      spec_entries, numSpecializationConstants,
-      sh->Stage, pEntryPoint);
+      spec, sh->Stage, pEntryPoint);
 
    switch (r) {
    case SPIRV_VERIFY_OK:
@@ -425,10 +423,11 @@ _mesa_SpecializeShaderARB(GLuint shader,
       goto end;
    case SPIRV_VERIFY_UNKNOWN_SPEC_INDEX:
       for (unsigned i = 0; i < numSpecializationConstants; ++i) {
-         if (spec_entries[i].defined_on_module == false) {
+         const struct nir_spirv_specialization_entry *entry = &spec->entries[i];
+         if (entry->defined_on_module == false) {
             _mesa_error(ctx, GL_INVALID_VALUE,
                         "glSpecializeShaderARB(constant \"%i\" does not exist "
-                        "in shader)", spec_entries[i].id);
+                        "in shader)", entry->id);
             break;
          }
       }
@@ -456,5 +455,5 @@ _mesa_SpecializeShaderARB(GLuint shader,
    }
 
  end:
-   free(spec_entries);
+   vtn_free_specialization(spec);
 }

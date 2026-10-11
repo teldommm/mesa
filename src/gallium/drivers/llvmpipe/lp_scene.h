@@ -127,6 +127,8 @@ struct lp_scene_surface {
    unsigned format_bytes;
    unsigned sample_stride;
    unsigned nr_samples;
+   unsigned base_layer;
+   unsigned layer_count;
 };
 
 
@@ -291,7 +293,9 @@ lp_scene_alloc_aligned(struct lp_scene *scene, unsigned size,
 
    {
       uint8_t *data = block->data + block->used;
-      unsigned offset = (((uintptr_t)data + alignment - 1) & ~(alignment - 1)) - (uintptr_t)data;
+      unsigned offset =
+         (((uintptr_t)data + alignment - 1) & ~((uintptr_t)alignment - 1)) -
+         (uintptr_t)data;
       block->used += offset + size;
       return data + offset;
    }

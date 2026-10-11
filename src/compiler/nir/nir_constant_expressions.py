@@ -55,19 +55,24 @@ template = """\
  * IN THE SOFTWARE.
  */
 
+#include <fenv.h>
 #include <math.h>
 #include "util/rounding.h" /* for _mesa_roundeven */
 #include "util/half_float.h"
 #include "util/double.h"
 #include "util/softfloat.h"
+#include "util/bfloat.h"
+#include "util/float8.h"
 #include "util/bigmath.h"
 #include "util/format/format_utils.h"
 #include "util/format_r11g11b10f.h"
 #include "util/u_math.h"
+#include "util/u_overflow.h"
 #include "nir_constant_expressions.h"
+#include "nir.h"
 
 /**
- * \brief Checks if the provided value is a denorm and flushes it to zero.
+ * Checks if the provided value is a denorm and flushes it to zero.
  */
 static void
 constant_denorm_flush_to_zero(nir_const_value *value, unsigned bit_size)
@@ -85,6 +90,45 @@ constant_denorm_flush_to_zero(nir_const_value *value, unsigned bit_size)
         if (0 == (value->u16 & 0x7c00))
             value->u16 &= 0x8000;
     }
+}
+
+static double
+get_float_source(nir_const_value value, unsigned execution_mode, unsigned bit_size)
+{
+    if (nir_is_denorm_flush_to_zero(execution_mode, bit_size))
+        constant_denorm_flush_to_zero(&value, bit_size);
+
+    return nir_const_value_as_float(value, bit_size);
+}
+
+/**
+ * Properly rounds and handles denorms for intermediate results. Useful for
+ * fused opcodes that want to behave exactly like the unfused variants, e.g.
+ * fmad.
+ */
+static double
+handle_intermediate_float_result(double value, unsigned execution_mode, unsigned bit_size)
+{
+    nir_const_value const_val;
+    switch(bit_size) {
+    case 64:
+        const_val.f64 = value;
+        break;
+    case 32:
+        const_val.f32 = value;
+        break;
+    case 16:
+        if (nir_is_rounding_mode_rtz(execution_mode, 16)) {
+            const_val.u16 = _mesa_float_to_float16_rtz(value);
+        } else {
+            const_val.u16 = _mesa_float_to_float16_rtne(value);
+        }
+        break;
+    default:
+        UNREACHABLE("Unsupported bit_size. Should be 64, 32, or 16");
+    }
+
+    return get_float_source(const_val, execution_mode, bit_size);
 }
 
 /**
@@ -385,10 +429,27 @@ typedef float float16_t;
 typedef float float32_t;
 typedef double float64_t;
 typedef bool bool1_t;
-typedef bool bool8_t;
-typedef bool bool16_t;
 typedef bool bool32_t;
-typedef bool bool64_t;
+
+static inline bool
+util_add_check_overflow_int1_t(int1_t a, int1_t b)
+{
+   return (a & 1 && b & 1);
+}
+static inline bool
+util_add_check_overflow_uint1_t(uint1_t a, int1_t b)
+{
+   return (a & 1 && b & 1);
+}
+static inline bool
+util_sub_check_overflow_int1_t(int1_t a, int1_t b)
+{
+   /* int1_t uses 0/-1 convention, so the only
+    * overflow case is "0 - (-1)".
+    */
+   return a == 0 && b != 0;
+}
+
 % for type in ["float", "int", "uint", "bool"]:
 % for width in type_sizes(type):
 struct ${type}${width}_vec {
@@ -424,18 +485,15 @@ struct ${type}${width}_vec {
    % for j in range(op.num_inputs):
       % if op.input_sizes[j] == 0:
          <% continue %>
-      % elif "src" + str(j) not in op.const_expr:
-         ## Avoid unused variable warnings
-         <% continue %>
-      %endif
+      % endif
 
       const struct ${input_types[j]}_vec src${j} = {
       % for k in range(op.input_sizes[j]):
          % if input_types[j] == "int1":
              /* 1-bit integers use a 0/-1 convention */
              -(int1_t)_src[${j}][${k}].b,
-         % elif input_types[j] == "float16":
-            _mesa_half_to_float(_src[${j}][${k}].u16),
+         % elif type_base_type(input_types[j]) == "float":
+            get_float_source(_src[${j}][${k}], execution_mode, ${type_size(input_types[j])}),
          % else:
             _src[${j}][${k}].${get_const_field(input_types[j])},
          % endif
@@ -451,20 +509,18 @@ struct ${type}${width}_vec {
       ## components and apply the constant expression one component
       ## at a time.
       for (unsigned _i = 0; _i < num_components; _i++) {
+         bool poison = false;
          ## For each per-component input, create a variable srcN that
          ## contains the value of the current (_i'th) component.
          % for j in range(op.num_inputs):
             % if op.input_sizes[j] != 0:
                <% continue %>
-            % elif "src" + str(j) not in op.const_expr:
-               ## Avoid unused variable warnings
-               <% continue %>
             % elif input_types[j] == "int1":
                /* 1-bit integers use a 0/-1 convention */
                const int1_t src${j} = -(int1_t)_src[${j}][_i].b;
-            % elif input_types[j] == "float16":
-               const float src${j} =
-                  _mesa_half_to_float(_src[${j}][_i].u16);
+            % elif type_base_type(input_types[j]) == "float":
+               const ${input_types[j]}_t src${j} =
+                  get_float_source(_src[${j}][_i], execution_mode, ${type_size(input_types[j])});
             % else:
                const ${input_types[j]}_t src${j} =
                   _src[${j}][_i].${get_const_field(input_types[j])};
@@ -474,12 +530,15 @@ struct ${type}${width}_vec {
          ## Create an appropriately-typed variable dst and assign the
          ## result of the const_expr to it.  If const_expr already contains
          ## writes to dst, just include const_expr directly.
+         <%
+         expr = op.render(output_type + '_t')
+         %>
          % if "dst" in op.const_expr:
             ${output_type}_t dst;
 
-            ${op.const_expr}
+            ${expr}
          % else:
-            ${output_type}_t dst = ${op.const_expr};
+            ${output_type}_t dst = ${expr};
          % endif
 
          ## Store the current component of the actual destination to the
@@ -500,7 +559,7 @@ struct ${type}${width}_vec {
             _dst_val[_i].${get_const_field(output_type)} = dst;
          % endif
 
-         % if op.name != "fquantize2f16" and type_base_type(output_type) == "float":
+         % if type_base_type(output_type) == "float":
             % if type_has_size(output_type):
                if (nir_is_denorm_flush_to_zero(execution_mode, ${type_size(output_type)})) {
                   constant_denorm_flush_to_zero(&_dst_val[_i], ${type_size(output_type)});
@@ -511,6 +570,9 @@ struct ${type}${width}_vec {
                }
             %endif
          % endif
+
+         if (poison)
+            poison_mask |= (1 << _i);
       }
    % else:
       ## In the non-per-component case, create a struct dst with
@@ -547,7 +609,7 @@ struct ${type}${width}_vec {
             _dst_val[${k}].${get_const_field(output_type)} = dst.${"xyzwefghijklmnop"[k]};
          % endif
 
-         % if op.name != "fquantize2f16" and type_base_type(output_type) == "float":
+         % if type_base_type(output_type) == "float":
             % if type_has_size(output_type):
                if (nir_is_denorm_flush_to_zero(execution_mode, ${type_size(output_type)})) {
                   constant_denorm_flush_to_zero(&_dst_val[${k}], ${type_size(output_type)});
@@ -563,18 +625,15 @@ struct ${type}${width}_vec {
 </%def>
 
 % for name, op in sorted(opcodes.items()):
-% if op.name == "fsat":
-#if defined(_MSC_VER) && (defined(_M_ARM64) || defined(_M_ARM64EC))
-#pragma optimize("", off) /* Temporary work-around for MSVC compiler bug, present in VS2019 16.9.2 */
-#endif
-% endif
-static void
+static nir_component_mask_t
 evaluate_${name}(nir_const_value *_dst_val,
                  UNUSED unsigned num_components,
                  ${"UNUSED" if op_bit_sizes(op) is None else ""} unsigned bit_size,
                  UNUSED nir_const_value **_src,
                  UNUSED unsigned execution_mode)
 {
+   nir_component_mask_t poison_mask = 0;
+
    % if op_bit_sizes(op) is not None:
       switch (bit_size) {
       % for bit_size in op_bit_sizes(op):
@@ -585,34 +644,54 @@ evaluate_${name}(nir_const_value *_dst_val,
       % endfor
 
       default:
-         unreachable("unknown bit width");
+         UNREACHABLE("unknown bit width");
       }
    % else:
       ${evaluate_op(op, 0, execution_mode)}
    % endif
+
+   return poison_mask;
 }
-% if op.name == "fsat":
-#if defined(_MSC_VER) && (defined(_M_ARM64) || defined(_M_ARM64EC))
-#pragma optimize("", on) /* Temporary work-around for MSVC compiler bug, present in VS2019 16.9.2 */
-#endif
-% endif
 % endfor
 
 void
-nir_eval_const_opcode(nir_op op, nir_const_value *dest,
+nir_eval_const_opcode(nir_op op, nir_const_value *dest, nir_component_mask_t *out_poison,
                       unsigned num_components, unsigned bit_width,
                       nir_const_value **src,
                       unsigned float_controls_execution_mode)
 {
+   /* Temporarily disable floating point exception flags while we
+    * evaluate shader constants. This avoids games unexpectedly crashing while
+    * we evalute shader math on the cpu if they have the exeption flags turn
+    * on such as in TY The Tasmainian Tiger 3.
+    */
+   int had_flags = 0;
+   fenv_t __nir_const_fenv;
+#if defined(_GNU_SOURCE) && defined(__GLIBC__)
+   /* Check exceptions are enabled before calling more expensive hold/set calls */
+   had_flags = fegetexcept();
+#endif
+   if (unlikely(had_flags))
+      feholdexcept(&__nir_const_fenv);
+
+   nir_component_mask_t poison;
+
    switch (op) {
 % for name in sorted(opcodes.keys()):
    case nir_op_${name}:
-      evaluate_${name}(dest, num_components, bit_width, src, float_controls_execution_mode);
-      return;
+      poison = evaluate_${name}(dest, num_components, bit_width, src, float_controls_execution_mode);
+      break;
 % endfor
    default:
-      unreachable("shouldn't get here");
+      UNREACHABLE("shouldn't get here");
    }
+
+   if (out_poison)
+      *out_poison = poison;
+
+   /* Restore floating point exception flags */
+   if (unlikely(had_flags))
+      fesetenv(&__nir_const_fenv);
 }"""
 
 from mako.template import Template

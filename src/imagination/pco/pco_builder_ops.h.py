@@ -32,6 +32,9 @@ static inline
 bool pco_instr_dest_has_mod(const pco_instr *instr, unsigned dest, enum pco_ref_mod mod)
 {
    const struct pco_op_info *info = &pco_op_info[instr->op];
+   if (info->num_dests == ~0)
+      return false;
+
    assert(dest < info->num_dests);
    assert(mod < _PCO_REF_MOD_COUNT);
    return (info->dest_mods[dest] & (1ULL << mod)) != 0;
@@ -41,6 +44,9 @@ static inline
 bool pco_instr_src_has_mod(const pco_instr *instr, unsigned src, enum pco_ref_mod mod)
 {
    const struct pco_op_info *info = &pco_op_info[instr->op];
+   if (info->num_srcs == ~0)
+      return false;
+
    assert(src < info->num_srcs);
    assert(mod < _PCO_REF_MOD_COUNT);
    return (info->src_mods[src] & (1ULL << mod)) != 0;
@@ -120,15 +126,17 @@ struct ${op.bname}_mods {
   ${op_mod.t.name} ${op_mod.t.tname};
       % endfor
 };
+
    % endif
-#define ${op.bname}(${op.builder_params[1]}${op.builder_params[2]}) _${op.bname}(${op.builder_params[1]}${op.builder_params[3]})
+#define ${op.bname}_(${op.builder_params[2]}${op.builder_params[4]}) _${op.bname}_(${op.builder_params[2]}${op.builder_params[5]})
 static
-pco_instr *_${op.bname}(${op.builder_params[0]})
+pco_instr *_${op.bname}_(${op.builder_params[0]})
 {
-   pco_instr *instr = pco_instr_create(${op.builder_params[4]},
-                                       ${op.cname.upper()},
+   pco_instr *instr = pco_instr_create(func,
                                        ${'num_dests' if op.num_dests == VARIABLE else op.num_dests},
                                        ${'num_srcs' if op.num_srcs == VARIABLE else op.num_srcs});
+
+   instr->op = ${op.cname.upper()};
 
    % if op.has_target_cf_node:
    instr->target_cf_node = target_cf_node;
@@ -158,12 +166,21 @@ pco_instr *_${op.bname}(${op.builder_params[0]})
       % endif
    % endfor
 
-   % if op.op_type != 'hw_direct':
-   pco_builder_insert_instr(b, instr);
-   % endif
    return instr;
 }
 
+   % if op.op_type != 'hw_direct':
+#define ${op.bname}(${op.builder_params[3]}${op.builder_params[4]}) _${op.bname}(${op.builder_params[3]}${op.builder_params[5]})
+static inline
+pco_instr *_${op.bname}(${op.builder_params[1]})
+{
+   pco_func *func = pco_cursor_func(b->cursor);
+   pco_instr *instr = _${op.bname}_(${op.builder_params[2]}${op.builder_params[6]});
+   pco_builder_insert_instr(b, instr);
+   return instr;
+}
+
+   % endif
 % endfor
 #endif /* PCO_BUILDER_OPS_H */"""
 

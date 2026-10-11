@@ -37,7 +37,7 @@ extern "C" {
 // NB: I've copy and pasted some types into this header so we don't have to
 // include other headers. This will surely break if any of these types change.
 
-// Copy of gl_shader_stage
+// Copy of mesa_shader_stage
 typedef enum {
    DXIL_SPIRV_SHADER_NONE = -1,
    DXIL_SPIRV_SHADER_VERTEX = 0,
@@ -64,7 +64,6 @@ typedef union {
    uint64_t u64;
 } dxil_spirv_const_value;
 
-// Copy of nir_spirv_specialization
 struct dxil_spirv_specialization {
    uint32_t id;
    dxil_spirv_const_value value;

@@ -7,10 +7,8 @@
 #ifndef AC_SHADER_ABI_H
 #define AC_SHADER_ABI_H
 
-#include "ac_shader_args.h"
 #include "ac_shader_util.h"
 #include "compiler/shader_enums.h"
-#include "nir.h"
 #include <llvm-c/Core.h>
 
 #include <assert.h>
@@ -25,22 +23,10 @@ struct ac_shader_abi {
    LLVMValueRef outputs[AC_LLVM_MAX_OUTPUTS * 4];
    bool is_16bit[AC_LLVM_MAX_OUTPUTS * 4];
 
-   /* These input registers sometimes need to be fixed up. */
-   LLVMValueRef vertex_id;
-   LLVMValueRef vs_rel_patch_id;
-   LLVMValueRef instance_id;
-
-   /* replaced registers when culling enabled */
-   LLVMValueRef vertex_id_replaced;
-   LLVMValueRef instance_id_replaced;
-   LLVMValueRef tes_u_replaced;
-   LLVMValueRef tes_v_replaced;
-   LLVMValueRef tes_rel_patch_id_replaced;
-   LLVMValueRef tes_patch_id_replaced;
-
-   LLVMValueRef (*load_tess_varyings)(struct ac_shader_abi *abi, LLVMTypeRef type,
-                                      unsigned driver_location, unsigned component,
-                                      unsigned num_components);
+   /* The result must be either scalar or vector i16 or i32. */
+   LLVMValueRef (*load_tess_varyings)(struct ac_shader_abi *abi, unsigned num_components,
+                                      unsigned bit_size, gl_varying_slot slot, unsigned component,
+                                      bool high_16bits);
 
    LLVMValueRef (*load_ubo)(struct ac_shader_abi *abi, LLVMValueRef index);
 
@@ -63,8 +49,6 @@ struct ac_shader_abi {
    LLVMValueRef (*load_sampler_desc)(struct ac_shader_abi *abi, LLVMValueRef index,
                                      enum ac_descriptor_type desc_type);
 
-   LLVMValueRef (*intrinsic_load)(struct ac_shader_abi *abi, nir_intrinsic_instr *intrin);
-
    /* Whether to clamp the shadow reference value to [0,1]on GFX8. Radeonsi currently
     * uses it due to promoting D16 to D32, but radv needs it off. */
    bool clamp_shadow_reference;
@@ -77,9 +61,6 @@ struct ac_shader_abi {
 
    /* Clamp div by 0 (so it won't produce NaN) */
    bool clamp_div_by_zero;
-
-   /* Whether to inline the compute dispatch size in user sgprs. */
-   bool load_grid_size_from_user_sgpr;
 
    /* Whether to disable anisotropic filtering. */
    bool disable_aniso_single_level;

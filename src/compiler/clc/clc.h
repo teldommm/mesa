@@ -50,8 +50,12 @@ enum clc_spirv_version {
 };
 
 struct clc_optional_features {
+   bool atomic_order_seq_cst;
+   bool atomic_scope_device;
+   bool extended_bit_ops;
    bool fp16;
    bool fp64;
+   bool generic_address_space;
    bool int64;
    bool images;
    bool images_depth;
@@ -60,18 +64,26 @@ struct clc_optional_features {
    bool images_mipmap;
    bool images_mipmap_writes;
    bool images_read_write;
+   bool images_unorm_int_2_101010;
    bool images_write_3d;
    bool integer_dot_product;
    bool intel_subgroups;
+   bool kernel_clock;
    /* OpenCL core subgroups */
    bool subgroups;
    /* OpenCL extension cl_khr_subgroups, which requires independent forward
     * progress
     */
    bool subgroups_ifp;
+   bool subgroups_ballot;
+   bool subgroups_clustered;
+   bool subgroups_extended_types;
+   bool subgroups_named_barrier;
+   bool subgroups_non_uniform_arithmetic;
+   bool subgroups_non_uniform_vote;
+   bool subgroups_rotate;
    bool subgroups_shuffle;
    bool subgroups_shuffle_relative;
-   bool subgroups_ballot;
 };
 
 struct clc_compile_args {
@@ -91,6 +103,11 @@ struct clc_compile_args {
     * extension if NULL.
     */
    const char * const *allowed_spirv_extensions;
+
+   /* Indicate that the input file tries to be compatible with C code. This
+    * means that for example the bit-field clang extension is enabled.
+    */
+   bool c_compatible;
 
    unsigned address_bits;
 };
@@ -169,6 +186,7 @@ struct clc_kernel_info {
 enum clc_spec_constant_type {
    CLC_SPEC_CONSTANT_UNKNOWN,
    CLC_SPEC_CONSTANT_BOOL,
+   CLC_SPEC_CONSTANT_HALF,
    CLC_SPEC_CONSTANT_FLOAT,
    CLC_SPEC_CONSTANT_DOUBLE,
    CLC_SPEC_CONSTANT_INT8,

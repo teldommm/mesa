@@ -10,6 +10,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Maximum dwords of inline push constants when the indirect path is still used */
 #define AC_MAX_INLINE_PUSH_CONSTS_WITH_INDIRECT 8
 /* Maximum dwords of inline push constants when the indirect path is not used */
@@ -23,14 +27,18 @@ enum ac_arg_regfile
 
 enum ac_arg_type
 {
-   AC_ARG_INVALID = -1,
-   AC_ARG_FLOAT,
-   AC_ARG_INT,
-   AC_ARG_CONST_PTR,       /* Pointer to i8 array */
-   AC_ARG_CONST_FLOAT_PTR, /* Pointer to f32 array */
-   AC_ARG_CONST_PTR_PTR,   /* Pointer to pointer to i8 array */
-   AC_ARG_CONST_DESC_PTR,  /* Pointer to v4i32 array */
-   AC_ARG_CONST_IMAGE_PTR, /* Pointer to v8i32 array */
+   AC_ARG_VALUE,
+   AC_ARG_CONST_ADDR,
+};
+
+enum ac_color_interp {
+   AC_COLOR_INTERP_FLAT,
+   AC_COLOR_INTERP_PERSP_SAMPLE,
+   AC_COLOR_INTERP_PERSP_CENTER,
+   AC_COLOR_INTERP_PERSP_CENTROID,
+   AC_COLOR_INTERP_LINEAR_SAMPLE,
+   AC_COLOR_INTERP_LINEAR_CENTER,
+   AC_COLOR_INTERP_LINEAR_CENTROID,
 };
 
 struct ac_arg {
@@ -91,6 +99,17 @@ struct ac_shader_args {
    struct ac_arg tcs_wave_id; /* gfx11+ */
    struct ac_arg tcs_patch_id;
    struct ac_arg tcs_rel_ids;
+
+   /* # [0:6] = the number of tessellation patches, max = 127
+    * # [7:11] = TCS: the number of input patch control points minus one, max = 31
+    *            TES: the number of output patch control points minus one, max = 31
+    * # [12:16] = the stride of 1 TCS per-vertex output in memory / 256, max = 16
+    * # [17:22] = the number of LS outputs, up to 32
+    * # [23:28] = the number of HS per-vertex outputs, up to 32
+    * # [29:30] = tess_primitive_mode
+    * # [31] = whether TES reads tess factors
+    */
+   struct ac_arg tcs_offchip_layout;
 
    /* TES */
    struct ac_arg tes_u;
@@ -158,10 +177,14 @@ struct ac_shader_args {
    struct ac_arg linear_sample;
    struct ac_arg linear_center;
    struct ac_arg linear_centroid;
+   struct ac_arg line_stipple_tex_ena;
    struct ac_arg pos_fixed_pt;
 
    /* CS */
-   struct ac_arg local_invocation_ids;
+   struct ac_arg local_invocation_id_x;
+   struct ac_arg local_invocation_id_y;
+   struct ac_arg local_invocation_id_z;
+   struct ac_arg local_invocation_ids_packed;
    struct ac_arg num_work_groups;
    /* GFX6-11 only. GFX12+ uses read only SGPRs {TTMP9[0:31], TTMP7[0:15], TTMP7[16:31]}. */
    struct ac_arg workgroup_ids[3];
@@ -174,34 +197,20 @@ struct ac_shader_args {
    struct ac_arg push_constants;
    struct ac_arg inline_push_consts[AC_MAX_INLINE_PUSH_CONSTS];
    uint64_t inline_push_const_mask;
+   struct ac_arg dynamic_descriptors;
+   struct ac_arg dynamic_descriptors_offset_addr;
    struct ac_arg view_index;
    struct ac_arg force_vrs_rates;
 
    /* RT */
    struct {
-      struct ac_arg uniform_shader_addr;
       struct ac_arg sbt_descriptors;
       struct ac_arg launch_sizes[3];
       struct ac_arg launch_size_addr;
       struct ac_arg launch_ids[3];
       struct ac_arg dynamic_callable_stack_base;
       struct ac_arg traversal_shader_addr;
-      struct ac_arg shader_addr;
-      struct ac_arg shader_record;
       struct ac_arg payload_offset;
-      struct ac_arg ray_origin;
-      struct ac_arg ray_tmin;
-      struct ac_arg ray_direction;
-      struct ac_arg ray_tmax;
-      struct ac_arg cull_mask_and_flags;
-      struct ac_arg sbt_offset;
-      struct ac_arg sbt_stride;
-      struct ac_arg miss_index;
-      struct ac_arg accel_struct;
-      struct ac_arg primitive_id;
-      struct ac_arg instance_addr;
-      struct ac_arg geometry_id_and_flags;
-      struct ac_arg hit_kind;
    } rt;
 };
 
@@ -210,5 +219,10 @@ void ac_add_arg(struct ac_shader_args *info, enum ac_arg_regfile regfile, unsign
 void ac_add_return(struct ac_shader_args *info, enum ac_arg_regfile regfile);
 void ac_add_preserved(struct ac_shader_args *info, const struct ac_arg *arg);
 void ac_compact_ps_vgpr_args(struct ac_shader_args *info, uint32_t spi_ps_input);
+unsigned ac_get_color_interp_arg(const struct ac_shader_args *args, enum ac_color_interp interp);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -205,14 +205,14 @@ real_def(nir_def *def, unsigned *swiz, unsigned *mask)
       return def;
 
    bool can_bypass_src = !nir_def_used_by_if(def);
-   nir_instr *p_instr = def->parent_instr;
+   nir_instr *p_instr = nir_def_instr(def);
 
    /* if used by a vecN, the "real" destination becomes the vecN destination
     * lower_alu guarantees that values used by a vecN are only used by that vecN
     * we can apply the same logic to movs in a some cases too
     */
    nir_foreach_use(use_src, def) {
-      nir_instr *instr = nir_src_parent_instr(use_src);
+      nir_instr *instr = nir_src_use_instr(use_src);
 
       /* src bypass check: for now only deal with tex src mov case
        * note: for alu don't bypass mov for multiple uniform sources
@@ -240,12 +240,12 @@ real_def(nir_def *def, unsigned *swiz, unsigned *mask)
       case nir_op_vec4:
          assert(!nir_def_used_by_if(def));
          nir_foreach_use(use_src, def)
-            assert(nir_src_parent_instr(use_src) == instr);
+            assert(nir_src_use_instr(use_src) == instr);
 
          update_swiz_mask(alu, def, swiz, mask);
          break;
       case nir_op_mov: {
-         switch (def->parent_instr->type) {
+         switch (nir_def_instr_type(def)) {
          case nir_instr_type_alu:
          case nir_instr_type_tex:
             break;
@@ -295,8 +295,6 @@ def_for_instr(nir_instr *instr)
           intr->intrinsic == nir_intrinsic_load_input ||
           intr->intrinsic == nir_intrinsic_load_instance_id ||
           intr->intrinsic == nir_intrinsic_load_vertex_id ||
-          intr->intrinsic == nir_intrinsic_load_texture_scale ||
-          intr->intrinsic == nir_intrinsic_load_texture_size_etna ||
           intr->intrinsic == nir_intrinsic_ddx ||
           intr->intrinsic == nir_intrinsic_ddy)
          def = &intr->def;
@@ -418,11 +416,11 @@ emit_inst(struct etna_compile *c, struct etna_inst *inst)
 }
 
 void
-etna_emit_alu(struct etna_compile *c, nir_op op, struct etna_inst_dst dst,
-              struct etna_inst_src src[3], bool saturate);
+etna_emit_alu(struct etna_compile *c, nir_alu_instr *alu, struct etna_inst_dst dst,
+              struct etna_inst_src src[3]);
 
 void
-etna_emit_tex(struct etna_compile *c, nir_texop op, unsigned texid, unsigned dst_swiz,
+etna_emit_tex(struct etna_compile *c, nir_tex_instr *tex, unsigned dst_swiz,
               struct etna_inst_dst dst, struct etna_inst_src coord,
               struct etna_inst_src src1, struct etna_inst_src src2);
 

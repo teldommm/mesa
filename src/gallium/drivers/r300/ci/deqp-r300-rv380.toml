@@ -10,6 +10,7 @@ deqp_args = [
 ]
 version_check = "GL ES 2.0.*git"
 renderer_check = "RV370"
+extensions_check = "/install/r300-rv380-gles2-extensions.txt"
 
 [[deqp]]
 deqp = "/deqp-gles/external/openglcts/modules/glcts"
@@ -21,3 +22,4 @@ deqp_args = [
     "--deqp-gl-config-name=rgba8888d24s8ms0",
     "--deqp-visibility=hidden"
 ]
+

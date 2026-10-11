@@ -22,7 +22,15 @@
 */
 
 static GLubyte dummyBuffer[__GLX_BUFFER_LIMIT_SIZE];
-static struct glx_context_vtable dummyVtable;
+/*
+** dummyVtable.copy_context and .swap_buffers are set so glXCopyContext / glXSwapBuffers still
+** issue the corresponding X protocol request when invoked with no current context (the GLX spec
+** does not require a current context for either call).
+*/
+static const struct glx_context_vtable dummyVtable = {
+   .copy_context = __glXCopyContext,
+   .swap_buffers = __glXSwapBuffers,
+};
 /*
 ** Dummy context used by small commands when there is no current context.
 ** All the
@@ -42,7 +50,7 @@ struct glx_context dummyContext = {
  * Current context management and locking
  */
 
-_X_HIDDEN pthread_mutex_t __glXmutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t __glXmutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * Per-thread GLX context pointer.
@@ -53,19 +61,19 @@ _X_HIDDEN pthread_mutex_t __glXmutex = PTHREAD_MUTEX_INITIALIZER;
  */
 __THREAD_INITIAL_EXEC void *__glX_tls_Context = &dummyContext;
 
-_X_HIDDEN void
+void
 __glXSetCurrentContext(struct glx_context * c)
 {
    __glX_tls_Context = (c != NULL) ? c : &dummyContext;
 }
 
-_X_HIDDEN void
+void
 __glXSetCurrentContextNull(void)
 {
    __glXSetCurrentContext(&dummyContext);
 #if defined(GLX_DIRECT_RENDERING)
-   _glapi_set_dispatch(NULL);   /* no-op functions */
-   _glapi_set_context(NULL);
+   _mesa_glapi_set_dispatch(NULL);   /* no-op functions */
+   _mesa_glapi_set_context(NULL);
 #endif
 }
 

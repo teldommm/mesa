@@ -75,15 +75,15 @@ lower_load_pointcoord(lower_pntc_ytransform_state *state,
 
    nir_def *pntc = &intr->def;
    nir_def *transform = get_pntc_transform(state);
-   nir_def *flipped_y = nir_ffma(b, nir_channel(b, pntc, y_swizzle),
-                                 /* Flip the sign of y if we're flipping. */
-                                 nir_channel(b, transform, 0),
-                                 /* The offset is 1 if we're flipping, 0 otherwise. */
-                                 nir_channel(b, transform, 1));
+   nir_def *flipped_y = nir_ffma_weak(b, nir_channel(b, pntc, y_swizzle),
+                                      /* Flip the sign of y if we're flipping. */
+                                      nir_channel(b, transform, 0),
+                                      /* The offset is 1 if we're flipping, 0 otherwise. */
+                                      nir_channel(b, transform, 1));
 
    /* Reassemble the vector. */
    pntc = nir_vector_insert_imm(b, pntc, flipped_y, y_swizzle);
-   nir_def_rewrite_uses_after(&intr->def, pntc, pntc->parent_instr);
+   nir_def_rewrite_uses_after(&intr->def, pntc);
 }
 
 static void
@@ -97,12 +97,9 @@ lower_pntc_ytransform_block(lower_pntc_ytransform_state *state,
             nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
             nir_variable *var = nir_deref_instr_get_variable(deref);
 
-            if ((var->data.mode == nir_var_shader_in &&
-                 var->data.location == VARYING_SLOT_PNTC) ||
-                (var->data.mode == nir_var_system_value &&
-                 var->data.location == SYSTEM_VALUE_POINT_COORD)) {
+            if (var->data.mode == nir_var_system_value &&
+                var->data.location == SYSTEM_VALUE_POINT_COORD)
                lower_load_pointcoord(state, intr);
-            }
          }
 
          if (intr->intrinsic == nir_intrinsic_load_interpolated_input &&
@@ -116,6 +113,8 @@ bool
 nir_lower_pntc_ytransform(nir_shader *shader,
                           const gl_state_index16 pntc_state_tokens[][STATE_LENGTH])
 {
+   assert(shader->info.io_lowered);
+
    if (!shader->options->lower_wpos_pntc)
       return false;
 
@@ -133,7 +132,7 @@ nir_lower_pntc_ytransform(nir_shader *shader,
       nir_foreach_block(block, impl) {
          lower_pntc_ytransform_block(&state, block);
       }
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_progress(true, impl, nir_metadata_control_flow);
    }
 
    return state.pntc_transform != NULL;

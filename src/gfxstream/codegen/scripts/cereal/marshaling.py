@@ -195,6 +195,7 @@ class VulkanMarshalingCodegen(VulkanTypeIterator):
             checkName = "check_%s" % vulkanType.paramName
             self.cgen.stmt("%s %s" % (
                 self.cgen.makeCTypeDecl(vulkanType, useParamName = False), checkName))
+            self.cgen.stmt("(void)%s" % checkName)
             checkAccess = checkName
             addrExpr = "&" + checkAccess
             sizeExpr = self.cgen.sizeofExpr(vulkanType)
@@ -455,7 +456,7 @@ class VulkanMarshalingCodegen(VulkanTypeIterator):
 
         if self.direction == "write":
             self.cgen.stmt("saveStringArray(%s, %s, %s)" % (self.streamVarName,
-                                                            access, lenAccess))
+                                                            access, lenAccess if lenAccess is not None else "0"))
         else:
             castExpr = \
                 self.makeCastExpr( \
@@ -467,8 +468,9 @@ class VulkanMarshalingCodegen(VulkanTypeIterator):
     def onStaticArr(self, vulkanType):
         access = self.exprValueAccessor(vulkanType)
         lenAccess = self.lenAccessor(vulkanType)
-        finalLenExpr = "%s * %s" % (lenAccess, self.cgen.sizeofExpr(vulkanType))
-        self.genStreamCall(vulkanType, access, finalLenExpr)
+        if lenAccess is not None:
+            finalLenExpr = "%s * %s" % (lenAccess, self.cgen.sizeofExpr(vulkanType))
+            self.genStreamCall(vulkanType, access, finalLenExpr)
 
     # Old version VkEncoder may have some sType values conflict with VkDecoder
     # of new versions. For host decoder, it should not carry the incorrect old
@@ -701,7 +703,7 @@ class VulkanMarshaling(VulkanWrapperGenerator):
                     freeParams.append(makeVulkanTypeSimple(True, bindingInfo["type"], 0, envname))
                 else:
                     if not bindingInfo["structmember"]:
-                        letParams.append(makeVulkanTypeSimple(True, bindingInfo["type"], 0, envname))
+                        letParams.append(makeVulkanTypeSimple(False, bindingInfo["type"], 0, envname))
 
             marshalPrototype = \
                 VulkanAPI(API_PREFIX_MARSHAL + name,
@@ -763,7 +765,7 @@ class VulkanMarshaling(VulkanWrapperGenerator):
             self.module.appendHeader(
                 self.cgenHeader.makeFuncDecl(marshalPrototype))
 
-            if name in CUSTOM_MARSHAL_TYPES:
+            if name in CUSTOM_MARSHAL_TYPES and CUSTOM_MARSHAL_TYPES[name].get("marshaling"):
                 self.module.appendImpl(
                     self.cgenImpl.makeFuncImpl(
                         marshalPrototype, structMarshalingCustom))
@@ -838,7 +840,7 @@ class VulkanMarshaling(VulkanWrapperGenerator):
             self.module.appendHeader(
                 self.cgenHeader.makeFuncDecl(unmarshalPrototype))
 
-            if name in CUSTOM_MARSHAL_TYPES:
+            if name in CUSTOM_MARSHAL_TYPES and CUSTOM_MARSHAL_TYPES[name].get("unmarshaling"):
                 self.module.appendImpl(
                     self.cgenImpl.makeFuncImpl(
                         unmarshalPrototype, structUnmarshalingCustom))

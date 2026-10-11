@@ -9,6 +9,7 @@ from pipeline_message import (
     get_trace_failures,
     main,
     process_problem_jobs,
+    search_job_log_for_errors,
     sort_failed_tests_by_status,
     unexpected_improvements,
 )
@@ -160,3 +161,149 @@ async def test_get_trace_failures_no_response(
 
     expected_log_message = f"No response from: https://mesa.pages.freedesktop.org/-/{namespace}/-/jobs/{job_id}/artifacts/results/summary/problems.html"
     assert any(expected_log_message in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@patch("pipeline_message.get_job_log", new_callable=AsyncMock)
+async def test_search_job_log_for_errors(mock_get_job_log):
+    session = AsyncMock()
+    project_id = "176"
+    job = {"id": 12345}
+
+    job_log = r"""
+error_msg: something useful
+[0m15:41:36.102:                GL_KHR_no_error GL_KHR_texture_compression_astc_sliced_3d
+1 error generated
+3 errors generated.
+-- Looking for strerror_r - found
+-- Looking for strerror_s - not found
+[49/176] Building CXX object lib/Support/CMakeFiles/LLVMSupport.dir/ErrorHandling.cpp.o
+[127/2034] Building C object lib/Support/CMakeFiles/LLVMSupport.dir/regerror.c.o
+-- Performing Test HAS_WERROR_GLOBAL_CTORS
+-- Performing Test C_SUPPORTS_WERROR_UNGUARDED_AVAILABILITY_NEW - Success
+-- Performing Test LLVM_LIBSTDCXX_SOFT_ERROR
+error aborting
+error_msg      : None
+error_type     : Job
+[0Ksection_end:1734694783:job_data
+[0K
+[0m11:39:43.438: [1mFinished executing LAVA job in the attempt #3 [0m
+[0Ksection_end:1734694783:lava_submit
+[0K
+[0;31m[01:54] ERROR: lava_submit: ret code: 1 [0m
+
+[0;31m[01:54] ERROR: unknown-section: ret code: 1 [0m
+section_end:1734694783:step_script
+[0Ksection_start:1734694783:after_script
+[0K[0K[36;1mRunning after_script[0;m[0;m
+[32;1mRunning after script...[0;m
+[32;1m$ curl -L --retry 4 -f --retry-all-errors --retry-delay 60 -s "https://" | tar --warning=no-timestamp --zstd -x[0;m
+zstd: /*stdin*\: unexpected end of file # noqa: W605
+tar: Child returned status 1
+tar: Error is not recoverable: exiting now
+section_end:1734695025:after_script
+[0K[0;33mWARNING: after_script failed, but job will continue unaffected: exit code 1[0;m
+section_start:1734695025:upload_artifacts_on_failure
+[0K[0K[36;1mUploading artifacts for failed job[0;m[0;m
+[32;1mUploading artifacts...[0;m
+results/: found 11 matching artifact files and directories[0;m
+Uploading artifacts as "archive" to coordinator... 201 Created[0;m  id[0;m=68509685 responseStatus[0;m=201 Created token[0;m=glcbt-64
+[32;1mUploading artifacts...[0;m
+[0;33mWARNING: results/junit.xml: no matching files. Ensure that the artifact path is relative to the working directory (/builds/mesa/mesa)[0;m
+[31;1mERROR: No files to upload                         [0;m
+section_end:1734695027:upload_artifacts_on_failure
+[0Ksection_start:1734695027:cleanup_file_variables
+[0K[0K[36;1mCleaning up project directory and file based variables[0;m[0;m
+section_end:1734695027:cleanup_file_variables
+[0K[31;1mERROR: Job failed: exit code 1
+[0;m
+[0;m
+    """
+
+    mock_get_job_log.return_value = job_log
+
+    error_message = await search_job_log_for_errors(session, project_id, job)
+    assert "something useful" in error_message
+
+
+@pytest.mark.asyncio
+@patch("pipeline_message.get_job_log", new_callable=AsyncMock)
+async def test_search_job_log_for_fatal_errors(mock_get_job_log):
+    session = AsyncMock()
+    project_id = "176"
+    job = {"id": 12345}
+
+    job_log = r"""
+[0m15:41:36.105: [15:41:31.951] fatal: something fatal
+Uploading artifacts as "archive" to coordinator... 201 Created[0;m  id[0;m=68509685 responseStatus[0;m=201 Created token[0;m=glcbt-64
+[32;1mUploading artifacts...[0;m
+[0;33mWARNING: results/junit.xml: no matching files. Ensure that the artifact path is relative to the working directory (/builds/mesa/mesa)[0;m
+[31;1mERROR: No files to upload                         [0;m
+section_end:1734695027:upload_artifacts_on_failure
+[0Ksection_start:1734695027:cleanup_file_variables
+[0K[0K[36;1mCleaning up project directory and file based variables[0;m[0;m
+section_end:1734695027:cleanup_file_variables
+[0K[31;1mERROR: Job failed: exit code 1
+[0;m
+[0;m
+    """
+
+    mock_get_job_log.return_value = job_log
+
+    error_message = await search_job_log_for_errors(session, project_id, job)
+    assert "something fatal" in error_message
+
+
+@pytest.mark.asyncio
+@patch("pipeline_message.get_job_log", new_callable=AsyncMock)
+async def test_search_job_log_for_errors_but_find_none(mock_get_job_log):
+    session = AsyncMock()
+    project_id = "176"
+    job = {"id": 12345}
+
+    job_log = r"""
+[0KRunning with gitlab-runner 17.4.0 (b92ee590)[0;m
+[0K  on fdo-equinix-m3l-30-placeholder_63 XmDXAt7xd, system ID: s_785ae19292ea[0;m
+section_start:1734736110:prepare_executor
+[0K[0K[36;1mPreparing the "docker" executor[0;m[0;m
+[0KUsing Docker executor with image registry.freedesktop.org/mesa/mesa/debian
+[0KAuthenticating with credentials from job payload (GitLab Registry)[0;m
+[0KPulling docker image registry.freedesktop.org/mesa/mesa/debian/x86_64_pyuti
+[0KUsing docker image sha256:ebc7b3fe89be4d390775303adddb33539c235a2663165d78d
+[0Ksection_start:1734736124:prepare_script
+[0K[0K[36;1mPreparing environment[0;m[0;m
+Running on runner-xmdxat7xd-project-23076-concurrent-1 via fdo-equinix-m3l-30...
+section_end:1734736125:prepare_script
+[0Ksection_start:1734736125:get_sources
+[0K[0K[36;1mGetting source from Git repository[0;m[0;m
+[32;1m$ /host/bin/curl -s -L --cacert /host/ca-certificates.crt --retry 4 -f --retry-delay 60 https://gitlab.
+Checking if the user of the pipeline is allowed...
+Checking if the job's project is part of a well-known group...
+Checking if the job is part of an official MR pipeline...
+Thank you for contributing to freedesktop.org
+Running pre-clone script: 'set -o xtrace
+wget -q -O download-git-cache.sh https://gitlab.freedesktop.org/mesa/mesa/-/raw/0d43b4cba639b809ad0e08a065ce01846e262249/.gitlab-ci/download-git-cache.sh
+bash download-git-cache.sh
+rm download-git-cache.sh
+[31;1m errors
+[0K[31;1mERROR:
+[31;1m error
+[31;1m Here is a blank error:
+/builds/mesa/mesa/bin/ci/test/test_pipeline_message.py:162: AssertionError
+Uploading artifacts as "archive" to coordinator... 201 Created[0;m  id[0;m=68509685 responseStatus[0;m=201 Created token[0;m=glcbt-64
+[32;1mUploading artifacts...[0;m
+[0;33mWARNING: results/junit.xml: no matching files. Ensure that the artifact path is relative to the working directory (/builds/mesa/mesa)[0;m
+[31;1mERROR: No files to upload                         [0;m
+section_end:1734695027:upload_artifacts_on_failure
+[0Ksection_start:1734695027:cleanup_file_variables
+[0K[0K[36;1mCleaning up project directory and file based variables[0;m[0;m
+section_end:1734695027:cleanup_file_variables
+[0K[31;1mERROR: Job failed: exit code 1
+[0;m
+[0;m
+    """
+
+    mock_get_job_log.return_value = job_log
+
+    error_message = await search_job_log_for_errors(session, project_id, job)
+    assert error_message == "", f"Unexpected error message: {error_message}"

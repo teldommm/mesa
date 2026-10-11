@@ -79,6 +79,7 @@ deqp_args = [
     "--deqp-gl-config-name=rgba8888d24s8ms0",
     "--deqp-visibility=hidden"
 ]
+prefix = "x11-"
 
 [[deqp]]
 deqp = "/deqp-gles/modules/egl/deqp-egl-wayland"
@@ -96,6 +97,3 @@ prefix = "wayland-"
 piglit_folder = "/piglit"
 profile = "quick"
 process_isolation = true
-  [piglit.env]
-  # workaround for spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube
-  GALLIVM_PERF = "no_quad_lod"

@@ -97,7 +97,7 @@ vc4_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
                 return;
 
         struct vc4_job *job = entry->data;
-        if (job->key.zsbuf && job->key.zsbuf->texture == prsc)
+        if (job->key.zsbuf.texture && job->key.zsbuf.texture == prsc)
                 job->resolve &= ~(PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL);
 }
 
@@ -117,6 +117,15 @@ vc4_context_destroy(struct pipe_context *pctx)
         slab_destroy_child(&vc4->transfer_pool);
 
         util_unreference_framebuffer_state(&vc4->framebuffer);
+
+        for (int i = 0; i < PIPE_MAX_ATTRIBS; i++)
+                pipe_vertex_buffer_unreference(&vc4->vertexbuf.vb[i]);
+
+        for (int s = 0; s < MESA_SHADER_STAGES; s++) {
+                for (int i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++) {
+                        pipe_resource_reference(&vc4->constbuf[s].cb[i].buffer, NULL);
+                }
+        }
 
         if (vc4->yuv_linear_blit_vs)
                 pctx->delete_vs_state(pctx, vc4->yuv_linear_blit_vs);

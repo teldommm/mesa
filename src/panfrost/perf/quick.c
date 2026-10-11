@@ -1,4 +1,10 @@
+/*
+ * Copyright © 2021 Collabora, Ltd.
+ * SPDX-License-Identifier: MIT
+ */
+
 #include <xf86drm.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <lib/kmod/pan_kmod.h>
 #include <lib/pan_props.h>
@@ -14,12 +20,12 @@ main(void)
       exit(1);
    }
 
-   void *ctx = ralloc_context(NULL);
-   struct panfrost_perf *perf = rzalloc(ctx, struct panfrost_perf);
+   struct pan_perf *perf = pan_perf_create(fd);
+   if (!perf)
+      return -1;
 
-   panfrost_perf_init(perf, fd);
-
-   int ret = panfrost_perf_enable(perf);
+   /* 100ms sampling period. */
+   int ret = pan_perf_enable(perf, 100000000ull);
 
    if (ret < 0) {
       fprintf(stderr, "failed to enable counters (%d)\n", ret);
@@ -32,25 +38,20 @@ main(void)
 
    sleep(1);
 
-   panfrost_perf_dump(perf);
+   pan_perf_dump(perf);
 
-   for (unsigned i = 0; i < perf->cfg->n_categories; ++i) {
-      const struct panfrost_perf_category *cat = &perf->cfg->categories[i];
-      printf("%s\n", cat->name);
+   for (const struct mali_perf_counter *ctr = perf->info->counters; ctr->name;
+        ctr++) {
+      int64_t val = pan_perf_counter_read_sum(perf, ctr);
 
-      for (unsigned j = 0; j < cat->n_counters; ++j) {
-         const struct panfrost_perf_counter *ctr = &cat->counters[j];
-         uint32_t val = panfrost_perf_counter_read(ctr, perf);
-         printf("%s (%s): %u\n", ctr->name, ctr->symbol_name, val);
-      }
-
-      printf("\n");
+      printf("%s: %" PRId64 "\n", ctr->name, val);
    }
 
-   if (panfrost_perf_disable(perf) < 0) {
+   if (pan_perf_disable(perf) < 0) {
       fprintf(stderr, "failed to disable counters\n");
       exit(1);
    }
 
+   pan_perf_destroy(perf);
    return 0;
 }

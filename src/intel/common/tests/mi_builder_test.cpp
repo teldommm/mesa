@@ -337,8 +337,8 @@ mi_builder_test::SetUp()
             break;
          }
       }
-      ASSERT_TRUE(found_engine);
       free(engines_info);
+      ASSERT_TRUE(found_engine);
 
       struct drm_xe_exec_queue_create queue_create = {
          .width          = 1,
@@ -437,7 +437,7 @@ mi_builder_test::TearDown()
 
    if (batch_bo_handle) {
       struct drm_gem_close gem_close = { .handle = batch_bo_handle };
-      intel_ioctl(fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
+      err = intel_ioctl(fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
       EXPECT_EQ(err, 0) << "close batch bo failed";
    }
 
@@ -573,9 +573,10 @@ mi_builder_test::submit_batch()
          {
             .type   = DRM_XE_SYNC_TYPE_SYNCOBJ,
             .flags  = DRM_XE_SYNC_FLAG_SIGNAL,
-            .handle = sync_handles[0],
+            .addr   = 0,
          },
       };
+      bind_syncs[0].handle = sync_handles[0];
 
       struct drm_xe_vm_bind bind = {
          .vm_id           = xe.vm_id,
@@ -591,14 +592,16 @@ mi_builder_test::submit_batch()
       struct drm_xe_sync exec_syncs[] = {
          {
             .type   = DRM_XE_SYNC_TYPE_SYNCOBJ,
-            .handle = sync_handles[0],
+            .addr   = 0,
          },
          {
             .type   = DRM_XE_SYNC_TYPE_SYNCOBJ,
             .flags  = DRM_XE_SYNC_FLAG_SIGNAL,
-            .handle = sync_handles[1],
+            .addr   = 0,
          }
       };
+      exec_syncs[0].handle = sync_handles[0];
+      exec_syncs[1].handle = sync_handles[1];
 
       struct drm_xe_exec exec = {
          .exec_queue_id    = xe.queue_id,
@@ -1246,6 +1249,58 @@ TEST_F(mi_builder_test, udiv32_imm)
          EXPECT_EQ_IMM(*(uint32_t *)(output + i * 80 + j * 4),
                        mi_udiv32_imm(&b, mi_imm(values[i]), values[j]));
       }
+   }
+}
+
+TEST_F(mi_builder_test, umax2_32)
+{
+   const uint32_t values[] = {
+      0x01234567,
+      0x42424242,
+      0xffffffff,
+      0xf0000000,
+      0x00000001,
+      0x00000000,
+      0x000f0000,
+      0x000f0001,
+   };
+   memcpy(input, values, sizeof(values));
+
+   uint32_t cmp_val = 0x000f0001;
+   for (unsigned i = 0; i < ARRAY_SIZE(values); i++)
+      mi_store(&b, out_mem64(i * 4), mi_umax2(&b, in_mem32(i * 4), mi_imm(cmp_val)));
+
+   submit_batch();
+
+   for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+      EXPECT_EQ(*(uint32_t *)(output + i * 4),
+                values[i] >= cmp_val ? values[i] : cmp_val);
+   }
+}
+
+TEST_F(mi_builder_test, umax2_64)
+{
+   const uint64_t values[] = {
+      0x0123456789abcdef,
+      0x4242424242424242,
+      0xffffffffffffffff,
+      0xf000000000000000,
+      0x0000000000000001,
+      0x0000000000000000,
+      0x00000000f0000000,
+      0x00000000f0000001,
+   };
+   memcpy(input, values, sizeof(values));
+
+   uint64_t cmp_val = 0x00000000f0000001;
+   for (unsigned i = 0; i < ARRAY_SIZE(values); i++)
+      mi_store(&b, out_mem64(i * 8), mi_umax2(&b, in_mem64(i * 8), mi_imm(cmp_val)));
+
+   submit_batch();
+
+   for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+      EXPECT_EQ(*(uint64_t *)(output + i * 8),
+                values[i] >= cmp_val ? values[i] : cmp_val);
    }
 }
 

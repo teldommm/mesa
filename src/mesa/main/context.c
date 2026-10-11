@@ -77,6 +77,7 @@
 
 
 #include "util/glheader.h"
+#include "util/u_thread.h"
 
 #include "accum.h"
 #include "arrayobj.h"
@@ -117,7 +118,6 @@
 #include "queryobj.h"
 #include "syncobj.h"
 #include "rastpos.h"
-#include "remap.h"
 #include "scissor.h"
 #include "shared.h"
 #include "shaderobj.h"
@@ -125,6 +125,7 @@
 #include "state.h"
 #include "util/u_debug.h"
 #include "util/disk_cache.h"
+#include "util/log.h"
 #include "util/strtod.h"
 #include "util/u_call_once.h"
 #include "stencil.h"
@@ -139,7 +140,7 @@
 #include "texturebindless.h"
 #include "program/program.h"
 #include "math/m_matrix.h"
-#include "main/dispatch.h" /* for _gloffset_COUNT */
+#include "dispatch.h" /* for _gloffset_COUNT */
 #include "macros.h"
 #include "git_sha1.h"
 
@@ -230,8 +231,6 @@ one_time_init(const char *extensions_override)
     * unecessary creation/destruction of glsl types.
     */
    glsl_type_singleton_init_or_ref();
-
-   _mesa_init_remap_table();
 }
 
 /**
@@ -277,7 +276,7 @@ _mesa_init_current(struct gl_context *ctx)
  * Important: drivers should override these with actual limits.
  */
 static void
-init_program_limits(struct gl_constants *consts, gl_shader_stage stage,
+init_program_limits(struct gl_constants *consts, mesa_shader_stage stage,
                     struct gl_program_constants *prog)
 {
    prog->MaxInstructions = MAX_PROGRAM_INSTRUCTIONS;
@@ -317,11 +316,19 @@ init_program_limits(struct gl_constants *consts, gl_shader_stage stage,
       prog->MaxOutputComponents = 16 * 4; /* old limit not to break tnl and swrast */
       break;
    case MESA_SHADER_COMPUTE:
+   case MESA_SHADER_TASK:
       prog->MaxParameters = 0; /* not meaningful for compute shaders */
       prog->MaxAttribs = 0; /* not meaningful for compute shaders */
       prog->MaxUniformComponents = 4 * MAX_UNIFORMS;
       prog->MaxInputComponents = 0; /* not meaningful for compute shaders */
       prog->MaxOutputComponents = 0; /* not meaningful for compute shaders */
+      break;
+   case MESA_SHADER_MESH:
+      prog->MaxParameters = 0;
+      prog->MaxAttribs = 0;
+      prog->MaxUniformComponents = 4 * MAX_UNIFORMS;
+      prog->MaxInputComponents = 0;
+      prog->MaxOutputComponents = 16 * 4;
       break;
    default:
       assert(0 && "Bad shader stage in init_program_limits()");
@@ -370,7 +377,6 @@ _mesa_init_constants(struct gl_constants *consts, gl_api api)
    assert(consts);
 
    /* Constants, may be overriden (usually only reduced) by device drivers */
-   consts->MaxTextureMbytes = MAX_TEXTURE_MBYTES;
    consts->MaxTextureSize = 1 << (MAX_TEXTURE_LEVELS - 1);
    consts->Max3DTextureLevels = MAX_TEXTURE_LEVELS;
    consts->MaxCubeTextureLevels = MAX_TEXTURE_LEVELS;
@@ -424,9 +430,9 @@ _mesa_init_constants(struct gl_constants *consts, gl_api api)
 
    /* GL_ARB_explicit_uniform_location, GL_MAX_UNIFORM_LOCATIONS */
    consts->MaxUserAssignableUniformLocations =
-      4 * MESA_SHADER_STAGES * MAX_UNIFORMS;
+      4 * MESA_SHADER_MESH_STAGES * MAX_UNIFORMS;
 
-   for (i = 0; i < MESA_SHADER_STAGES; i++)
+   for (i = 0; i < MESA_SHADER_MESH_STAGES; i++)
       init_program_limits(consts, i, &consts->Program[i]);
 
    consts->MaxProgramMatrices = MAX_PROGRAM_MATRICES;
@@ -692,7 +698,7 @@ init_attrib_groups(struct gl_context *ctx)
    ctx->TileRasterOrderIncreasingX = GL_TRUE;
    ctx->TileRasterOrderIncreasingY = GL_TRUE;
    ctx->NewState = _NEW_ALL;
-   ctx->NewDriverState = ST_ALL_STATES_MASK;
+   ST_SET_ALL_STATES(ctx->NewDriverState);
    ctx->ErrorValue = GL_NO_ERROR;
    ctx->ShareGroupReset = false;
    ctx->IntelBlackholeRender = debug_get_bool_option("INTEL_BLACKHOLE_DEFAULT", false);
@@ -723,19 +729,6 @@ update_default_objects(struct gl_context *ctx)
 }
 
 
-/* XXX this is temporary and should be removed at some point in the
- * future when there's a reasonable expectation that the libGL library
- * contains the _glapi_new_nop_table() and _glapi_set_nop_handler()
- * functions which were added in Mesa 10.6.
- */
-#if !defined(_WIN32)
-/* Avoid libGL / driver ABI break */
-#define USE_GLAPI_NOP_FEATURES 0
-#else
-#define USE_GLAPI_NOP_FEATURES 1
-#endif
-
-
 /**
  * This function is called by the glapi no-op functions.  For each OpenGL
  * function/entrypoint there's a simple no-op function.  These "no-op"
@@ -751,24 +744,22 @@ update_default_objects(struct gl_context *ctx)
  *
  * \param name  the name of the OpenGL function
  */
-#if USE_GLAPI_NOP_FEATURES
-static void
-nop_handler(const char *name)
+void
+_mesa_noop_entrypoint(const char *name)
 {
    GET_CURRENT_CONTEXT(ctx);
    if (ctx) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(invalid call)", name);
+   } else {
+      char s[MAX_LOG_MESSAGE_LENGTH];
+      ASSERTED int len =
+         snprintf(s, MAX_LOG_MESSAGE_LENGTH,
+                  "GL User Error: %s called without a rendering context",
+                  name);
+      assert(len >= 0 && len < MAX_LOG_MESSAGE_LENGTH);
+      mesa_log_if_debug(MESA_LOG_ERROR, s);
    }
-#ifndef NDEBUG
-   else if (getenv("MESA_DEBUG") || getenv("LIBGL_DEBUG")) {
-      fprintf(stderr,
-              "GL User Error: gl%s called without a rendering context\n",
-              name);
-      fflush(stderr);
-   }
-#endif
 }
-#endif
 
 
 /**
@@ -779,19 +770,6 @@ static void GLAPIENTRY
 nop_glFlush(void)
 {
    /* don't record an error like we do in nop_handler() */
-}
-#endif
-
-
-#if !USE_GLAPI_NOP_FEATURES
-static int
-generic_nop(void)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   _mesa_error(ctx, GL_INVALID_OPERATION,
-               "unsupported function called "
-               "(unsupported extension or deprecated function?)");
-   return 0;
 }
 #endif
 
@@ -814,26 +792,13 @@ glthread_nop(void)
  * call stack.  That's impossible with one generic no-op function.
  */
 struct _glapi_table *
-_mesa_new_nop_table(unsigned numEntries, bool glthread)
+_mesa_new_nop_table(bool glthread)
 {
-   struct _glapi_table *table;
-
-#if !USE_GLAPI_NOP_FEATURES
-   table = malloc(numEntries * sizeof(_glapi_proc));
-   if (table) {
-      _glapi_proc *entry = (_glapi_proc *) table;
-      unsigned i;
-      for (i = 0; i < numEntries; i++) {
-         entry[i] = (_glapi_proc) generic_nop;
-      }
-   }
-#else
-   table = _glapi_new_nop_table(numEntries);
-#endif
+   struct _glapi_table *table = _glapi_new_nop_table();
 
    if (glthread) {
       _glapi_proc *entry = (_glapi_proc *) table;
-      for (unsigned i = 0; i < numEntries; i++)
+      for (unsigned i = 0; i < _gloffset_COUNT; i++)
          entry[i] = (_glapi_proc)glthread_nop;
    }
 
@@ -849,14 +814,7 @@ _mesa_new_nop_table(unsigned numEntries, bool glthread)
 struct _glapi_table *
 _mesa_alloc_dispatch_table(bool glthread)
 {
-   /* Find the larger of Mesa's dispatch table and libGL's dispatch table.
-    * In practice, this'll be the same for stand-alone Mesa.  But for DRI
-    * Mesa we do this to accommodate different versions of libGL and various
-    * DRI drivers.
-    */
-   int numEntries = MAX2(_glapi_get_dispatch_table_size(), _gloffset_COUNT);
-
-   struct _glapi_table *table = _mesa_new_nop_table(numEntries, glthread);
+   struct _glapi_table *table = _mesa_new_nop_table(glthread);
 
 #if defined(_WIN32)
    if (table) {
@@ -878,10 +836,6 @@ _mesa_alloc_dispatch_table(bool glthread)
        */
       SET_Flush(table, nop_glFlush);
    }
-#endif
-
-#if USE_GLAPI_NOP_FEATURES
-   _glapi_set_nop_handler(nop_handler);
 #endif
 
    return table;
@@ -907,7 +861,7 @@ _mesa_alloc_dispatch_tables(gl_api api, struct gl_dispatch *d, bool glthread)
          return false;
    }
 
-   d->Current = d->Exec = d->OutsideBeginEnd;
+   d->RealPublished = d->Current = d->Exec = d->OutsideBeginEnd;
    return true;
 }
 
@@ -919,6 +873,31 @@ _mesa_free_dispatch_tables(struct gl_dispatch *d)
    free(d->HWSelectModeBeginEnd);
    free(d->Save);
    free(d->ContextLost);
+}
+
+void
+_mesa_set_dispatch(struct gl_context *ctx, struct _glapi_table *t)
+{
+   /* On the glthread worker, the user-thread wrapper already logged the
+    * call; bypass Trace and don't touch RealPublished (main-thread state).
+    */
+   if (ctx->GLThread.enabled &&
+       u_thread_is_self(ctx->GLThread.queue.threads[0])) {
+      _mesa_glapi_set_dispatch(t);
+      return;
+   }
+
+   ctx->Dispatch.RealPublished = t;
+   _mesa_glapi_set_dispatch(ctx->Dispatch.Trace ? ctx->Dispatch.Trace : t);
+}
+
+struct _glapi_table *
+_mesa_get_dispatch(struct gl_context *ctx)
+{
+   if (ctx->Dispatch.Trace && GET_DISPATCH() == ctx->Dispatch.Trace)
+      return ctx->Dispatch.RealPublished;
+
+   return GET_DISPATCH();
 }
 
 bool
@@ -935,6 +914,10 @@ _mesa_initialize_dispatch_tables(struct gl_context *ctx)
       _mesa_init_dispatch_save(ctx);
       _mesa_init_dispatch_save_begin_end(ctx);
    }
+
+   if ((MESA_VERBOSE & VERBOSE_API) &&
+       !_mesa_init_dispatch_trace(ctx))
+      return false;
 
    /* This binds the dispatch table to the context, but MakeCurrent will
     * bind it for the user. If glthread is enabled, it will override it.
@@ -976,7 +959,8 @@ _mesa_initialize_context(struct gl_context *ctx,
                          bool no_error,
                          const struct gl_config *visual,
                          struct gl_context *share_list,
-                         const struct dd_function_table *driverFunctions)
+                         const struct dd_function_table *driverFunctions,
+                         const struct st_config_options *options)
 {
    struct gl_shared_state *shared;
    int i;
@@ -1032,7 +1016,7 @@ _mesa_initialize_context(struct gl_context *ctx,
    }
    else {
       /* allocate new, unshared state */
-      shared = _mesa_alloc_shared_state(ctx);
+      shared = _mesa_alloc_shared_state(ctx, options);
       if (!shared)
          return GL_FALSE;
    }
@@ -1049,13 +1033,6 @@ _mesa_initialize_context(struct gl_context *ctx,
       ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_NO_ERROR_BIT_KHR;
 
    _mesa_reset_vertex_processing_mode(ctx);
-
-   /* Mesa core handles all the formats that mesa core knows about.
-    * Drivers will want to override this list with just the formats
-    * they can handle.
-    */
-   memset(&ctx->TextureFormatSupported, GL_TRUE,
-          sizeof(ctx->TextureFormatSupported));
 
    switch (ctx->API) {
    case API_OPENGL_COMPAT:
@@ -1084,6 +1061,11 @@ _mesa_initialize_context(struct gl_context *ctx,
    ctx->PointSizeIsSet = GL_TRUE;
 
    ctx->FirstTimeCurrent = GL_TRUE;
+
+   simple_mtx_lock(&ctx->Shared->Mutex);
+   list_addtail(&ctx->SharedLink, &ctx->Shared->Contexts);
+   simple_mtx_unlock(&ctx->Shared->Mutex);
+   ctx->ReleaseResources = UTIL_DYNARRAY_INIT;
 
    return GL_TRUE;
 
@@ -1128,6 +1110,9 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    _mesa_reference_program(ctx, &ctx->FragmentProgram._Current, NULL);
    _mesa_reference_program(ctx, &ctx->FragmentProgram._TexEnvProgram, NULL);
 
+   _mesa_reference_program(ctx, &ctx->TaskProgram._Current, NULL);
+   _mesa_reference_program(ctx, &ctx->MeshProgram._Current, NULL);
+
    _mesa_reference_program(ctx, &ctx->ComputeProgram._Current, NULL);
 
    _mesa_reference_vao(ctx, &ctx->Array.VAO, NULL);
@@ -1167,6 +1152,14 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    free(ctx->MarshalExec);
 
    /* Shared context state (display lists, textures, etc) */
+   simple_mtx_lock(&ctx->Shared->Mutex);
+   list_del(&ctx->SharedLink);
+
+   _mesa_clear_releasebufs(ctx);
+   util_dynarray_fini(&ctx->ReleaseResources);
+
+   simple_mtx_unlock(&ctx->Shared->Mutex);
+
    _mesa_reference_shared_state(ctx, &ctx->Shared, NULL);
 
    if (destroy_debug_output)
@@ -1193,6 +1186,15 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    free(ctx->tmp_draws);
 }
 
+void
+_mesa_clear_releasebufs(struct gl_context *ctx)
+{
+   struct pipe_resource **pres = ctx->ReleaseResources.data;
+   unsigned count = util_dynarray_num_elements(&ctx->ReleaseResources, struct pipe_resource*);
+   for (unsigned j = 0; j < count; j++)
+      pipe_resource_release(ctx->pipe, pres[j]);
+   util_dynarray_clear(&ctx->ReleaseResources);
+}
 
 /**
  * Copy attribute groups from one context to another.
@@ -1301,7 +1303,7 @@ _mesa_copy_context( const struct gl_context *src, struct gl_context *dst,
    /* XXX FIXME:  Call callbacks?
     */
    dst->NewState = _NEW_ALL;
-   dst->NewDriverState = ST_ALL_STATES_MASK;
+   ST_SET_ALL_STATES(dst->NewDriverState);
 }
 
 
@@ -1429,15 +1431,6 @@ handle_first_current(struct gl_context *ctx)
                                        || (_mesa_is_desktop_gl_compat(ctx)
                                            && !is_forward_compatible_context));
    }
-
-   /* We can use this to help debug user's problems.  Tell them to set
-    * the MESA_INFO env variable before running their app.  Then the
-    * first time each context is made current we'll print some useful
-    * information.
-    */
-   if (getenv("MESA_INFO")) {
-      _mesa_print_info(ctx);
-   }
 }
 
 /**
@@ -1460,9 +1453,6 @@ _mesa_make_current( struct gl_context *newCtx,
                     struct gl_framebuffer *readBuffer )
 {
    GET_CURRENT_CONTEXT(curCtx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(newCtx, "_mesa_make_current()\n");
 
    /* Check that the context's and framebuffer's visuals are compatible.
     */
@@ -1493,7 +1483,7 @@ _mesa_make_current( struct gl_context *newCtx,
    }
 
    if (!newCtx) {
-      _glapi_set_dispatch(NULL);  /* none current */
+      _mesa_glapi_set_dispatch(NULL);  /* none current */
       /* We need old ctx to correctly release Draw/ReadBuffer
        * and avoid a surface leak in st_renderbuffer_delete.
        * Therefore, first drop buffers then set new ctx to NULL.
@@ -1502,13 +1492,13 @@ _mesa_make_current( struct gl_context *newCtx,
          _mesa_reference_framebuffer(&curCtx->WinSysDrawBuffer, NULL);
          _mesa_reference_framebuffer(&curCtx->WinSysReadBuffer, NULL);
       }
-      _glapi_set_context(NULL);
+      _mesa_glapi_set_context(NULL);
       assert(_mesa_get_current_context() == NULL);
    }
    else {
-      _glapi_set_context((void *) newCtx);
+      _mesa_glapi_set_context((void *) newCtx);
       assert(_mesa_get_current_context() == newCtx);
-      _glapi_set_dispatch(newCtx->GLApi);
+      _mesa_set_dispatch(newCtx, newCtx->GLApi);
 
       if (drawBuffer && readBuffer) {
          assert(_mesa_is_winsys_fbo(drawBuffer));
@@ -1577,8 +1567,17 @@ _mesa_share_state(struct gl_context *ctx, struct gl_context *ctxToShare)
       /* save ref to old state to prevent it from being deleted immediately */
       _mesa_reference_shared_state(ctx, &oldShared, ctx->Shared);
 
+      /* Keep SharedLink consistent with ctx->Shared */
+      simple_mtx_lock(&oldShared->Mutex);
+      list_del(&ctx->SharedLink);
+      simple_mtx_unlock(&oldShared->Mutex);
+
       /* update ctx's Shared pointer */
       _mesa_reference_shared_state(ctx, &ctx->Shared, ctxToShare->Shared);
+
+      simple_mtx_lock(&ctx->Shared->Mutex);
+      list_addtail(&ctx->SharedLink, &ctx->Shared->Contexts);
+      simple_mtx_unlock(&ctx->Shared->Mutex);
 
       update_default_objects(ctx);
 
@@ -1596,15 +1595,12 @@ _mesa_share_state(struct gl_context *ctx, struct gl_context *ctxToShare)
 
 /**
  * \return pointer to the current GL context for this thread.
- *
- * Calls _glapi_get_context(). This isn't the fastest way to get the current
- * context.  If you need speed, see the #GET_CURRENT_CONTEXT macro in
- * context.h.
  */
 struct gl_context *
 _mesa_get_current_context( void )
 {
-   return (struct gl_context *) _glapi_get_context();
+   GET_CURRENT_CONTEXT(ctx);
+   return ctx;
 }
 
 /*@}*/

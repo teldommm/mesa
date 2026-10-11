@@ -76,7 +76,7 @@ set_viewport_no_notify(struct gl_context *ctx, unsigned idx,
       return;
 
    FLUSH_VERTICES(ctx, 0, GL_VIEWPORT_BIT);
-   ctx->NewDriverState |= ST_NEW_VIEWPORT;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_VIEWPORT);
 
    ctx->ViewportArray[idx].X = x;
    ctx->ViewportArray[idx].Width = width;
@@ -138,9 +138,6 @@ void GLAPIENTRY
 _mesa_Viewport(GLint x, GLint y, GLsizei width, GLsizei height)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glViewport %d %d %d %d\n", x, y, width, height);
 
    if (width < 0 || height < 0) {
       _mesa_error(ctx,  GL_INVALID_VALUE,
@@ -205,9 +202,6 @@ _mesa_ViewportArrayv(GLuint first, GLsizei count, const GLfloat *v)
    struct gl_viewport_inputs *p = (struct gl_viewport_inputs *)v;
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glViewportArrayv %d %d\n", first, count);
-
    if ((first + count) > ctx->Const.MaxViewports) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "glViewportArrayv: first (%d) + count (%d) > MaxViewports "
@@ -234,10 +228,6 @@ static void
 viewport_indexed_err(struct gl_context *ctx, GLuint index, GLfloat x, GLfloat y,
                      GLfloat w, GLfloat h, const char *function)
 {
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "%s(%d, %f, %f, %f, %f)\n",
-                  function, index, x, y, w, h);
-
    if (index >= ctx->Const.MaxViewports) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "%s: index (%d) >= MaxViewports (%d)",
@@ -297,7 +287,7 @@ set_depth_range_no_notify(struct gl_context *ctx, unsigned idx,
 
    /* The depth range is needed by program state constants. */
    FLUSH_VERTICES(ctx, _NEW_VIEWPORT, GL_VIEWPORT_BIT);
-   ctx->NewDriverState |= ST_NEW_VIEWPORT;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_VIEWPORT);
 
    ctx->ViewportArray[idx].Near = SATURATE(nearval);
    ctx->ViewportArray[idx].Far = SATURATE(farval);
@@ -323,9 +313,6 @@ _mesa_DepthRange(GLclampd nearval, GLclampd farval)
 {
    unsigned i;
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE&VERBOSE_API)
-      _mesa_debug(ctx, "glDepthRange %f %f\n", nearval, farval);
 
    /* The GL_ARB_viewport_array spec says:
     *
@@ -381,9 +368,6 @@ _mesa_DepthRangeArrayv(GLuint first, GLsizei count, const GLclampd *v)
       (struct gl_depthrange_inputs *) v;
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDepthRangeArrayv %d %d\n", first, count);
-
    if ((first + count) > ctx->Const.MaxViewports) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "glDepthRangev: first (%d) + count (%d) >= MaxViewports (%d)",
@@ -399,9 +383,6 @@ _mesa_DepthRangeArrayfvOES(GLuint first, GLsizei count, const GLfloat *v)
 {
    int i;
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDepthRangeArrayfv %d %d\n", first, count);
 
    if ((first + count) > ctx->Const.MaxViewports) {
       _mesa_error(ctx, GL_INVALID_VALUE,
@@ -436,10 +417,6 @@ void GLAPIENTRY
 _mesa_DepthRangeIndexed(GLuint index, GLclampd nearval, GLclampd farval)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDepthRangeIndexed(%d, %f, %f)\n",
-                  index, nearval, farval);
 
    if (index >= ctx->Const.MaxViewports) {
       _mesa_error(ctx, GL_INVALID_VALUE,
@@ -511,13 +488,13 @@ clip_control(struct gl_context *ctx, GLenum origin, GLenum depth, bool no_error)
 
    /* Affects transform state and the viewport transform */
    FLUSH_VERTICES(ctx, 0, GL_TRANSFORM_BIT);
-   ctx->NewDriverState |= ST_NEW_VIEWPORT | ST_NEW_RASTERIZER;
+   ST_SET_STATE2(ctx->NewDriverState, ST_NEW_VIEWPORT, ST_NEW_RASTERIZER);
 
    if (ctx->Transform.ClipOrigin != origin) {
       ctx->Transform.ClipOrigin = origin;
 
       /* Affects the winding order of the front face. */
-      ctx->NewDriverState |= ST_NEW_RASTERIZER;
+      ST_SET_STATE(ctx->NewDriverState, ST_NEW_RASTERIZER);
    }
 
    if (ctx->Transform.ClipDepthMode != depth) {
@@ -538,11 +515,6 @@ void GLAPIENTRY
 _mesa_ClipControl(GLenum origin, GLenum depth)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glClipControl(%s, %s)\n",
-	          _mesa_enum_to_string(origin),
-                  _mesa_enum_to_string(depth));
 
    ASSERT_OUTSIDE_BEGIN_END(ctx);
 
@@ -592,25 +564,18 @@ _mesa_get_viewport_xform(struct gl_context *ctx, unsigned i,
 static void
 subpixel_precision_bias(struct gl_context *ctx, GLuint xbits, GLuint ybits)
 {
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glSubpixelPrecisionBiasNV(%u, %u)\n", xbits, ybits);
-
    FLUSH_VERTICES(ctx, 0, GL_VIEWPORT_BIT);
 
    ctx->SubpixelPrecisionBias[0] = xbits;
    ctx->SubpixelPrecisionBias[1] = ybits;
 
-   ctx->NewDriverState |= ST_NEW_RASTERIZER;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_RASTERIZER);
 }
 
 void GLAPIENTRY
 _mesa_SubpixelPrecisionBiasNV_no_error(GLuint xbits, GLuint ybits)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glSubpixelPrecisionBiasNV(%u, %u)\n", xbits, ybits);
-
    subpixel_precision_bias(ctx, xbits, ybits);
 }
 
@@ -618,10 +583,6 @@ void GLAPIENTRY
 _mesa_SubpixelPrecisionBiasNV(GLuint xbits, GLuint ybits)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glSubpixelPrecisionBiasNV(%u, %u)\n", xbits, ybits);
-
    ASSERT_OUTSIDE_BEGIN_END(ctx);
 
    if (!ctx->Extensions.NV_conservative_raster) {
@@ -656,7 +617,7 @@ set_viewport_swizzle(struct gl_context *ctx, GLuint index,
       return;
 
    FLUSH_VERTICES(ctx, _NEW_VIEWPORT, GL_VIEWPORT_BIT);
-   ctx->NewDriverState |= ST_NEW_VIEWPORT;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_VIEWPORT);
 
    viewport->SwizzleX = swizzlex;
    viewport->SwizzleY = swizzley;
@@ -670,10 +631,6 @@ _mesa_ViewportSwizzleNV_no_error(GLuint index,
                                  GLenum swizzlez, GLenum swizzlew)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glViewportSwizzleNV(%x, %x, %x, %x)\n",
-                  swizzlex, swizzley, swizzlez, swizzlew);
 
    set_viewport_swizzle(ctx, index, swizzlex, swizzley, swizzlez, swizzlew);
 }
@@ -691,10 +648,6 @@ _mesa_ViewportSwizzleNV(GLuint index,
                         GLenum swizzlez, GLenum swizzlew)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glViewportSwizzleNV(%x, %x, %x, %x)\n",
-                  swizzlex, swizzley, swizzlez, swizzlew);
 
    if (!ctx->Extensions.NV_viewport_swizzle) {
       _mesa_error(ctx, GL_INVALID_OPERATION,

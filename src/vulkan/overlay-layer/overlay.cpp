@@ -56,8 +56,6 @@ struct instance_data {
    struct overlay_params params;
    bool pipeline_statistics_enabled;
 
-   bool first_line_printed;
-
    int control_client;
 
    /* Dumping of frame stats to a file has been enabled. */
@@ -67,6 +65,8 @@ struct instance_data {
    bool capture_started;
 
    int socket;
+
+   FILE *output_file_fd;
 };
 
 struct frame_stat {
@@ -278,7 +278,7 @@ static VkLayerInstanceCreateInfo *get_instance_chain_info(const VkInstanceCreate
           ((VkLayerInstanceCreateInfo *) item)->function == func)
          return (VkLayerInstanceCreateInfo *) item;
    }
-   unreachable("instance chain info not found");
+   UNREACHABLE("instance chain info not found");
    return NULL;
 }
 
@@ -290,7 +290,7 @@ static VkLayerDeviceCreateInfo *get_device_chain_info(const VkDeviceCreateInfo *
           ((VkLayerDeviceCreateInfo *) item)->function == func)
          return (VkLayerDeviceCreateInfo *)item;
    }
-   unreachable("device chain info not found");
+   UNREACHABLE("device chain info not found");
    return NULL;
 }
 
@@ -345,10 +345,16 @@ static struct instance_data *new_instance_data(VkInstance instance)
 
 static void destroy_instance_data(struct instance_data *data)
 {
-   if (data->params.output_file)
-      fclose(data->params.output_file);
    if (data->socket >= 0)
       os_socket_close(data->socket);
+   if (data->params.output_file) {
+      free((void*)data->params.output_file);
+      data->params.output_file = NULL;
+   }
+   if (data->params.control) {
+      free((void*)data->params.control);
+      data->params.control = NULL;
+   }
    unmap_object(HKEY(data->instance));
    ralloc_free(data);
 }
@@ -472,6 +478,20 @@ static void destroy_device_data(struct device_data *data)
    ralloc_free(data);
 }
 
+static const char *param_unit(enum overlay_param_enabled param)
+{
+   switch (param) {
+   case OVERLAY_PARAM_ENABLED_frame_timing:
+   case OVERLAY_PARAM_ENABLED_acquire_timing:
+   case OVERLAY_PARAM_ENABLED_present_timing:
+      return "(us)";
+   case OVERLAY_PARAM_ENABLED_gpu_timing:
+      return "(ns)";
+   default:
+      return "";
+   }
+}
+
 /**/
 static struct command_buffer_data *new_command_buffer_data(VkCommandBuffer cmd_buffer,
                                                            VkCommandBufferLevel level,
@@ -510,6 +530,29 @@ static struct swapchain_data *new_swapchain_data(VkSwapchainKHR swapchain,
    data->window_size = ImVec2(instance_data->params.width, instance_data->params.height);
    list_inithead(&data->draws);
    map_object(HKEY(data->swapchain), data);
+
+   /* Open output file on swapchain creation */
+   assert(instance_data->output_file_fd == NULL);
+   instance_data->output_file_fd =
+      fopen(instance_data->params.output_file, "w+");
+
+   if (instance_data->output_file_fd) {
+      bool first_column = true;
+#define OVERLAY_PARAM_BOOL(name) \
+      if (instance_data->params.enabled[OVERLAY_PARAM_ENABLED_##name]) { \
+         fprintf(instance_data->output_file_fd, \
+               "%s%s%s", first_column ? "" : ", ", #name, \
+               param_unit(OVERLAY_PARAM_ENABLED_##name)); \
+         first_column = false; \
+      }
+#define OVERLAY_PARAM_CUSTOM(name)
+      OVERLAY_PARAMS
+#undef OVERLAY_PARAM_BOOL
+#undef OVERLAY_PARAM_CUSTOM
+      fprintf(instance_data->output_file_fd, "\n");
+   } else
+      fprintf(stderr, "ERROR opening output file: %s\n", strerror(errno));
+
    return data;
 }
 
@@ -565,20 +608,6 @@ struct overlay_draw *get_overlay_draw(struct swapchain_data *data)
    list_addtail(&draw->link, &data->draws);
 
    return draw;
-}
-
-static const char *param_unit(enum overlay_param_enabled param)
-{
-   switch (param) {
-   case OVERLAY_PARAM_ENABLED_frame_timing:
-   case OVERLAY_PARAM_ENABLED_acquire_timing:
-   case OVERLAY_PARAM_ENABLED_present_timing:
-      return "(us)";
-   case OVERLAY_PARAM_ENABLED_gpu_timing:
-      return "(ns)";
-   default:
-      return "";
-   }
 }
 
 static void parse_command(struct instance_data *instance_data,
@@ -833,39 +862,20 @@ static void snapshot_swapchain_frame(struct swapchain_data *data)
           elapsed >= instance_data->params.fps_sampling_period) {
          data->fps = 1000000.0f * data->n_frames_since_update / elapsed;
          if (instance_data->capture_started) {
-            if (!instance_data->first_line_printed) {
-               bool first_column = true;
-
-               instance_data->first_line_printed = true;
-
-#define OVERLAY_PARAM_BOOL(name) \
-               if (instance_data->params.enabled[OVERLAY_PARAM_ENABLED_##name]) { \
-                  fprintf(instance_data->params.output_file, \
-                          "%s%s%s", first_column ? "" : ", ", #name, \
-                          param_unit(OVERLAY_PARAM_ENABLED_##name)); \
-                  first_column = false; \
-               }
-#define OVERLAY_PARAM_CUSTOM(name)
-               OVERLAY_PARAMS
-#undef OVERLAY_PARAM_BOOL
-#undef OVERLAY_PARAM_CUSTOM
-               fprintf(instance_data->params.output_file, "\n");
-            }
-
             for (int s = 0; s < OVERLAY_PARAM_ENABLED_MAX; s++) {
                if (!instance_data->params.enabled[s])
                   continue;
                if (s == OVERLAY_PARAM_ENABLED_fps) {
-                  fprintf(instance_data->params.output_file,
+                  fprintf(instance_data->output_file_fd,
                           "%s%.2f", s == 0 ? "" : ", ", data->fps);
                } else {
-                  fprintf(instance_data->params.output_file,
+                  fprintf(instance_data->output_file_fd,
                           "%s%" PRIu64, s == 0 ? "" : ", ",
                           data->accumulated_stats.stats[s]);
                }
             }
-            fprintf(instance_data->params.output_file, "\n");
-            fflush(instance_data->params.output_file);
+            fprintf(instance_data->output_file_fd, "\n");
+            fflush(instance_data->output_file_fd);
          }
 
          memset(&data->accumulated_stats, 0, sizeof(data->accumulated_stats));
@@ -1006,7 +1016,7 @@ static void compute_swapchain_display(struct swapchain_data *data)
          ImGui::PlotHistogram(hash, get_time_stat, data,
                               ARRAY_SIZE(data->frames_stats), 0,
                               NULL, min_time, max_time,
-                              ImVec2(ImGui::GetContentRegionAvailWidth(), 30));
+                              ImVec2(ImGui::GetContentRegionAvail().x, 30));
          ImGui::Text("%s: %.3fms [%.3f, %.3f]", overlay_param_names[s],
                      get_time_stat(data, ARRAY_SIZE(data->frames_stats) - 1),
                      min_time, max_time);
@@ -1016,7 +1026,7 @@ static void compute_swapchain_display(struct swapchain_data *data)
                               NULL,
                               data->stats_min.stats[s],
                               data->stats_max.stats[s],
-                              ImVec2(ImGui::GetContentRegionAvailWidth(), 30));
+                              ImVec2(ImGui::GetContentRegionAvail().x, 30));
          ImGui::Text("%s: %.0f [%" PRIu64 ", %" PRIu64 "]", overlay_param_names[s],
                      get_stat(data, ARRAY_SIZE(data->frames_stats) - 1),
                      data->stats_min.stats[s], data->stats_max.stats[s]);
@@ -1192,6 +1202,13 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
 
    struct device_data *device_data = data->device;
    struct overlay_draw *draw = get_overlay_draw(data);
+
+   /* Draw on the present queue if the command pool family allows it. The
+    * application may submit to other queues from other threads.
+    */
+   struct queue_data *draw_queue =
+      present_queue->family_index == device_data->graphic_queue->family_index ?
+      present_queue : device_data->graphic_queue;
 
    device_data->vtable.ResetCommandBuffer(draw->command_buffer, 0);
 
@@ -1388,7 +1405,7 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
     * vkQueuePresent, insert our own cross engine synchronization
     * semaphore.
     */
-   if (n_wait_semaphores == 0 && device_data->graphic_queue->queue != present_queue->queue) {
+   if (n_wait_semaphores == 0 && draw_queue->queue != present_queue->queue) {
       VkPipelineStageFlags stages_wait = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
       VkSubmitInfo submit_info = {};
       submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1409,7 +1426,7 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
       submit_info.signalSemaphoreCount = 1;
       submit_info.pSignalSemaphores = &draw->semaphore;
 
-      device_data->vtable.QueueSubmit(device_data->graphic_queue->queue, 1, &submit_info, draw->fence);
+      device_data->vtable.QueueSubmit(draw_queue->queue, 1, &submit_info, draw->fence);
    } else {
       VkPipelineStageFlags *stages_wait = (VkPipelineStageFlags*) malloc(sizeof(VkPipelineStageFlags) * n_wait_semaphores);
       for (unsigned i = 0; i < n_wait_semaphores; i++)
@@ -1428,7 +1445,7 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
       submit_info.signalSemaphoreCount = 1;
       submit_info.pSignalSemaphores = &draw->semaphore;
 
-      device_data->vtable.QueueSubmit(device_data->graphic_queue->queue, 1, &submit_info, draw->fence);
+      device_data->vtable.QueueSubmit(draw_queue->queue, 1, &submit_info, draw->fence);
 
       free(stages_wait);
    }
@@ -1550,15 +1567,15 @@ static void setup_swapchain_data_pipeline(struct swapchain_data *data)
    attribute_desc[0].location = 0;
    attribute_desc[0].binding = binding_desc[0].binding;
    attribute_desc[0].format = VK_FORMAT_R32G32_SFLOAT;
-   attribute_desc[0].offset = IM_OFFSETOF(ImDrawVert, pos);
+   attribute_desc[0].offset = offsetof(ImDrawVert, pos);
    attribute_desc[1].location = 1;
    attribute_desc[1].binding = binding_desc[0].binding;
    attribute_desc[1].format = VK_FORMAT_R32G32_SFLOAT;
-   attribute_desc[1].offset = IM_OFFSETOF(ImDrawVert, uv);
+   attribute_desc[1].offset = offsetof(ImDrawVert, uv);
    attribute_desc[2].location = 2;
    attribute_desc[2].binding = binding_desc[0].binding;
    attribute_desc[2].format = VK_FORMAT_R8G8B8A8_UNORM;
-   attribute_desc[2].offset = IM_OFFSETOF(ImDrawVert, col);
+   attribute_desc[2].offset = offsetof(ImDrawVert, col);
 
    VkPipelineVertexInputStateCreateInfo vertex_info = {};
    vertex_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -1891,10 +1908,16 @@ static void overlay_DestroySwapchainKHR(
     VkSwapchainKHR                              swapchain,
     const VkAllocationCallbacks*                pAllocator)
 {
+   struct device_data *device_data = FIND(struct device_data, device);
+   struct instance_data *instance_data = device_data->instance;
    if (swapchain == VK_NULL_HANDLE) {
-      struct device_data *device_data = FIND(struct device_data, device);
       device_data->vtable.DestroySwapchainKHR(device, swapchain, pAllocator);
       return;
+   }
+
+   if (instance_data->output_file_fd) {
+      fclose(instance_data->output_file_fd);
+      instance_data->output_file_fd = NULL;
    }
 
    struct swapchain_data *swapchain_data =
@@ -2640,7 +2663,7 @@ static VkResult overlay_CreateInstance(
                                           instance_data->instance);
    instance_data_map_physical_devices(instance_data, true);
 
-   parse_overlay_env(&instance_data->params, getenv("VK_LAYER_MESA_OVERLAY_CONFIG"));
+   parse_overlay_env(&instance_data->params, os_get_option("VK_LAYER_MESA_OVERLAY_CONFIG"));
 
    /* If there's no control file, and an output_file was specified, start
     * capturing fps data right away.

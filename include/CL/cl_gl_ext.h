@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2008-2021 The Khronos Group Inc.
+ * Copyright (c) 2008-2026 The Khronos Group Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,4 +15,4 @@
  ******************************************************************************/
 
 #include <CL/cl_gl.h>
-#pragma message("All OpenGL-related extensions have been moved into cl_gl.h.  Please include cl_gl.h directly.")
+#pragma message("The extensions in cl_gl_ext.h have been moved into cl_gl.h.  Please include cl_gl.h directly.")

@@ -117,7 +117,7 @@ class VulkanReservedMarshalingCodegen(VulkanTypeIterator):
             if self.variant == "guest":
                 streamNamespace = "gfxstream::aemu"
             else:
-                streamNamespace = "android::base"
+                streamNamespace = "gfxstream"
             if self.direction == "write":
                 self.cgen.stmt("%s::Stream::%s((uint8_t*)*%s)" % (streamNamespace, streamMethod, varname))
             else:
@@ -128,7 +128,16 @@ class VulkanReservedMarshalingCodegen(VulkanTypeIterator):
     def genStreamCall(self, vulkanType, toStreamExpr, sizeExpr):
         varname = self.ptrVar
         cast = self.makeCastExpr(self.getTypeForStreaming(vulkanType))
+
+        # Guard memcpy operations against zero-size arrays, to avoid undefined behavior
+        lenAccess = self.lenAccessor(vulkanType)
+        if not vulkanType.staticArrExpr and lenAccess is not None:
+            self.cgen.beginIf("%s > 0" % (lenAccess))
+
         self.genMemcpyAndIncr(varname, cast, toStreamExpr, sizeExpr)
+
+        if not vulkanType.staticArrExpr and lenAccess is not None:
+            self.cgen.endIf()
 
     def genPrimitiveStreamCall(self, vulkanType, access):
         varname = self.ptrVar
@@ -542,13 +551,12 @@ class VulkanReservedMarshalingCodegen(VulkanTypeIterator):
             self.cgen.beginBlock()
 
             self.cgen.stmt("uint32_t c = 0")
-            if lenAccessGuard is not None:
+            if lenAccess is not None:
                 self.cgen.beginIf(lenAccessGuard)
-            self.cgen.stmt("c = %s" % (lenAccess))
-            if lenAccessGuard is not None:
+                self.cgen.stmt("c = %s" % (lenAccess))
                 self.cgen.endIf()
-            self.genMemcpyAndIncr(self.ptrVar, "(uint32_t*)" ,"&c", "sizeof(uint32_t)", toBe = True, actualSize = 4)
 
+            self.genMemcpyAndIncr(self.ptrVar, "(uint32_t*)" ,"&c", "sizeof(uint32_t)", toBe = True, actualSize = 4)
             self.cgen.beginFor("uint32_t i = 0", "i < c", "++i")
             self.cgen.stmt("uint32_t l = %s ? strlen(%s[i]): 0" % (access, access))
             self.genMemcpyAndIncr(self.ptrVar, "(uint32_t*)" ,"&l", "sizeof(uint32_t)", toBe = True, actualSize = 4)
@@ -569,8 +577,9 @@ class VulkanReservedMarshalingCodegen(VulkanTypeIterator):
     def onStaticArr(self, vulkanType):
         access = self.exprValueAccessor(vulkanType)
         lenAccess = self.lenAccessor(vulkanType)
-        finalLenExpr = "%s * %s" % (lenAccess, self.cgen.sizeofExpr(vulkanType))
-        self.genStreamCall(vulkanType, access, finalLenExpr)
+        if lenAccess is not None:
+            finalLenExpr = "%s * %s" % (lenAccess, self.cgen.sizeofExpr(vulkanType))
+            self.genStreamCall(vulkanType, access, finalLenExpr)
 
     # Old version VkEncoder may have some sType values conflict with VkDecoder
     # of new versions. For host decoder, it should not carry the incorrect old
@@ -804,7 +813,7 @@ class VulkanReservedMarshaling(VulkanWrapperGenerator):
                     freeParams.append(makeVulkanTypeSimple(True, bindingInfo["type"], 0, envname))
                 else:
                     if not bindingInfo["structmember"]:
-                        letParams.append(makeVulkanTypeSimple(True, bindingInfo["type"], 0, envname))
+                        letParams.append(makeVulkanTypeSimple(False, bindingInfo["type"], 0, envname))
 
             marshalPrototype = \
                 VulkanAPI(API_PREFIX_RESERVEDMARSHAL + name,
@@ -867,7 +876,7 @@ class VulkanReservedMarshaling(VulkanWrapperGenerator):
                 self.module.appendHeader(
                     self.cgenHeader.makeFuncDecl(marshalPrototype))
 
-                if name in CUSTOM_MARSHAL_TYPES:
+                if name in CUSTOM_MARSHAL_TYPES and CUSTOM_MARSHAL_TYPES[name].get("reservedmarshaling"):
                     self.module.appendImpl(
                         self.cgenImpl.makeFuncImpl(
                             marshalPrototype, structMarshalingCustom))
@@ -937,7 +946,7 @@ class VulkanReservedMarshaling(VulkanWrapperGenerator):
                 self.module.appendHeader(
                     self.cgenHeader.makeFuncDecl(unmarshalPrototype))
 
-                if name in CUSTOM_MARSHAL_TYPES:
+                if name in CUSTOM_MARSHAL_TYPES and CUSTOM_MARSHAL_TYPES[name].get("reservedunmarshaling"):
                     self.module.appendImpl(
                         self.cgenImpl.makeFuncImpl(
                             unmarshalPrototype, structUnmarshalingCustom))
@@ -976,7 +985,7 @@ class VulkanReservedMarshaling(VulkanWrapperGenerator):
         if self.variant == "guest":
             streamNamespace = "gfxstream::aemu"
         else:
-            streamNamespace = "android::base"
+            streamNamespace = "gfxstream"
 
         if direction == "write":
             cgen.stmt("memcpy(*%s, &%s, sizeof(uint32_t));" % (self.ptrVarName, sizeVar))

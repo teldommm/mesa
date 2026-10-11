@@ -70,7 +70,7 @@ line_width(struct gl_context *ctx, GLfloat width, bool no_error)
    }
 
    FLUSH_VERTICES(ctx, 0, GL_LINE_BIT);
-   ctx->NewDriverState |= ST_NEW_RASTERIZER;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_RASTERIZER);
    ctx->Line.Width = width;
 }
 
@@ -87,10 +87,6 @@ void GLAPIENTRY
 _mesa_LineWidth(GLfloat width)
 {
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glLineWidth %f\n", width);
-
    line_width(ctx, width, false);
 }
 
@@ -112,9 +108,6 @@ _mesa_LineStipple( GLint factor, GLushort pattern )
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glLineStipple %d %u\n", factor, pattern);
-
    factor = CLAMP( factor, 1, 256 );
 
    if (ctx->Line.StippleFactor == factor &&
@@ -122,7 +115,7 @@ _mesa_LineStipple( GLint factor, GLushort pattern )
       return;
 
    FLUSH_VERTICES(ctx, 0, GL_LINE_BIT);
-   ctx->NewDriverState |= ST_NEW_RASTERIZER;
+   ST_SET_STATE(ctx->NewDriverState, ST_NEW_RASTERIZER);
    ctx->Line.StippleFactor = factor;
    ctx->Line.StipplePattern = pattern;
 }

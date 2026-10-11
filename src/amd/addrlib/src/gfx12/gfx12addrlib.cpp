@@ -1,7 +1,7 @@
 /*
 ************************************************************************************************************************
 *
-*  Copyright (C) 2023 Advanced Micro Devices, Inc.  All rights reserved.
+*  Copyright (C) 2022-2026 Advanced Micro Devices, Inc. All rights reserved.
 *  SPDX-License-Identifier: MIT
 *
 ***********************************************************************************************************************/
@@ -15,6 +15,7 @@
 
 #include "gfx12addrlib.h"
 #include "gfx12_gb_reg.h"
+#include "addrswizzler.h"
 
 #include "amdgpu_asic_addr.h"
 
@@ -70,8 +71,7 @@ const SwizzleModeFlags Gfx12Lib::SwizzleModeTable[ADDR3_MAX_TYPE] =
 Gfx12Lib::Gfx12Lib(
     const Client* pClient)
     :
-    Lib(pClient),
-    m_numSwizzleBits(0)
+    Lib(pClient)
 {
     memcpy(m_swizzleModeTable, SwizzleModeTable, sizeof(SwizzleModeTable));
 }
@@ -113,6 +113,7 @@ VOID Gfx12Lib::ConvertSwizzlePatternToEquation(
     const UINT_32           blockSizeLog2 = GetBlockSizeLog2(swMode, TRUE);
 
     pEquation->numBits = blockSizeLog2;
+    pEquation->numBitComponents = 1;
     pEquation->stackedDepthSlices = FALSE;
 
     for (UINT_32 i = 0; i < elemLog2; i++)
@@ -187,7 +188,7 @@ VOID Gfx12Lib::InitEquationTable()
         // Skip linear equation (data table is not useful for 2D/3D images-- only contains x-coordinate bits)
         if (IsValidSwMode(swMode) && (IsLinear(swMode) == false))
         {
-            const UINT_32 maxMsaa = Is2dSwizzle(swMode) ? MaxMsaaRateLog2 : 1;
+            const UINT_32 maxMsaa = Is2dSwizzle(swMode) ? MaxNumMsaaRates : 1;
 
             for (UINT_32 msaaIdx = 0; msaaIdx < maxMsaa; msaaIdx++)
             {
@@ -230,15 +231,7 @@ UINT_32 Gfx12Lib::HwlGetEquationIndex(
     const ADDR3_COMPUTE_SURFACE_INFO_INPUT* pIn    ///< [in] input structure
     ) const
 {
-    UINT_32 equationIdx = ADDR_INVALID_EQUATION_INDEX;
-
-    if ((pIn->resourceType == ADDR_RSRC_TEX_2D) ||
-        (pIn->resourceType == ADDR_RSRC_TEX_3D))
-    {
-        equationIdx = GetEquationTableEntry(pIn->swizzleMode, Log2(pIn->numSamples), Log2(pIn->bpp >> 3));
-    }
-
-    return equationIdx;
+    return GetEquationTableEntry(pIn->swizzleMode, Log2(pIn->numSamples), Log2(pIn->bpp >> 3));
 }
 
 /**
@@ -266,7 +259,7 @@ VOID Gfx12Lib::InitBlockDimensionTable()
         if (IsValidSwMode(swMode))
         {
             surfaceInfo.swizzleMode = swMode;
-            const UINT_32 maxMsaa   = Is2dSwizzle(swMode) ? MaxMsaaRateLog2 : 1;
+            const UINT_32 maxMsaa   = Is2dSwizzle(swMode) ? MaxNumMsaaRates : 1;
 
             for (UINT_32 msaaIdx = 0; msaaIdx < maxMsaa; msaaIdx++)
             {
@@ -621,10 +614,9 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlComputeSurfaceInfo(
 
         // Slices must be exact multiples of the block sizes.  However:
         // - with 3D images, one block will contain multiple slices, so that needs to be taken into account.
-        //
-        // Note that with linear images that have only one slice, we can always guarantee pOut->sliceSize is 256B
-        // alignment so there is no need to worry about it.
-        ADDR_ASSERT(((pOut->sliceSize * pOut->blockExtent.depth) % GetBlockSize(pSurfInfo->swizzleMode)) == 0);
+        // - with linear images that have only one slice, we may trim and use the pitch alignment for size.
+        ADDR_ASSERT(((pOut->sliceSize * pOut->blockExtent.depth) %
+                     GetBlockSize(pSurfInfo->swizzleMode, CanTrimLinearPadding(pSurfInfo))) == 0);
     }
 
     return returnCode;
@@ -669,7 +661,7 @@ UINT_32 Gfx12Lib::GetMaxNumMipsInTail(
     UINT_32 effectiveLog2 = blockSizeLog2;
     UINT_32 mipsInTail    = 1;
 
-    if (Is3dSwizzle(pSurfInfo->swizzleMode))
+    if (Is3dSwizzle(pSurfInfo->swizzleMode) && (blockSizeLog2 >= 8))
     {
         effectiveLog2 -= (blockSizeLog2 - 8) / 3;
     }
@@ -882,89 +874,210 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlComputeSurfaceAddrFromCoordTiled(
 
 /**
 ************************************************************************************************************************
-*   Gfx12Lib::HwlComputePipeBankXor
+*   Gfx12Lib::HwlCopyMemToSurface
 *
 *   @brief
-*       Generate a PipeBankXor value to be ORed into bits above numSwizzleBits of address
+*       Copy multiple regions from memory to a non-linear surface.
 *
 *   @return
-*       PipeBankXor value
+*       Error or success.
 ************************************************************************************************************************
 */
-ADDR_E_RETURNCODE Gfx12Lib::HwlComputePipeBankXor(
-    const ADDR3_COMPUTE_PIPEBANKXOR_INPUT* pIn,     ///< [in] input structure
-    ADDR3_COMPUTE_PIPEBANKXOR_OUTPUT*      pOut     ///< [out] output structure
+ADDR_E_RETURNCODE Gfx12Lib::HwlCopyMemToSurface(
+    const ADDR3_COPY_MEMSURFACE_INPUT*  pIn,
+    const ADDR3_COPY_MEMSURFACE_REGION* pRegions,
+    UINT_32                             regionCount
     ) const
 {
-    if ((m_numSwizzleBits != 0)               && // does this configuration support swizzling
-        //         base address XOR in GFX12 will be applied to all blk_size = 4KB, 64KB, or 256KB swizzle modes,
-        //         Note that Linear and 256B are excluded.
-        (IsLinear(pIn->swizzleMode) == FALSE) &&
-        (IsBlock256b(pIn->swizzleMode) == FALSE))
+    // Copy memory to tiled surface. We will use the 'swizzler' object to dispatch to a version of the copy routine
+    // optimized for a particular micro-swizzle mode if available.
+    ADDR3_COMPUTE_SURFACE_INFO_INPUT  localIn  = {0};
+    ADDR3_COMPUTE_SURFACE_INFO_OUTPUT localOut = {0};
+    ADDR3_MIP_INFO                    mipInfo[MaxMipLevels] = {{0}};
+    ADDR_ASSERT(pIn->numMipLevels <= MaxMipLevels);
+    ADDR_E_RETURNCODE returnCode = ADDR_OK;
+
+    if (pIn->numSamples > 1)
     {
-        pOut->pipeBankXor = pIn->surfIndex % (1 << m_numSwizzleBits);
-    }
-    else
-    {
-        pOut->pipeBankXor = 0;
+        // TODO: MSAA
+        returnCode = ADDR_NOTIMPLEMENTED;
     }
 
-    return ADDR_OK;
+    localIn.size         = sizeof(localIn);
+    localIn.flags        = pIn->flags;
+    localIn.swizzleMode  = pIn->swizzleMode;
+    localIn.resourceType = pIn->resourceType;
+    localIn.format       = pIn->format;
+    localIn.bpp          = pIn->bpp;
+    localIn.width        = Max(pIn->unAlignedDims.width,  1u);
+    localIn.height       = Max(pIn->unAlignedDims.height, 1u);
+    localIn.numSlices    = Max(pIn->unAlignedDims.depth,  1u);
+    localIn.numMipLevels = Max(pIn->numMipLevels,         1u);
+    localIn.numSamples   = Max(pIn->numSamples,           1u);
+
+    localOut.size     = sizeof(localOut);
+    localOut.pMipInfo = mipInfo;
+
+    if (returnCode == ADDR_OK)
+    {
+        returnCode = ComputeSurfaceInfo(&localIn, &localOut);
+    }
+
+    LutAddresser addresser = LutAddresser();
+    UnalignedCopyMemImgFunc pfnCopyUnaligned = nullptr;
+    if (returnCode == ADDR_OK)
+    {
+        const UINT_32 blkSizeLog2 = GetBlockSizeLog2(pIn->swizzleMode);
+        const ADDR_SW_PATINFO* pPatInfo = GetSwizzlePatternInfo(pIn->swizzleMode,
+                                                                Log2(pIn->bpp >> 3),
+                                                                pIn->numSamples);
+
+        ADDR_BIT_SETTING fullSwizzlePattern[Log2Size256K] = {};
+        GetSwizzlePatternFromPatternInfo(pPatInfo, fullSwizzlePattern);
+        addresser.Init(fullSwizzlePattern, Log2Size256K, localOut.blockExtent, blkSizeLog2);
+        pfnCopyUnaligned = addresser.GetCopyMemImgFunc(pIn->copyFlags);
+        if (pfnCopyUnaligned == nullptr)
+        {
+            ADDR_ASSERT_ALWAYS(); // What format is this?
+            returnCode = ADDR_INVALIDPARAMS;
+        }
+    }
+
+    if (returnCode == ADDR_OK)
+    {
+        for (UINT_32  regionIdx = 0; regionIdx < regionCount; regionIdx++)
+        {
+            const ADDR3_COPY_MEMSURFACE_REGION* pCurRegion = &pRegions[regionIdx];
+            const ADDR3_MIP_INFO* pMipInfo = &mipInfo[pCurRegion->mipId];
+            UINT_64 mipOffset = pIn->singleSubres ? 0 : pMipInfo->macroBlockOffset;
+            UINT_32 yBlks = pMipInfo->pitch / localOut.blockExtent.width;
+            UINT_32 zBlks = localOut.sliceSize >> (addresser.GetBlockBits() - addresser.GetBlockZBits());
+
+            ADDR_COORD3D rawOrigin = {
+                pCurRegion->x + pMipInfo->mipTailCoordX,
+                pCurRegion->y + pMipInfo->mipTailCoordY,
+                pCurRegion->slice + pMipInfo->mipTailCoordZ
+            };
+
+            pfnCopyUnaligned(VoidPtrInc(pIn->pMappedSurface, mipOffset),
+                             pCurRegion->pMem,
+                             pCurRegion->memRowPitch,
+                             pCurRegion->memSlicePitch,
+                             yBlks,
+                             zBlks,
+                             rawOrigin,
+                             pCurRegion->copyDims,
+                             pIn->pbXor,
+                             (pCurRegion->mipId >= localOut.firstMipIdInTail),
+                             addresser);
+        }
+        addresser.DoCopyMemImgPostFlushes(pIn->copyFlags);
+    }
+    return returnCode;
 }
 
 /**
 ************************************************************************************************************************
-*   Gfx12Lib::ComputeOffsetFromEquation
+*   Gfx12Lib::HwlCopySurfaceToMem
 *
 *   @brief
-*       Compute offset from equation
+*       Copy multiple regions from a non-linear surface to memory.
 *
 *   @return
-*       Offset
+*       Error or success.
 ************************************************************************************************************************
 */
-UINT_32 Gfx12Lib::ComputeOffsetFromEquation(
-    const ADDR_EQUATION* pEq,   ///< Equation
-    UINT_32              x,     ///< x coord in bytes
-    UINT_32              y,     ///< y coord in pixel
-    UINT_32              z,     ///< z coord in slice
-    UINT_32              s      ///< MSAA sample index
+ADDR_E_RETURNCODE Gfx12Lib::HwlCopySurfaceToMem(
+    const ADDR3_COPY_MEMSURFACE_INPUT*  pIn,
+    const ADDR3_COPY_MEMSURFACE_REGION* pRegions,
+    UINT_32                             regionCount
     ) const
 {
-    UINT_32 offset = 0;
+    // Copy memory to tiled surface. We will use the 'swizzler' object to dispatch to a version of the copy routine
+    // optimized for a particular micro-swizzle mode if available.
+    ADDR3_COMPUTE_SURFACE_INFO_INPUT  localIn  = {0};
+    ADDR3_COMPUTE_SURFACE_INFO_OUTPUT localOut = {0};
+    ADDR3_MIP_INFO                    mipInfo[MaxMipLevels] = {{0}};
+    ADDR_ASSERT(pIn->numMipLevels <= MaxMipLevels);
+    ADDR_E_RETURNCODE returnCode = ADDR_OK;
 
-    for (UINT_32 i = 0; i < pEq->numBits; i++)
+    if (pIn->numSamples > 1)
     {
-        UINT_32 v = 0;
-
-        if (pEq->addr[i].valid)
-        {
-            if (pEq->addr[i].channel == 0)
-            {
-                v ^= (x >> pEq->addr[i].index) & 1;
-            }
-            else if (pEq->addr[i].channel == 1)
-            {
-                v ^= (y >> pEq->addr[i].index) & 1;
-            }
-            else if (pEq->addr[i].channel == 2)
-            {
-                v ^= (z >> pEq->addr[i].index) & 1;
-            }
-            else if (pEq->addr[i].channel == 3)
-            {
-                v ^= (s >> pEq->addr[i].index) & 1;
-            }
-            else
-            {
-                ADDR_ASSERT_ALWAYS();
-            }
-        }
-
-        offset |= (v << i);
+        // TODO: MSAA
+        returnCode = ADDR_NOTIMPLEMENTED;
     }
 
-    return offset;
+    localIn.size         = sizeof(localIn);
+    localIn.flags        = pIn->flags;
+    localIn.swizzleMode  = pIn->swizzleMode;
+    localIn.resourceType = pIn->resourceType;
+    localIn.format       = pIn->format;
+    localIn.bpp          = pIn->bpp;
+    localIn.width        = Max(pIn->unAlignedDims.width,  1u);
+    localIn.height       = Max(pIn->unAlignedDims.height, 1u);
+    localIn.numSlices    = Max(pIn->unAlignedDims.depth,  1u);
+    localIn.numMipLevels = Max(pIn->numMipLevels,         1u);
+    localIn.numSamples   = Max(pIn->numSamples,           1u);
+
+    localOut.size     = sizeof(localOut);
+    localOut.pMipInfo = mipInfo;
+
+    if (returnCode == ADDR_OK)
+    {
+        returnCode = ComputeSurfaceInfo(&localIn, &localOut);
+    }
+
+    LutAddresser addresser = LutAddresser();
+    UnalignedCopyMemImgFunc pfnCopyUnaligned = nullptr;
+    if (returnCode == ADDR_OK)
+    {
+        const UINT_32 blkSizeLog2 = GetBlockSizeLog2(pIn->swizzleMode);
+        const ADDR_SW_PATINFO* pPatInfo = GetSwizzlePatternInfo(pIn->swizzleMode,
+                                                                Log2(pIn->bpp >> 3),
+                                                                pIn->numSamples);
+
+        ADDR_BIT_SETTING fullSwizzlePattern[Log2Size256K] = {};
+        GetSwizzlePatternFromPatternInfo(pPatInfo, fullSwizzlePattern);
+        addresser.Init(fullSwizzlePattern, Log2Size256K, localOut.blockExtent, blkSizeLog2);
+        pfnCopyUnaligned = addresser.GetCopyImgMemFunc(pIn->copyFlags);
+        if (pfnCopyUnaligned == nullptr)
+        {
+            ADDR_ASSERT_ALWAYS(); // What format is this?
+            returnCode = ADDR_INVALIDPARAMS;
+        }
+    }
+
+    if (returnCode == ADDR_OK)
+    {
+        addresser.DoCopyImgMemPreFlushes(pIn->copyFlags);
+        for (UINT_32  regionIdx = 0; regionIdx < regionCount; regionIdx++)
+        {
+            const ADDR3_COPY_MEMSURFACE_REGION* pCurRegion = &pRegions[regionIdx];
+            const ADDR3_MIP_INFO* pMipInfo = &mipInfo[pCurRegion->mipId];
+            UINT_64 mipOffset = pIn->singleSubres ? 0 : pMipInfo->macroBlockOffset;
+            UINT_32 yBlks = pMipInfo->pitch / localOut.blockExtent.width;
+            UINT_32 zBlks = localOut.sliceSize >> (addresser.GetBlockBits() - addresser.GetBlockZBits());
+
+            ADDR_COORD3D rawOrigin = {
+                pCurRegion->x + pMipInfo->mipTailCoordX,
+                pCurRegion->y + pMipInfo->mipTailCoordY,
+                pCurRegion->slice + pMipInfo->mipTailCoordZ
+            };
+
+            pfnCopyUnaligned(VoidPtrInc(pIn->pMappedSurface, mipOffset),
+                             pCurRegion->pMem,
+                             pCurRegion->memRowPitch,
+                             pCurRegion->memSlicePitch,
+                             yBlks,
+                             zBlks,
+                             rawOrigin,
+                             pCurRegion->copyDims,
+                             pIn->pbXor,
+                             (pCurRegion->mipId >= localOut.firstMipIdInTail),
+                             addresser);
+        }
+    }
+    return returnCode;
 }
 
 /**
@@ -1100,69 +1213,13 @@ const ADDR_SW_PATINFO* Gfx12Lib::GetSwizzlePatternInfo(
 BOOL_32 Gfx12Lib::HwlInitGlobalParams(
     const ADDR_CREATE_INPUT* pCreateIn) ///< [in] create input
 {
-    BOOL_32              valid = TRUE;
-    GB_ADDR_CONFIG_GFX12 gbAddrConfig;
+    // Gfx10+ chips treat packed 8-bit 422 formats as 32bpe with 2pix/elem.
+    m_configFlags.use32bppFor422Fmt = TRUE;
 
-    gbAddrConfig.u32All = pCreateIn->regValue.gbAddrConfig;
+    InitEquationTable();
+    InitBlockDimensionTable();
 
-    switch (gbAddrConfig.bits.NUM_PIPES)
-    {
-        case ADDR_CONFIG_1_PIPE:
-            m_pipesLog2 = 0;
-            break;
-        case ADDR_CONFIG_2_PIPE:
-            m_pipesLog2 = 1;
-            break;
-        case ADDR_CONFIG_4_PIPE:
-            m_pipesLog2 = 2;
-            break;
-        case ADDR_CONFIG_8_PIPE:
-            m_pipesLog2 = 3;
-            break;
-        case ADDR_CONFIG_16_PIPE:
-            m_pipesLog2 = 4;
-            break;
-        case ADDR_CONFIG_32_PIPE:
-            m_pipesLog2 = 5;
-            break;
-        case ADDR_CONFIG_64_PIPE:
-            m_pipesLog2 = 6;
-            break;
-        default:
-            ADDR_ASSERT_ALWAYS();
-            valid = FALSE;
-            break;
-    }
-
-    switch (gbAddrConfig.bits.PIPE_INTERLEAVE_SIZE)
-    {
-        case ADDR_CONFIG_PIPE_INTERLEAVE_256B:
-            m_pipeInterleaveLog2 = 8;
-            break;
-        case ADDR_CONFIG_PIPE_INTERLEAVE_512B:
-            m_pipeInterleaveLog2 = 9;
-            break;
-        case ADDR_CONFIG_PIPE_INTERLEAVE_1KB:
-            m_pipeInterleaveLog2 = 10;
-            break;
-        case ADDR_CONFIG_PIPE_INTERLEAVE_2KB:
-            m_pipeInterleaveLog2 = 11;
-            break;
-        default:
-            ADDR_ASSERT_ALWAYS();
-            valid = FALSE;
-            break;
-    }
-
-    m_numSwizzleBits = ((m_pipesLog2 >= 3) ? m_pipesLog2 - 2 : 0);
-
-    if (valid)
-    {
-        InitEquationTable();
-        InitBlockDimensionTable();
-    }
-
-    return valid;
+    return TRUE;
 }
 
 /**
@@ -1259,7 +1316,6 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlComputeNonBlockCompressedView(
 
             if (inTail)
             {
-                // For mipmap level that is in mip tail block, hack a lot of things...
                 // Basically all mipmap levels in tail block will be viewed as a small mipmap chain that all levels
                 // are fit in tail block:
 
@@ -1414,10 +1470,10 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlComputeSlicePipeBankXor(
                                                                             pIn->slice,
                                                                             0);
 
-                const UINT_32 pipeBankXor = pipeBankXorOffset >> m_pipeInterleaveLog2;
+                const UINT_32 pipeBankXor = pipeBankXorOffset >> PipeInterleaveLog2;
 
                 // Should have no bit set under pipe interleave
-                ADDR_ASSERT((pipeBankXor << m_pipeInterleaveLog2) == pipeBankXorOffset);
+                ADDR_ASSERT((pipeBankXor << PipeInterleaveLog2) == pipeBankXorOffset);
 
                 pOut->pipeBankXor = pIn->basePipeBankXor ^ pipeBankXor;
             }
@@ -1768,43 +1824,36 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlGetPossibleSwizzleModes(
         pOut->validModes.sw2d64kB  = 1;
         pOut->validModes.sw2d256kB = 1;
     }
-    // Block-compressed images need to be either using 2D or linear swizzle modes.
-    else if (flags.blockCompressed)
+    // Some APIs (like Vulkan) require that PRT should always use 64KB blocks
+    else if (flags.standardPrt)
     {
-        pOut->validModes.swLinear = 1;
-
-        // We find cases where Tex3d BlockCompressed image adopts 2D_256B should be prohibited.
-        if (IsTex3d(pIn->resourceType) == FALSE)
+        if (IsTex3d(pIn->resourceType) && (flags.view3dAs2dArray == 0))
         {
-            pOut->validModes.sw2d256B = 1;
+            pOut->validModes.sw3d64kB = 1;
         }
-        pOut->validModes.sw2d4kB   = 1;
-        pOut->validModes.sw2d64kB  = 1;
-        pOut->validModes.sw2d256kB = 1;
+        else
+        {
+            pOut->validModes.sw2d64kB = 1;
+        }
     }
-    else if (IsTex1d(pIn->resourceType))
+    else if (// Block-compressed images need to be either using 2D or linear swizzle modes.
+             flags.blockCompressed                 ||
+             // Only 3D w/ view3dAs2dArray == 0 will use 1D/2D block swizzle modes
+             (IsTex3d(pIn->resourceType) == FALSE) || flags.view3dAs2dArray ||
+             //      NV12 and P010 support
+             //      SW_LINEAR, SW_256B_2D, SW_4KB_2D, SW_64KB_2D, SW_256KB_2D
+             // There could be more multimedia formats that require more hw specific tiling modes...
+             flags.nv12                            || flags.p010)
     {
-        pOut->validModes.swLinear  = 1;
-        pOut->validModes.sw2d256B  = 1;
-        pOut->validModes.sw2d4kB   = 1;
-        pOut->validModes.sw2d64kB  = 1;
-        pOut->validModes.sw2d256kB = 1;
-    }
-    else if (flags.nv12 || flags.p010 || IsTex2d(pIn->resourceType) || flags.view3dAs2dArray)
-    {
-        //      NV12 and P010 support
-        //      SW_LINEAR, SW_256B_2D, SW_4KB_2D, SW_64KB_2D, SW_256KB_2D
-        // There could be more multimedia formats that require more hw specific tiling modes...
-
-        // The exception is VRS images.
         // Linear is not allowed for VRS images.
         if (flags.isVrsImage == 0)
         {
             pOut->validModes.swLinear = 1;
         }
-        if (flags.view3dAs2dArray == 0)
+
+        // 3D resources can't use SW_256B_2D
+        if (IsTex3d(pIn->resourceType) == FALSE)
         {
-            // ADDR3_256B_2D can't support 3D images.
             pOut->validModes.sw2d256B = 1;
         }
         pOut->validModes.sw2d4kB   = 1;
@@ -1885,7 +1934,7 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlComputeStereoInfo(
         UINT_32 yPosMask = 0;
 
         // First get "max y bit"
-        for (UINT_32 i = m_pipeInterleaveLog2; i < blkSizeLog2; i++)
+        for (UINT_32 i = PipeInterleaveLog2; i < blkSizeLog2; i++)
         {
             ADDR_ASSERT(m_equationTable[eqIndex].addr[i].valid == 1);
 
@@ -1897,7 +1946,7 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlComputeStereoInfo(
         }
 
         // Then loop again for populating a position mask of "max Y bit"
-        for (UINT_32 i = m_pipeInterleaveLog2; i < blkSizeLog2; i++)
+        for (UINT_32 i = PipeInterleaveLog2; i < blkSizeLog2; i++)
         {
             if ((m_equationTable[eqIndex].addr[i].channel == 1) &&
                 (m_equationTable[eqIndex].addr[i].index == yMax))
@@ -1916,7 +1965,7 @@ ADDR_E_RETURNCODE Gfx12Lib::HwlComputeStereoInfo(
 
             if ((alignedHeight >> yMax) & 1)
             {
-                *pRightXor = yPosMask >> m_pipeInterleaveLog2;
+                *pRightXor = yPosMask >> PipeInterleaveLog2;
             }
         }
     }

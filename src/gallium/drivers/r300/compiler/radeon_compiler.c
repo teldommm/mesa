@@ -91,7 +91,7 @@ rc_error(struct radeon_compiler *c, const char *fmt, ...)
 int
 rc_if_fail_helper(struct radeon_compiler *c, const char *file, int line, const char *assertion)
 {
-   rc_error(c, "ICE at %s:%i: assertion failed: %s\n", file, line, assertion);
+   rc_error(c, "ICE at %s:%i: assertion failed: %s", file, line, assertion);
    return 1;
 }
 
@@ -144,168 +144,6 @@ rc_calculate_inputs_outputs(struct radeon_compiler *c)
 }
 
 /**
- * Rewrite the program such that a given output is duplicated.
- */
-void
-rc_copy_output(struct radeon_compiler *c, unsigned output, unsigned dup_output)
-{
-   unsigned tempreg = rc_find_free_temporary(c);
-   struct rc_instruction *inst;
-   struct rc_instruction *insert_pos = c->Program.Instructions.Prev;
-   struct rc_instruction *last_write_inst = NULL;
-   unsigned branch_depth = 0;
-   unsigned loop_depth = 0;
-   bool emit_after_control_flow = false;
-   unsigned num_writes = 0;
-
-   for (inst = c->Program.Instructions.Next; inst != &c->Program.Instructions; inst = inst->Next) {
-      const struct rc_opcode_info *opcode = rc_get_opcode_info(inst->U.I.Opcode);
-
-      if (inst->U.I.Opcode == RC_OPCODE_BGNLOOP)
-         loop_depth++;
-      if (inst->U.I.Opcode == RC_OPCODE_IF)
-         branch_depth++;
-      if ((inst->U.I.Opcode == RC_OPCODE_ENDLOOP && loop_depth--) ||
-          (inst->U.I.Opcode == RC_OPCODE_ENDIF && branch_depth--))
-         if (emit_after_control_flow && loop_depth == 0 && branch_depth == 0) {
-            insert_pos = inst;
-            emit_after_control_flow = false;
-         }
-
-      if (opcode->HasDstReg) {
-         if (inst->U.I.DstReg.File == RC_FILE_OUTPUT && inst->U.I.DstReg.Index == output) {
-            num_writes++;
-            inst->U.I.DstReg.File = RC_FILE_TEMPORARY;
-            inst->U.I.DstReg.Index = tempreg;
-            insert_pos = inst;
-            last_write_inst = inst;
-            if (loop_depth != 0 && branch_depth != 0)
-               emit_after_control_flow = true;
-         }
-      }
-   }
-
-   /* If there is only a single write, just duplicate the whole instruction instead.
-    * We can do this even when the single write was is a control flow.
-    */
-   if (num_writes == 1) {
-      last_write_inst->U.I.DstReg.File = RC_FILE_OUTPUT;
-      last_write_inst->U.I.DstReg.Index = output;
-
-      inst = rc_insert_new_instruction(c, last_write_inst);
-      struct rc_instruction *prev = inst->Prev;
-      struct rc_instruction *next = inst->Next;
-      memcpy(inst, last_write_inst, sizeof(struct rc_instruction));
-      inst->Prev = prev;
-      inst->Next = next;
-      inst->U.I.DstReg.Index = dup_output;
-   } else {
-      inst = rc_insert_new_instruction(c, insert_pos);
-      inst->U.I.Opcode = RC_OPCODE_MOV;
-      inst->U.I.DstReg.File = RC_FILE_OUTPUT;
-      inst->U.I.DstReg.Index = output;
-
-      inst->U.I.SrcReg[0].File = RC_FILE_TEMPORARY;
-      inst->U.I.SrcReg[0].Index = tempreg;
-      inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
-
-      inst = rc_insert_new_instruction(c, inst);
-      inst->U.I.Opcode = RC_OPCODE_MOV;
-      inst->U.I.DstReg.File = RC_FILE_OUTPUT;
-      inst->U.I.DstReg.Index = dup_output;
-
-      inst->U.I.SrcReg[0].File = RC_FILE_TEMPORARY;
-      inst->U.I.SrcReg[0].Index = tempreg;
-      inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
-   }
-
-   c->Program.OutputsWritten |= 1U << dup_output;
-}
-
-/**
- * Introduce standard code fragment to deal with fragment.position.
- */
-void
-rc_transform_fragment_wpos(struct radeon_compiler *c, unsigned wpos, unsigned new_input,
-                           int full_vtransform)
-{
-   unsigned tempregi = rc_find_free_temporary(c);
-   struct rc_instruction *inst_rcp;
-   struct rc_instruction *inst_mul;
-   struct rc_instruction *inst_mad;
-   struct rc_instruction *inst;
-
-   c->Program.InputsRead &= ~(1U << wpos);
-   c->Program.InputsRead |= 1U << new_input;
-
-   /* perspective divide */
-   inst_rcp = rc_insert_new_instruction(c, &c->Program.Instructions);
-   inst_rcp->U.I.Opcode = RC_OPCODE_RCP;
-
-   inst_rcp->U.I.DstReg.File = RC_FILE_TEMPORARY;
-   inst_rcp->U.I.DstReg.Index = tempregi;
-   inst_rcp->U.I.DstReg.WriteMask = RC_MASK_W;
-
-   inst_rcp->U.I.SrcReg[0].File = RC_FILE_INPUT;
-   inst_rcp->U.I.SrcReg[0].Index = new_input;
-   inst_rcp->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_WWWW;
-
-   inst_mul = rc_insert_new_instruction(c, inst_rcp);
-   inst_mul->U.I.Opcode = RC_OPCODE_MUL;
-
-   inst_mul->U.I.DstReg.File = RC_FILE_TEMPORARY;
-   inst_mul->U.I.DstReg.Index = tempregi;
-   inst_mul->U.I.DstReg.WriteMask = RC_MASK_XYZ;
-
-   inst_mul->U.I.SrcReg[0].File = RC_FILE_INPUT;
-   inst_mul->U.I.SrcReg[0].Index = new_input;
-
-   inst_mul->U.I.SrcReg[1].File = RC_FILE_TEMPORARY;
-   inst_mul->U.I.SrcReg[1].Index = tempregi;
-   inst_mul->U.I.SrcReg[1].Swizzle = RC_SWIZZLE_WWWW;
-
-   /* viewport transformation */
-   inst_mad = rc_insert_new_instruction(c, inst_mul);
-   inst_mad->U.I.Opcode = RC_OPCODE_MAD;
-
-   inst_mad->U.I.DstReg.File = RC_FILE_TEMPORARY;
-   inst_mad->U.I.DstReg.Index = tempregi;
-   inst_mad->U.I.DstReg.WriteMask = RC_MASK_XYZ;
-
-   inst_mad->U.I.SrcReg[0].File = RC_FILE_TEMPORARY;
-   inst_mad->U.I.SrcReg[0].Index = tempregi;
-   inst_mad->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZ0;
-
-   inst_mad->U.I.SrcReg[1].File = RC_FILE_CONSTANT;
-   inst_mad->U.I.SrcReg[1].Swizzle = RC_SWIZZLE_XYZ0;
-
-   inst_mad->U.I.SrcReg[2].File = RC_FILE_CONSTANT;
-   inst_mad->U.I.SrcReg[2].Swizzle = RC_SWIZZLE_XYZ0;
-
-   if (full_vtransform) {
-      inst_mad->U.I.SrcReg[1].Index =
-         rc_constants_add_state(&c->Program.Constants, RC_STATE_R300_VIEWPORT_SCALE, 0);
-      inst_mad->U.I.SrcReg[2].Index =
-         rc_constants_add_state(&c->Program.Constants, RC_STATE_R300_VIEWPORT_OFFSET, 0);
-   } else {
-      inst_mad->U.I.SrcReg[1].Index = inst_mad->U.I.SrcReg[2].Index =
-         rc_constants_add_state(&c->Program.Constants, RC_STATE_R300_WINDOW_DIMENSION, 0);
-   }
-
-   for (inst = inst_mad->Next; inst != &c->Program.Instructions; inst = inst->Next) {
-      const struct rc_opcode_info *opcode = rc_get_opcode_info(inst->U.I.Opcode);
-      unsigned i;
-
-      for (i = 0; i < opcode->NumSrcRegs; i++) {
-         if (inst->U.I.SrcReg[i].File == RC_FILE_INPUT && inst->U.I.SrcReg[i].Index == wpos) {
-            inst->U.I.SrcReg[i].File = RC_FILE_TEMPORARY;
-            inst->U.I.SrcReg[i].Index = tempregi;
-         }
-      }
-   }
-}
-
-/**
  * The FACE input in hardware contains 1 if it's a back face, 0 otherwise.
  * Gallium and OpenGL define it the other way around.
  *
@@ -353,7 +191,7 @@ reg_count_callback(void *userdata, struct rc_instruction *inst, rc_register_file
                    unsigned int index, unsigned int mask)
 {
    struct rc_program_stats *s = userdata;
-   if (file == RC_FILE_TEMPORARY)
+   if (file == RC_FILE_TEMPORARY || (s->type == RC_FRAGMENT_PROGRAM && file == RC_FILE_INPUT))
       (int)index > s->num_temp_regs ? s->num_temp_regs = index : 0;
    if (file == RC_FILE_INLINE)
       s->num_inline_literals++;
@@ -366,6 +204,7 @@ rc_get_stats(struct radeon_compiler *c, struct rc_program_stats *s)
 {
    struct rc_instruction *tmp;
    memset(s, 0, sizeof(*s));
+   s->type = c->type;
    unsigned ip = 0;
    int last_begintex = -1;
 
@@ -505,7 +344,7 @@ rc_validate_final_shader(struct radeon_compiler *c, void *user)
 {
    /* Check the number of constants. */
    if (c->Program.Constants.Count > c->max_constants) {
-      rc_error(c, "Too many constants. Max: %i, Got: %i\n", c->max_constants,
+      rc_error(c, "Too many constants. Max: %i, Got: %i", c->max_constants,
                c->Program.Constants.Count);
    }
 }

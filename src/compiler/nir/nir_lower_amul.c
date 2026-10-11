@@ -50,7 +50,7 @@
 typedef struct {
    nir_shader *shader;
 
-   int (*type_size)(const struct glsl_type *, bool);
+   unsigned (*type_size)(const struct glsl_type *, bool);
 
    /* Tables of UBOs and SSBOs mapping driver_location/base whether
     * they are too large to use imul24:
@@ -75,13 +75,15 @@ lower_large_src(nir_src *src, void *s)
 {
    lower_state *state = s;
 
-   nir_instr *parent = src->ssa->parent_instr;
+   nir_instr *parent = nir_def_instr(src->ssa);
 
    /* No need to visit instructions we've already visited.. this also
     * avoids infinite recursion when phi's are involved:
     */
    if (parent->pass_flags)
       return false;
+
+   parent->pass_flags = 1;
 
    nir_foreach_src(parent, lower_large_src, state);
 
@@ -92,8 +94,6 @@ lower_large_src(nir_src *src, void *s)
          state->progress = true;
       }
    }
-
-   parent->pass_flags = 1;
 
    return true;
 }
@@ -153,12 +153,15 @@ lower_intrinsic(lower_state *state, nir_intrinsic_instr *intr)
    case nir_intrinsic_global_atomic_swap:
    case nir_intrinsic_load_global_constant:
    case nir_intrinsic_load_global:
-      /* just assume we that 24b is not sufficient: */
+   case nir_intrinsic_load_global_transpose_amd:
+   case nir_intrinsic_load_pixel_local:
+      /* just assume that 24b is not sufficient: */
       lower_large_src(&intr->src[0], state);
       return;
 
    case nir_intrinsic_store_global:
-      /* just assume we that 24b is not sufficient: */
+   case nir_intrinsic_store_pixel_local:
+      /* just assume that 24b is not sufficient: */
       lower_large_src(&intr->src[1], state);
       return;
 
@@ -197,7 +200,7 @@ is_large(lower_state *state, nir_variable *var)
 
 bool
 nir_lower_amul(nir_shader *shader,
-               int (*type_size)(const struct glsl_type *, bool))
+               unsigned (*type_size)(const struct glsl_type *, bool))
 {
    assert(shader->options->has_imul24);
    assert(type_size);
@@ -216,6 +219,10 @@ nir_lower_amul(nir_shader *shader,
     * disqualified from imul24:
     */
    nir_foreach_variable_in_shader(var, shader) {
+      /* Skip unused vars: */
+      if (var->data.driver_location == ~0)
+         continue;
+
       if (var->data.mode == nir_var_mem_ubo) {
          if (is_large(&state, var)) {
             state.has_large_ubo = true;
@@ -231,7 +238,7 @@ nir_lower_amul(nir_shader *shader,
             state.has_large_ssbo = true;
             unsigned size = MAX2(1, glsl_array_size(var->type));
             for (unsigned i = 0; i < size; i++) {
-               unsigned idx = var->data.location + i;
+               unsigned idx = var->data.driver_location + i;
                assert(idx < shader->info.num_ssbos);
                state.large_ssbos[idx] = true;
             }
@@ -275,7 +282,7 @@ nir_lower_amul(nir_shader *shader,
          }
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_progress(true, impl, nir_metadata_control_flow);
    }
 
    return state.progress;

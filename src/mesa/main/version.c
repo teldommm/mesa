@@ -230,7 +230,7 @@ _mesa_override_glsl_version(struct gl_constants *consts)
    const char *version;
    int n;
 
-   version = getenv(env_var);
+   version = os_get_option(env_var);
    if (!version) {
       return;
    }
@@ -291,7 +291,6 @@ compute_version(const struct gl_extensions *extensions,
    const bool ver_3_1 = (ver_3_0 &&
                          consts->GLSLVersion >= 140 &&
                          extensions->ARB_draw_instanced &&
-                         extensions->ARB_texture_buffer_object &&
                          extensions->ARB_uniform_buffer_object &&
                          extensions->EXT_texture_snorm &&
                          extensions->NV_primitive_restart &&
@@ -718,8 +717,9 @@ _mesa_get_device_luid(struct gl_context *ctx, GLint *luid)
 {
    struct pipe_screen *screen = ctx->pipe->screen;
    assert(GL_LUID_SIZE_EXT >= PIPE_LUID_SIZE);
-   memset(luid, 0, GL_UUID_SIZE_EXT);
-   screen->get_device_luid(screen, (char *)luid);
+   memset(luid, 0, GL_LUID_SIZE_EXT);
+   if (screen->get_device_luid)
+      screen->get_device_luid(screen, (char *)luid);
 }
 
 /**

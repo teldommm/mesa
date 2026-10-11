@@ -12,36 +12,9 @@
 
 #include "pco.h"
 #include "pco_internal.h"
-#include "util/u_debug.h"
 
 #include <stdbool.h>
 #include <stdio.h>
-
-static inline bool pco_should_skip_pass(const char *pass)
-{
-   return comma_separated_list_contains(pco_skip_passes, pass);
-}
-
-#define PCO_PASS(progress, shader, pass, ...)                 \
-   do {                                                       \
-      if (pco_should_skip_pass(#pass)) {                      \
-         fprintf(stdout, "Skipping pass '%s'\n", #pass);      \
-         break;                                               \
-      }                                                       \
-                                                              \
-      if (pass(shader, ##__VA_ARGS__)) {                      \
-         UNUSED bool _;                                       \
-         progress = true;                                     \
-                                                              \
-         if (PCO_DEBUG(REINDEX))                              \
-            pco_index(shader, false);                         \
-                                                              \
-         pco_validate_shader(shader, "after " #pass);         \
-                                                              \
-         if (pco_should_print_shader_pass(shader))            \
-            pco_print_shader(shader, stdout, "after " #pass); \
-      }                                                       \
-   } while (0)
 
 /**
  * \brief Runs passes on a PCO shader.
@@ -55,12 +28,34 @@ void pco_process_ir(pco_ctx *ctx, pco_shader *shader)
 
    PCO_PASS(_, shader, pco_const_imms);
    PCO_PASS(_, shader, pco_opt);
-   PCO_PASS(_, shader, pco_dce);
+
+   bool progress;
+   do {
+      progress = false;
+      PCO_PASS(progress, shader, pco_dce);
+   } while (progress);
+
+   PCO_PASS(_, shader, pco_bool);
+   PCO_PASS(_, shader, pco_cf);
+
+   PCO_PASS(_, shader, pco_shrink_vecs);
+
+   PCO_PASS(_, shader, pco_const_imms);
+   PCO_PASS(_, shader, pco_opt_comp_only_vecs);
+   PCO_PASS(_, shader, pco_opt);
+
+   do {
+      progress = false;
+      PCO_PASS(progress, shader, pco_dce);
+   } while (progress);
+
    /* TODO: schedule after RA instead as e.g. vecs may no longer be the first
     * time a drc result is used.
     */
    PCO_PASS(_, shader, pco_schedule);
+   PCO_PASS(_, shader, pco_pre_ra_legalize);
    PCO_PASS(_, shader, pco_ra);
+   PCO_PASS(_, shader, pco_post_ra_legalize);
    PCO_PASS(_, shader, pco_end);
    PCO_PASS(_, shader, pco_group_instrs);
 

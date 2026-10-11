@@ -1,3 +1,6 @@
+// Copyright 2020 Red Hat.
+// SPDX-License-Identifier: MIT
+
 use crate::api::icd::*;
 use crate::api::types::*;
 use crate::api::util::*;
@@ -14,7 +17,6 @@ use rusticl_proc_macros::cl_info_entrypoint;
 
 use std::ffi::c_char;
 use std::ffi::c_void;
-use std::mem::transmute;
 use std::ptr;
 use std::slice;
 
@@ -23,12 +25,9 @@ unsafe impl CLInfo<cl_context_info> for cl_context {
     fn query(&self, q: cl_context_info, v: CLInfoValue) -> CLResult<CLInfoRes> {
         let ctx = Context::ref_from_raw(*self)?;
         match q {
-            CL_CONTEXT_DEVICES => v.write::<Vec<cl_device_id>>(
-                ctx.devs
-                    .iter()
-                    .map(|&d| cl_device_id::from_ptr(d))
-                    .collect(),
-            ),
+            CL_CONTEXT_DEVICES => {
+                v.write_iter::<cl_device_id>(ctx.devs.iter().map(|&d| cl_device_id::from_ptr(d)))
+            }
             CL_CONTEXT_NUM_DEVICES => v.write::<cl_uint>(ctx.devs.len() as u32),
             // need to return None if no properties exist
             CL_CONTEXT_PROPERTIES => v.write::<&Properties<cl_context_properties>>(&ctx.properties),
@@ -80,7 +79,8 @@ pub fn get_gl_context_info_khr(
     // SAFETY: properties is a 0 terminated array by spec.
     let props = unsafe { Properties::new(properties) }.ok_or(CL_INVALID_PROPERTY)?;
     for (&key, &val) in props.iter() {
-        match key as u32 {
+        let key = u32::try_from(key).or(Err(CL_INVALID_PROPERTY))?;
+        match key {
             // CL_INVALID_PLATFORM [...] if platform value specified in properties is not a valid platform.
             CL_CONTEXT_PLATFORM => {
                 (val as cl_platform_id).get_ref()?;
@@ -143,7 +143,8 @@ fn create_context(
     // SAFETY: properties is a 0 terminated array by spec.
     let props = unsafe { Properties::new(properties) }.ok_or(CL_INVALID_PROPERTY)?;
     for (&key, &val) in props.iter() {
-        match key as u32 {
+        let key = u32::try_from(key).or(Err(CL_INVALID_PROPERTY))?;
+        match key {
             // CL_INVALID_PLATFORM [...] if platform value specified in properties is not a valid platform.
             CL_CONTEXT_PLATFORM => {
                 (val as cl_platform_id).get_ref()?;
@@ -189,8 +190,11 @@ fn create_context(
         }
 
         // gl sharing is only supported on devices with an UUID, so we can simply unwrap it
-        let dev_uuid: [c_char; UUID_SIZE] =
-            unsafe { transmute(dev.screen().device_uuid().unwrap_or_default()) };
+        let dev_uuid: [c_char; UUID_SIZE] = dev
+            .screen()
+            .device_uuid()
+            .unwrap_or_default()
+            .map(|val| val as c_char);
         if gl_ctx_manager.interop_dev_info.device_uuid != dev_uuid {
             // we only support gl_sharing on the same device
             return Err(CL_INVALID_OPERATION);

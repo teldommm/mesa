@@ -90,7 +90,7 @@ target_to_index(const struct gl_query_object *q)
        q->Target == GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB)
       return q->Stream;
 
-   /* Drivers with PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE = 0 ignore the
+   /* Drivers with pipe_caps.query_pipeline_statistics_single = 0 ignore the
     * index param so it should be useless; but radeonsi needs it in some cases,
     * so pass the correct value.
     */
@@ -117,6 +117,12 @@ target_to_index(const struct gl_query_object *q)
          return PIPE_STAT_QUERY_DS_INVOCATIONS;
       case GL_COMPUTE_SHADER_INVOCATIONS_ARB:
          return PIPE_STAT_QUERY_CS_INVOCATIONS;
+      case GL_TASK_SHADER_INVOCATIONS_EXT:
+         return PIPE_STAT_QUERY_TS_INVOCATIONS;
+      case GL_MESH_SHADER_INVOCATIONS_EXT:
+         return PIPE_STAT_QUERY_MS_INVOCATIONS;
+      case GL_MESH_PRIMITIVES_GENERATED_EXT:
+         return PIPE_STAT_QUERY_MS_PRIMITIVES;
       default:
          break;
    }
@@ -132,11 +138,11 @@ query_type_is_dummy(struct gl_context *ctx, unsigned type)
    case PIPE_QUERY_OCCLUSION_COUNTER:
    case PIPE_QUERY_OCCLUSION_PREDICATE:
    case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
-      return !st->has_occlusion_query;
+      return !st->screen->caps.occlusion_query;
    case PIPE_QUERY_PIPELINE_STATISTICS:
-      return !st->has_pipeline_stat;
+      return !st->screen->caps.query_pipeline_statistics;
    case PIPE_QUERY_PIPELINE_STATISTICS_SINGLE:
-      return !st->has_single_pipe_stat;
+      return !st->screen->caps.query_pipeline_statistics_single;
    default:
       break;
    }
@@ -177,7 +183,7 @@ begin_query(struct gl_context *ctx, struct gl_query_object *q)
       type = PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE;
       break;
    case GL_TIME_ELAPSED:
-      if (st->has_time_elapsed)
+      if (st->screen->caps.query_time_elapsed)
          type = PIPE_QUERY_TIME_ELAPSED;
       else
          type = PIPE_QUERY_TIMESTAMP;
@@ -193,7 +199,10 @@ begin_query(struct gl_context *ctx, struct gl_query_object *q)
    case GL_COMPUTE_SHADER_INVOCATIONS_ARB:
    case GL_CLIPPING_INPUT_PRIMITIVES_ARB:
    case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
-      type = st->has_single_pipe_stat ? PIPE_QUERY_PIPELINE_STATISTICS_SINGLE
+   case GL_TASK_SHADER_INVOCATIONS_EXT:
+   case GL_MESH_SHADER_INVOCATIONS_EXT:
+   case GL_MESH_PRIMITIVES_GENERATED_EXT:
+      type = st->screen->caps.query_pipeline_statistics_single ? PIPE_QUERY_PIPELINE_STATISTICS_SINGLE
                                       : PIPE_QUERY_PIPELINE_STATISTICS;
       break;
    default:
@@ -332,8 +341,17 @@ get_query_result(struct pipe_context *pipe,
       case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
          q->Result = data.pipeline_statistics.c_primitives;
          break;
+      case GL_TASK_SHADER_INVOCATIONS_EXT:
+         q->Result = data.pipeline_statistics.ts_invocations;
+         break;
+      case GL_MESH_SHADER_INVOCATIONS_EXT:
+         q->Result = data.pipeline_statistics.ms_invocations;
+         break;
+      case GL_MESH_PRIMITIVES_GENERATED_EXT:
+         q->Result = data.pipeline_statistics.ms_primitives;
+         break;
       default:
-         unreachable("invalid pipeline statistics counter");
+         UNREACHABLE("invalid pipeline statistics counter");
       }
       break;
    case PIPE_QUERY_OCCLUSION_PREDICATE:
@@ -448,7 +466,7 @@ store_query_result(struct gl_context *ctx, struct gl_query_object *q,
       result_type = PIPE_QUERY_TYPE_U64;
       break;
    default:
-      unreachable("Unexpected result type");
+      UNREACHABLE("Unexpected result type");
    }
 
    if (pname == GL_QUERY_RESULT_AVAILABLE) {
@@ -562,6 +580,24 @@ get_query_binding_point(struct gl_context *ctx, GLenum target, GLuint index)
       else
          return NULL;
 
+   case GL_TASK_SHADER_INVOCATIONS_EXT:
+      if (_mesa_has_EXT_mesh_shader(ctx))
+         return &ctx->Query.task_shader_invocations;
+      else
+         return NULL;
+
+   case GL_MESH_SHADER_INVOCATIONS_EXT:
+      if (_mesa_has_EXT_mesh_shader(ctx))
+         return &ctx->Query.mesh_shader_invocations;
+      else
+         return NULL;
+
+   case GL_MESH_PRIMITIVES_GENERATED_EXT:
+      if (_mesa_has_EXT_mesh_shader(ctx))
+         return &ctx->Query.mesh_primitives_generated;
+      else
+         return NULL;
+
    default:
       return NULL;
    }
@@ -576,9 +612,6 @@ create_queries(struct gl_context *ctx, GLenum target, GLsizei n, GLuint *ids,
                bool dsa)
 {
    const char *func = dsa ? "glGenQueries" : "glCreateQueries";
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "%s(%d)\n", func, n);
 
    if (n < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "%s(n < 0)", func);
@@ -615,20 +648,8 @@ _mesa_CreateQueries(GLenum target, GLsizei n, GLuint *ids)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   switch (target) {
-   case GL_SAMPLES_PASSED:
-   case GL_ANY_SAMPLES_PASSED:
-   case GL_ANY_SAMPLES_PASSED_CONSERVATIVE:
-   case GL_TIME_ELAPSED:
-   case GL_TIMESTAMP:
-   case GL_PRIMITIVES_GENERATED:
-   case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
-   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW:
-   case GL_TRANSFORM_FEEDBACK_OVERFLOW:
-      break;
-   default:
-      _mesa_error(ctx, GL_INVALID_ENUM, "glCreateQueries(invalid target = %s)",
-                  _mesa_enum_to_string(target));
+   if (target != GL_TIMESTAMP && !get_query_binding_point(ctx, target, 0)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glCreateQueries(target)");
       return;
    }
 
@@ -642,9 +663,6 @@ _mesa_DeleteQueries(GLsizei n, const GLuint *ids)
    GLint i;
    GET_CURRENT_CONTEXT(ctx);
    FLUSH_VERTICES(ctx, 0, 0);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDeleteQueries(%d)\n", n);
 
    if (n < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glDeleteQueriesARB(n < 0)");
@@ -680,9 +698,6 @@ _mesa_IsQuery(GLuint id)
 
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, GL_FALSE);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glIsQuery(%u)\n", id);
 
    if (id == 0)
       return GL_FALSE;
@@ -722,10 +737,6 @@ _mesa_BeginQueryIndexed(GLenum target, GLuint index, GLuint id)
    struct gl_query_object *q, **bindpt;
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glBeginQueryIndexed(%s, %u, %u)\n",
-                  _mesa_enum_to_string(target), index, id);
-
    if (!query_error_check_index(ctx, target, index))
       return;
 
@@ -757,7 +768,7 @@ _mesa_BeginQueryIndexed(GLenum target, GLuint index, GLuint id)
 
    q = _mesa_lookup_query_object(ctx, id);
    if (!q) {
-      if (ctx->API != API_OPENGL_COMPAT) {
+      if (!_mesa_is_desktop_gl_compat(ctx)) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glBeginQuery{Indexed}(non-gen name)");
          return;
@@ -828,10 +839,6 @@ _mesa_EndQueryIndexed(GLenum target, GLuint index)
    struct gl_query_object *q, **bindpt;
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glEndQueryIndexed(%s, %u)\n",
-                  _mesa_enum_to_string(target), index);
-
    if (!query_error_check_index(ctx, target, index))
       return;
 
@@ -884,10 +891,6 @@ _mesa_QueryCounter(GLuint id, GLenum target)
 {
    struct gl_query_object *q;
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glQueryCounter(%u, %s)\n", id,
-                  _mesa_enum_to_string(target));
 
    /* error checking */
    if (target != GL_TIMESTAMP) {
@@ -955,12 +958,6 @@ _mesa_GetQueryIndexediv(GLenum target, GLuint index, GLenum pname,
 {
    struct gl_query_object *q = NULL, **bindpt = NULL;
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glGetQueryIndexediv(%s, %u, %s)\n",
-                  _mesa_enum_to_string(target),
-                  index,
-                  _mesa_enum_to_string(pname));
 
    if (!query_error_check_index(ctx, target, index))
       return;
@@ -1072,6 +1069,15 @@ _mesa_GetQueryIndexediv(GLenum target, GLuint index, GLenum pname,
          case GL_CLIPPING_OUTPUT_PRIMITIVES:
             *params = ctx->Const.QueryCounterBits.ClOutPrimitives;
             break;
+         case GL_TASK_SHADER_INVOCATIONS_EXT:
+            *params = ctx->Const.QueryCounterBits.TsInvocations;
+            break;
+         case GL_MESH_SHADER_INVOCATIONS_EXT:
+            *params = ctx->Const.QueryCounterBits.MsInvocations;
+            break;
+         case GL_MESH_PRIMITIVES_GENERATED_EXT:
+            *params = ctx->Const.QueryCounterBits.MeshPrimitivesGenerated;
+            break;
          default:
             _mesa_problem(ctx,
                           "Unknown target in glGetQueryIndexediv(target = %s)",
@@ -1102,10 +1108,6 @@ get_query_object(struct gl_context *ctx, const char *func,
 {
    struct gl_query_object *q = NULL;
    uint64_t value;
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "%s(%u, %s)\n", func, id,
-                  _mesa_enum_to_string(pname));
 
    if (id)
       q = _mesa_lookup_query_object(ctx, id);
@@ -1215,7 +1217,7 @@ invalid_enum:
       break;
    }
    default:
-      unreachable("unexpected ptype");
+      UNREACHABLE("unexpected ptype");
    }
 }
 
@@ -1345,7 +1347,7 @@ _mesa_init_queryobj(struct gl_context *ctx)
    _mesa_InitHashTable(&ctx->Query.QueryObjects);
    ctx->Query.CurrentOcclusionObject = NULL;
 
-   if (screen->get_param(screen, PIPE_CAP_OCCLUSION_QUERY))
+   if (screen->caps.occlusion_query)
       ctx->Const.QueryCounterBits.SamplesPassed = 64;
    else
       ctx->Const.QueryCounterBits.SamplesPassed = 0;
@@ -1355,8 +1357,8 @@ _mesa_init_queryobj(struct gl_context *ctx)
    ctx->Const.QueryCounterBits.PrimitivesGenerated = 64;
    ctx->Const.QueryCounterBits.PrimitivesWritten = 64;
 
-   if (screen->get_param(screen, PIPE_CAP_QUERY_PIPELINE_STATISTICS) ||
-       screen->get_param(screen, PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE)) {
+   if (screen->caps.query_pipeline_statistics ||
+       screen->caps.query_pipeline_statistics_single) {
       ctx->Const.QueryCounterBits.VerticesSubmitted = 64;
       ctx->Const.QueryCounterBits.PrimitivesSubmitted = 64;
       ctx->Const.QueryCounterBits.VsInvocations = 64;
@@ -1380,6 +1382,16 @@ _mesa_init_queryobj(struct gl_context *ctx)
       ctx->Const.QueryCounterBits.ComputeInvocations = 0;
       ctx->Const.QueryCounterBits.ClInPrimitives = 0;
       ctx->Const.QueryCounterBits.ClOutPrimitives = 0;
+   }
+
+   if (screen->caps.mesh_shader && screen->caps.mesh.pipeline_statistic_queries) {
+      ctx->Const.QueryCounterBits.TsInvocations = 64;
+      ctx->Const.QueryCounterBits.MsInvocations = 64;
+      ctx->Const.QueryCounterBits.MeshPrimitivesGenerated = 64;
+   } else {
+      ctx->Const.QueryCounterBits.TsInvocations = 0;
+      ctx->Const.QueryCounterBits.MsInvocations = 0;
+      ctx->Const.QueryCounterBits.MeshPrimitivesGenerated = 0;
    }
 }
 

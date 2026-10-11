@@ -13,16 +13,7 @@
 #include "radv_physical_device.h"
 
 #if DETECT_OS_ANDROID
-#include <libsync.h>
-#include <hardware/gralloc.h>
-#include <hardware/hardware.h>
-#include <hardware/hwvulkan.h>
 #include <vulkan/vk_android_native_buffer.h>
-#include <vulkan/vk_icd.h>
-
-#if ANDROID_API_LEVEL >= 26
-#include <hardware/gralloc1.h>
-#endif
 #endif /* DETECT_OS_ANDROID */
 
 #include "util/os_file.h"
@@ -31,71 +22,9 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
+#define RADV_ANDROID_MAX_PLANES 4
+
 #if DETECT_OS_ANDROID
-
-static int radv_hal_open(const struct hw_module_t *mod, const char *id, struct hw_device_t **dev);
-static int radv_hal_close(struct hw_device_t *dev);
-
-static_assert(HWVULKAN_DISPATCH_MAGIC == ICD_LOADER_MAGIC, "");
-
-PUBLIC struct hwvulkan_module_t HAL_MODULE_INFO_SYM = {
-   .common =
-      {
-         .tag = HARDWARE_MODULE_TAG,
-         .module_api_version = HWVULKAN_MODULE_API_VERSION_0_1,
-         .hal_api_version = HARDWARE_MAKE_API_VERSION(1, 0),
-         .id = HWVULKAN_HARDWARE_MODULE_ID,
-         .name = "AMD Vulkan HAL",
-         .author = "Google",
-         .methods =
-            &(hw_module_methods_t){
-               .open = radv_hal_open,
-            },
-      },
-};
-
-/* If any bits in test_mask are set, then unset them and return true. */
-static inline bool
-unmask32(uint32_t *inout_mask, uint32_t test_mask)
-{
-   uint32_t orig_mask = *inout_mask;
-   *inout_mask &= ~test_mask;
-   return *inout_mask != orig_mask;
-}
-
-static int
-radv_hal_open(const struct hw_module_t *mod, const char *id, struct hw_device_t **dev)
-{
-   assert(mod == &HAL_MODULE_INFO_SYM.common);
-   assert(strcmp(id, HWVULKAN_DEVICE_0) == 0);
-
-   hwvulkan_device_t *hal_dev = malloc(sizeof(*hal_dev));
-   if (!hal_dev)
-      return -1;
-
-   *hal_dev = (hwvulkan_device_t){
-      .common =
-         {
-            .tag = HARDWARE_DEVICE_TAG,
-            .version = HWVULKAN_DEVICE_API_VERSION_0_1,
-            .module = &HAL_MODULE_INFO_SYM.common,
-            .close = radv_hal_close,
-         },
-      .EnumerateInstanceExtensionProperties = radv_EnumerateInstanceExtensionProperties,
-      .CreateInstance = radv_CreateInstance,
-      .GetInstanceProcAddr = radv_GetInstanceProcAddr,
-   };
-
-   *dev = &hal_dev->common;
-   return 0;
-}
-
-static int
-radv_hal_close(struct hw_device_t *dev)
-{
-   /* hwvulkan.h claims that hw_device_t::close() is never called. */
-   return -1;
-}
 
 VkResult
 radv_image_from_gralloc(VkDevice device_h, const VkImageCreateInfo *base_info,
@@ -109,18 +38,17 @@ radv_image_from_gralloc(VkDevice device_h, const VkImageCreateInfo *base_info,
    struct radv_image *image = NULL;
    VkResult result;
 
-   if (gralloc_info->handle->numFds != 1) {
-      return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
-                       "VkNativeBufferANDROID::handle::numFds is %d, "
-                       "expected 1",
-                       gralloc_info->handle->numFds);
-   }
-
-   /* Do not close the gralloc handle's dma_buf. The lifetime of the dma_buf
+   /* 1) handle->numFds is about the number of plane(s) and metadata(optional) fd in a
+    * gralloc buf handle. amdgpu backend of gralloc should make sure all plane bufs
+    * in same dma_buf fd but different offset. Meanwhile, metadata fd is not necessary
+    * till radv needs to support U_GRALLOC_TYPE_GRALLOC4 or higher version GRALLOC.
+    *
+    * 2) Do not close the gralloc handle's dma_buf. The lifetime of the dma_buf
     * must exceed that of the gralloc handle, and we do not own the gralloc
     * handle.
     */
    int dma_buf = gralloc_info->handle->data[0];
+   assert(dma_buf >= 0);
 
    VkDeviceMemory memory_h;
 
@@ -170,6 +98,16 @@ radv_image_from_gralloc(VkDevice device_h, const VkImageCreateInfo *base_info,
 
    updated_base_info.pNext = &external_memory_info;
 
+   VkImageDrmFormatModifierExplicitCreateInfoEXT mod_info;
+   VkSubresourceLayout layouts[RADV_ANDROID_MAX_PLANES];
+   assert(vk_find_struct_const(base_info->pNext, NATIVE_BUFFER_ANDROID));
+   result = vk_android_get_anb_layout(base_info, &mod_info, layouts, RADV_ANDROID_MAX_PLANES);
+   if (result == VK_SUCCESS) {
+      mod_info.pNext = updated_base_info.pNext;
+      updated_base_info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+      updated_base_info.pNext = &mod_info;
+   }
+
    result = radv_image_create(device_h,
                               &(struct radv_image_create_info){
                                  .vk_info = &updated_base_info,
@@ -202,169 +140,9 @@ fail_create_image:
    return result;
 }
 
-VkResult
-radv_GetSwapchainGrallocUsageANDROID(VkDevice device_h, VkFormat format, VkImageUsageFlags imageUsage,
-                                     int *grallocUsage)
-{
-   VK_FROM_HANDLE(radv_device, device, device_h);
-   struct radv_physical_device *pdev = radv_device_physical(device);
-   VkPhysicalDevice pdev_h = radv_physical_device_to_handle(pdev);
-   VkResult result;
-
-   *grallocUsage = 0;
-
-   /* WARNING: Android Nougat's libvulkan.so hardcodes the VkImageUsageFlags
-    * returned to applications via VkSurfaceCapabilitiesKHR::supportedUsageFlags.
-    * The relevant code in libvulkan/swapchain.cpp contains this fun comment:
-    *
-    *     TODO(jessehall): I think these are right, but haven't thought hard
-    *     about it. Do we need to query the driver for support of any of
-    *     these?
-    *
-    * Any disagreement between this function and the hardcoded
-    * VkSurfaceCapabilitiesKHR:supportedUsageFlags causes tests
-    * dEQP-VK.wsi.android.swapchain.*.image_usage to fail.
-    */
-
-   const VkPhysicalDeviceImageFormatInfo2 image_format_info = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
-      .format = format,
-      .type = VK_IMAGE_TYPE_2D,
-      .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = imageUsage,
-   };
-
-   VkImageFormatProperties2 image_format_props = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
-   };
-
-   /* Check that requested format and usage are supported. */
-   result = radv_GetPhysicalDeviceImageFormatProperties2(pdev_h, &image_format_info, &image_format_props);
-   if (result != VK_SUCCESS) {
-      return vk_errorf(device, result,
-                       "radv_GetPhysicalDeviceImageFormatProperties2 failed "
-                       "inside %s",
-                       __func__);
-   }
-
-   if (unmask32(&imageUsage, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
-      *grallocUsage |= GRALLOC_USAGE_HW_RENDER;
-
-   if (unmask32(&imageUsage, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                                VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT))
-      *grallocUsage |= GRALLOC_USAGE_HW_TEXTURE;
-
-   /* All VkImageUsageFlags not explicitly checked here are unsupported for
-    * gralloc swapchains.
-    */
-   if (imageUsage != 0) {
-      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-                       "unsupported VkImageUsageFlags(0x%x) for gralloc "
-                       "swapchain",
-                       imageUsage);
-   }
-
-   /*
-    * FINISHME: Advertise all display-supported formats. Mostly
-    * DRM_FORMAT_ARGB2101010 and DRM_FORMAT_ABGR2101010, but need to check
-    * what we need for 30-bit colors.
-    */
-   if (format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B5G6R5_UNORM_PACK16) {
-      *grallocUsage |= GRALLOC_USAGE_HW_FB | GRALLOC_USAGE_HW_COMPOSER | GRALLOC_USAGE_EXTERNAL_DISP;
-   }
-
-   if (*grallocUsage == 0)
-      return VK_ERROR_FORMAT_NOT_SUPPORTED;
-
-   return VK_SUCCESS;
-}
-
-VkResult
-radv_GetSwapchainGrallocUsage2ANDROID(VkDevice device_h, VkFormat format, VkImageUsageFlags imageUsage,
-                                      VkSwapchainImageUsageFlagsANDROID swapchainImageUsage,
-                                      uint64_t *grallocConsumerUsage, uint64_t *grallocProducerUsage)
-{
-   /* Before level 26 (Android 8.0/Oreo) the loader uses
-    * vkGetSwapchainGrallocUsageANDROID. */
-#if ANDROID_API_LEVEL >= 26
-   VK_FROM_HANDLE(radv_device, device, device_h);
-   struct radv_physical_device *pdev = radv_device_physical(device);
-   VkPhysicalDevice pdev_h = radv_physical_device_to_handle(pdev);
-   VkResult result;
-
-   *grallocConsumerUsage = 0;
-   *grallocProducerUsage = 0;
-
-   if (swapchainImageUsage & VK_SWAPCHAIN_IMAGE_USAGE_SHARED_BIT_ANDROID)
-      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-                       "The Vulkan loader tried to query shared presentable image support");
-
-   const VkPhysicalDeviceImageFormatInfo2 image_format_info = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
-      .format = format,
-      .type = VK_IMAGE_TYPE_2D,
-      .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = imageUsage,
-   };
-
-   VkImageFormatProperties2 image_format_props = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
-   };
-
-   /* Check that requested format and usage are supported. */
-   result = radv_GetPhysicalDeviceImageFormatProperties2(pdev_h, &image_format_info, &image_format_props);
-   if (result != VK_SUCCESS) {
-      return vk_errorf(device, result,
-                       "radv_GetPhysicalDeviceImageFormatProperties2 failed "
-                       "inside %s",
-                       __func__);
-   }
-
-   if (unmask32(&imageUsage, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
-      *grallocProducerUsage |= GRALLOC1_PRODUCER_USAGE_GPU_RENDER_TARGET;
-      *grallocConsumerUsage |= GRALLOC1_CONSUMER_USAGE_CLIENT_TARGET;
-   }
-
-   if (unmask32(&imageUsage, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                                VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)) {
-      *grallocConsumerUsage |= GRALLOC1_CONSUMER_USAGE_GPU_TEXTURE;
-   }
-
-   if (imageUsage != 0) {
-      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-                       "unsupported VkImageUsageFlags(0x%x) for gralloc "
-                       "swapchain",
-                       imageUsage);
-   }
-
-   /*
-    * FINISHME: Advertise all display-supported formats. Mostly
-    * DRM_FORMAT_ARGB2101010 and DRM_FORMAT_ABGR2101010, but need to check
-    * what we need for 30-bit colors.
-    */
-   if (format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B5G6R5_UNORM_PACK16) {
-      *grallocProducerUsage |= GRALLOC1_PRODUCER_USAGE_GPU_RENDER_TARGET;
-      *grallocConsumerUsage |= GRALLOC1_CONSUMER_USAGE_HWCOMPOSER;
-   }
-
-   if (!*grallocProducerUsage && !*grallocConsumerUsage)
-      return VK_ERROR_FORMAT_NOT_SUPPORTED;
-
-   return VK_SUCCESS;
-#else
-   *grallocConsumerUsage = 0;
-   *grallocProducerUsage = 0;
-   return VK_ERROR_FORMAT_NOT_SUPPORTED;
-#endif
-}
 #endif /* DETECT_OS_ANDROID */
 
 #if RADV_SUPPORT_ANDROID_HARDWARE_BUFFER
-
-enum {
-   /* Usage bit equal to GRALLOC_USAGE_HW_CAMERA_MASK */
-   BUFFER_USAGE_CAMERA_MASK = 0x00060000U,
-};
 
 static inline VkFormat
 vk_format_from_android(unsigned android_format, unsigned android_usage)
@@ -373,7 +151,7 @@ vk_format_from_android(unsigned android_format, unsigned android_usage)
    case AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420:
       return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
    case AHARDWAREBUFFER_FORMAT_IMPLEMENTATION_DEFINED:
-      if (android_usage & BUFFER_USAGE_CAMERA_MASK)
+      if (android_usage & AHARDWAREBUFFER_USAGE_CAMERA_MASK)
          return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
       else
          return VK_FORMAT_R8G8B8_UNORM;
@@ -647,7 +425,18 @@ radv_import_ahb_memory(struct radv_device *device, struct radv_device_memory *me
 
       struct radv_image_create_info create_info = {.no_metadata_planes = true, .bo_metadata = &metadata};
 
-      result = radv_image_create_layout(device, create_info, NULL, NULL, mem->image);
+      VkImageDrmFormatModifierExplicitCreateInfoEXT *mod_info_p = NULL;
+      VkImageDrmFormatModifierExplicitCreateInfoEXT mod_info;
+      VkSubresourceLayout layouts[RADV_ANDROID_MAX_PLANES];
+      result = vk_android_get_ahb_layout(info->buffer, &mod_info, layouts, RADV_ANDROID_MAX_PLANES);
+      if (result == VK_SUCCESS) {
+         for (unsigned plane = 0; plane < mem->image->plane_count; ++plane) {
+            mem->image->planes[plane].surface.modifier = mod_info.drmFormatModifier;
+         }
+         mod_info_p = &mod_info;
+      }
+
+      result = radv_image_create_layout(device, create_info, mod_info_p, NULL, mem->image);
       if (result != VK_SUCCESS) {
          radv_bo_destroy(device, NULL, mem->bo);
          mem->bo = NULL;
@@ -706,7 +495,7 @@ radv_create_ahb_memory(struct radv_device *device, struct radv_device_memory *me
 }
 
 bool
-radv_android_gralloc_supports_format(VkFormat format, VkImageUsageFlagBits usage)
+radv_android_gralloc_supports_format(VkFormat format, VkImageUsageFlags2KHR usage)
 {
 #if RADV_SUPPORT_ANDROID_HARDWARE_BUFFER
    /* Ideally we check AHardwareBuffer_isSupported.  But that test-allocates on most platforms and

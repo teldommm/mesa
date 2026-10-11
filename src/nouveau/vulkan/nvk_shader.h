@@ -11,7 +11,7 @@
 #include "vk_pipeline_cache.h"
 
 #include "nak.h"
-#include "nir.h"
+#include "nir_defines.h"
 
 #include "vk_shader.h"
 
@@ -34,12 +34,14 @@ struct vk_shader_module;
    (VK_SHADER_STAGE_VERTEX_BIT | \
     VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | \
     VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | \
-    VK_SHADER_STAGE_GEOMETRY_BIT)
+    VK_SHADER_STAGE_GEOMETRY_BIT | \
+    VK_SHADER_STAGE_TASK_BIT_EXT | \
+    VK_SHADER_STAGE_MESH_BIT_EXT)
 
 #define NVK_SHADER_STAGE_GRAPHICS_BITS \
    (NVK_SHADER_STAGE_VTGM_BITS | VK_SHADER_STAGE_FRAGMENT_BIT)
 
-static inline gl_shader_stage
+static inline mesa_shader_stage
 nvk_last_vtgm_shader_stage(VkShaderStageFlags stages)
 {
    stages &= ~VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -48,8 +50,15 @@ nvk_last_vtgm_shader_stage(VkShaderStageFlags stages)
 }
 
 static inline uint32_t
-nvk_cbuf_binding_for_stage(gl_shader_stage stage)
+nvk_cbuf_binding_for_stage(mesa_shader_stage stage, bool has_task_shader)
 {
+   if (stage == MESA_SHADER_MESH && !has_task_shader)
+      return MESA_SHADER_VERTEX;
+   else if (stage == MESA_SHADER_MESH)
+      return MESA_SHADER_TESS_EVAL;
+   else if (stage == MESA_SHADER_TASK)
+      return MESA_SHADER_VERTEX;
+
    return stage;
 }
 
@@ -80,8 +89,8 @@ struct nvk_cbuf_map {
 };
 
 uint16_t
-nvk_max_shader_push_dw(struct nvk_physical_device *pdev,
-                       gl_shader_stage stage, bool last_vtgm);
+nvk_max_shader_push_dw(const struct nvk_physical_device *pdev,
+                       mesa_shader_stage stage, bool last_vtgm);
 
 struct nvk_shader {
    struct vk_shader vk;
@@ -94,6 +103,8 @@ struct nvk_shader {
    float min_sample_shading;
 
    struct nak_shader_bin *nak;
+   const char *asm_str;
+   const char *nir_str;
    const void *code_ptr;
    uint32_t code_size;
 
@@ -111,6 +122,11 @@ struct nvk_shader {
     */
    uint64_t hdr_addr;
 
+   /* Address of the GS shader header (or 0 if not present) for mesh
+    * shaders.
+    */
+   uint64_t gs_hdr_addr;
+
    /* Address of the start of the shader data section */
    uint64_t data_addr;
 
@@ -123,8 +139,6 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(nvk_shader, vk.base, VkShaderEXT,
                                VK_OBJECT_TYPE_SHADER_EXT);
 
 extern const struct vk_device_shader_ops nvk_device_shader_ops;
-
-VkShaderStageFlags nvk_nak_stages(const struct nv_device_info *info);
 
 uint64_t
 nvk_physical_device_compiler_flags(const struct nvk_physical_device *pdev);
@@ -145,30 +159,15 @@ nvk_nir_lower_descriptors(nir_shader *nir,
                           struct vk_descriptor_set_layout * const *set_layouts,
                           struct nvk_cbuf_map *cbuf_map_out);
 
+bool nvk_nir_lower_mesh_shader(nir_shader *nir, VkShaderCreateFlagsEXT shader_flags);
+bool nvk_nir_lower_task_shader(nir_shader *nir);
+
 VkResult
 nvk_compile_nir_shader(struct nvk_device *dev, nir_shader *nir,
                        const VkAllocationCallbacks *alloc,
                        struct nvk_shader **shader_out);
 
-uint32_t mesa_to_nv9097_shader_type(gl_shader_stage stage);
-uint32_t nvk_pipeline_bind_group(gl_shader_stage stage);
-
-/* Codegen wrappers.
- *
- * TODO: Delete these once NAK supports everything.
- */
-uint64_t nvk_cg_get_prog_debug(void);
-uint64_t nvk_cg_get_prog_optimize(void);
-
-const nir_shader_compiler_options *
-nvk_cg_nir_options(const struct nvk_physical_device *pdev,
-                   gl_shader_stage stage);
-
-void nvk_cg_preprocess_nir(nir_shader *nir);
-void nvk_cg_optimize_nir(nir_shader *nir);
-
-VkResult nvk_cg_compile_nir(struct nvk_physical_device *pdev, nir_shader *nir,
-                            const struct nak_fs_key *fs_key,
-                            struct nvk_shader *shader);
+uint32_t mesa_to_nv9097_shader_type(mesa_shader_stage stage, bool has_task_shader);
+uint32_t nvk_pipeline_bind_group(mesa_shader_stage stage, bool has_task_shader);
 
 #endif

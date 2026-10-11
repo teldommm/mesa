@@ -2,7 +2,7 @@
 - Check if a new version of Mesa is available which might have fixed the problem.
 - If you can, check if the latest development version (git main) works better.
 - Check if your bug has already been reported here.
-- For any logs, backtraces, etc - use [code blocks](https://docs.gitlab.com/ee/user/markdown.html#code-spans-and-blocks), GitLab removes line breaks without this.
+- For any logs, backtraces, etc - use [code blocks](https://docs.gitlab.com/user/markdown/#code-spans-and-blocks), GitLab removes line breaks without this.
    - Do not paste long logs directly into the description. Use https://gitlab.freedesktop.org/-/snippets/new, attachments, or a pastebin with a long expiration instead.
 - As examples of good bug reports you may review one of these - #2598, #2615, #2608
 
@@ -44,7 +44,7 @@ Example:
 
 ### System information
 
-Please post `inxi -GSC -xx` output ([fenced with triple backticks](https://docs.gitlab.com/ee/user/markdown.html#code-spans-and-blocks)) OR fill information below manually
+Please post `inxi -GSC -xx` output ([fenced with triple backticks](https://docs.gitlab.com/user/markdown/#code-spans-and-blocks)) OR fill information below manually
 
 
 - OS: (`cat /etc/os-release | grep "NAME"`)
@@ -72,4 +72,4 @@ Consider recording a [GFXReconstruct](https://github.com/LunarG/gfxreconstruct/b
 
 Does the issue reproduce with the LLVM backend (`RADV_DEBUG=llvm`) or on the AMDGPU-PRO drivers?
 
-Does your environment set any of the variables `ACO_DEBUG`, `RADV_DEBUG`, and `RADV_PERFTEST`?
+Does your environment set any of the variables `ACO_DEBUG`, `RADV_DEBUG`, `RADV_PERFTEST` and `RADV_EXPERIMENTAL`?

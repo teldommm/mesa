@@ -6,7 +6,7 @@ Source
 ------
 
 This repository lives at https://gitlab.freedesktop.org/mesa/mesa.
-Other repositories are likely forks, and code found there is not supported. This is a fork of https://github.com/xMeM/mesa
+Other repositories are likely forks, and code found there is not supported.
 
 
 Build & install

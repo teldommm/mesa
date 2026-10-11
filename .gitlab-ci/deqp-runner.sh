@@ -22,12 +22,45 @@ INSTALL=$(realpath -s "$PWD"/install)
 export LD_LIBRARY_PATH="$INSTALL"/lib/:$LD_LIBRARY_PATH
 export EGL_PLATFORM=surfaceless
 ARCH=$(uname -m)
-export VK_DRIVER_FILES="$PWD"/install/share/vulkan/icd.d/"$VK_DRIVER"_icd."$ARCH".json
-export OCL_ICD_VENDORS="$PWD"/install/etc/OpenCL/vendors/
+export VK_DRIVER_FILES="$INSTALL"/share/vulkan/icd.d/"$VK_DRIVER"_icd."$ARCH".json
+export OCL_ICD_VENDORS="$INSTALL"/etc/OpenCL/vendors/
 
-if [ -n "$USE_ANGLE" ]; then
+if [ -n "${ANGLE_TAG:-}" ]; then
+  # Are we using the right ANGLE version?
+  ci_tag_test_time_check "ANGLE_TAG"
   export LD_LIBRARY_PATH=/angle:$LD_LIBRARY_PATH
 fi
+
+if [ -n "${FLUSTER_TAG:-}" ]; then
+  # Are we using the right Fluster version?
+  ci_tag_test_time_check "FLUSTER_TAG"
+  export LIBVA_DRIVERS_PATH=$INSTALL/lib/dri/
+  # libva spams driver open info by default, and that happens per testcase.
+  export LIBVA_MESSAGING_LEVEL=1
+fi
+
+if [ -n "${PIGLIT_TAG:-}" ]; then
+  # Are we using the right Piglit version?
+  ci_tag_test_time_check "PIGLIT_TAG"
+elif [ -d "/piglit" ]; then
+  # The job does not inherit from .test-piglit, so we remove it.
+  # This makes sure that we can both do the right version checks when needed,
+  # and also optimise our dependencies so we don't pull unneeded stuff.
+  rm -r /piglit
+fi
+
+if [ -n "$VKD3D_PROTON_TAG" ]; then
+  # Are we using the right vkd3d-proton version?
+  ci_tag_test_time_check "VKD3D_PROTON_TAG"
+fi
+
+if [ -n "${OPENCL_CTS_TAG:-}" ]; then
+  # Are we using the right OpenCL-CTS version?
+  ci_tag_test_time_check "OPENCL_CTS_TAG"
+elif [ -d "/opencl-cts" ]; then
+  rm -r /opencl-cts
+fi
+
 
 # Ensure Mesa Shader Cache resides on tmpfs.
 SHADER_CACHE_HOME=${XDG_CACHE_HOME:-${HOME}/.cache}
@@ -38,45 +71,45 @@ findmnt -n tmpfs ${SHADER_CACHE_HOME} || findmnt -n tmpfs ${SHADER_CACHE_DIR} ||
     mount -t tmpfs -o nosuid,nodev,size=2G,mode=1755 tmpfs ${SHADER_CACHE_DIR}
 }
 
-BASELINE=""
-if [ -e "$INSTALL/$GPU_VERSION-fails.txt" ]; then
-    BASELINE="--baseline $INSTALL/$GPU_VERSION-fails.txt"
+FILE_ARGS=""
+
+touch /fails.txt
+
+# There must be a single baseline expected fails list, this lets us cat together
+# xfails from multiple possible sources. Do we actually use this, though?
+cat_if_exists() {
+  prefix=$1
+  kind=$2
+  if [ -e "$INSTALL/$prefix-$kind.txt" ]; then
+    cat "$INSTALL/$prefix-$kind.txt" >> "/$kind.txt"
+  fi
+}
+
+add_if_exists() {
+  if [ -e "$INSTALL/$2" ]; then
+    FILE_ARGS="$FILE_ARGS $1 $INSTALL/$2"
+  fi
+}
+
+# remove duplicate values to avoid reading the same file multiple times
+for prefix in $({
+  echo "all"
+  echo "$DRIVER_NAME"
+  echo "$GPU_VERSION"
+} | sort -u); do
+  cat_if_exists "$prefix" fails
+  add_if_exists "--flakes" "$prefix-flakes.txt"
+  add_if_exists "--skips" "$prefix-skips.txt"
+  add_if_exists "--single-thread" "$prefix-single-thread.txt"
+done
+
+if [[ $CI_JOB_NAME != *full* ]]; then
+  FILE_ARGS="$FILE_ARGS --skips $INSTALL/all-slow-skips.txt"
+  add_if_exists "--skips" "$GPU_VERSION-slow-skips.txt"
 fi
 
-# Default to an empty known flakes file if it doesn't exist.
-touch $INSTALL/$GPU_VERSION-flakes.txt
-
-
-if [ -n "$VK_DRIVER" ] && [ -e "$INSTALL/$VK_DRIVER-skips.txt" ]; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/$VK_DRIVER-skips.txt"
-fi
-
-if [ -n "$GALLIUM_DRIVER" ] && [ -e "$INSTALL/$GALLIUM_DRIVER-skips.txt" ]; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/$GALLIUM_DRIVER-skips.txt"
-fi
-
-if [ -n "$DRIVER_NAME" ] && [ -e "$INSTALL/$DRIVER_NAME-skips.txt" ]; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/$DRIVER_NAME-skips.txt"
-fi
-
-if [ -e "$INSTALL/$GPU_VERSION-skips.txt" ]; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/$GPU_VERSION-skips.txt"
-fi
-
-if [ -e "$INSTALL/$GPU_VERSION-slow-skips.txt" ] && [[ $CI_JOB_NAME != *full* ]]; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/$GPU_VERSION-slow-skips.txt"
-fi
-
-if [ "$PIGLIT_PLATFORM" != "gbm" ] ; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/x11-skips.txt"
-fi
-
-if [ "$PIGLIT_PLATFORM" = "gbm" ]; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/gbm-skips.txt"
-fi
-
-if [ -n "$USE_ANGLE" ]; then
-    DEQP_SKIPS="$DEQP_SKIPS $INSTALL/angle-skips.txt"
+if [ -n "${ANGLE_TAG:-}" ]; then
+    FILE_ARGS="$FILE_ARGS --skips $INSTALL/angle-skips.txt"
 fi
 
 # Set the path to VK validation layer settings (in case it ends up getting loaded)
@@ -110,11 +143,14 @@ uncollapsed_section_switch deqp "deqp: deqp-runner"
 # Print the detailed version with the list of backports and local patches
 { set +x; } 2>/dev/null
 for api in vk-main vk gl gles; do
-  deqp_version_log=/deqp-$api/version
+  deqp_version_log=/deqp-$api/deqp-$api-version
   if [ -r "$deqp_version_log" ]; then
     cat "$deqp_version_log"
   fi
 done
+if [ -r /opencl-cts/opencl-cts-version ]; then
+  echo "OpenCL-CTS commit: $(cat /opencl-cts/opencl-cts-version)"
+fi
 set -x
 
 # If you change the format of the suite toml filenames or the
@@ -127,15 +163,15 @@ deqp-runner \
     suite \
     --suite $INSTALL/deqp-$DEQP_SUITE.toml \
     --output $RESULTS_DIR \
-    --skips $INSTALL/all-skips.txt $DEQP_SKIPS \
-    --flakes $INSTALL/$GPU_VERSION-flakes.txt \
+    --baseline /fails.txt \
+    $FILE_ARGS \
     --testlog-to-xml /deqp-tools/testlog-to-xml \
     --fraction-start ${CI_NODE_INDEX:-1} \
     --fraction $((CI_NODE_TOTAL * ${DEQP_FRACTION:-1})) \
     --jobs ${FDO_CI_CONCURRENT:-4} \
-    $BASELINE \
     ${DEQP_RUNNER_MAX_FAILS:+--max-fails "$DEQP_RUNNER_MAX_FAILS"} \
-    ${DEQP_FORCE_ASAN:+--env LD_PRELOAD=libasan.so.8:/install/lib/libdlclose-skip.so}; DEQP_EXITCODE=$?
+    ${DEQP_RUNNER_SHADER_CACHE_DIR:+--shader-cache-dir "$DEQP_RUNNER_SHADER_CACHE_DIR"} \
+    ${DEQP_FORCE_ASAN:+--env LD_PRELOAD=libasan.so.8:/install/lib/libdlclose-skip.so --env ASAN_OPTIONS=malloc_fill_byte=1}; DEQP_EXITCODE=$?
 
 { set +x; } 2>/dev/null
 
@@ -146,9 +182,20 @@ set -x
 
 report_load
 
-# Remove all but the first 50 individual XML files uploaded as artifacts, to
-# save fd.o space when you break everything.
+# Remove all but the first 50 individual XML, test log and caselist
+# files uploaded as artifacts, to save fd.o space and avoid job log spam
+# when you break everything.
+# Note that each of these pattern gets to keep 50 files, but there is nothing
+# making sure the remaining 50 files of each correspond to the same tests.
 find $RESULTS_DIR -name \*.xml | \
+    sort -n |
+    sed -n '1,+49!p' | \
+    xargs rm -f
+find $RESULTS_DIR -name 'c*.r*.caselist.txt' | \
+    sort -n |
+    sed -n '1,+49!p' | \
+    xargs rm -f
+find $RESULTS_DIR -name 'c*.r*.log' | \
     sort -n |
     sed -n '1,+49!p' | \
     xargs rm -f

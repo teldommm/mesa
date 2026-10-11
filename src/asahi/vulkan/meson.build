@@ -33,7 +33,6 @@ hk_files = files(
   'hk_instance.c',
   'hk_instance.h',
   'hk_nir_lower_descriptors.c',
-  'hk_nir_passthrough_gs.c',
   'hk_physical_device.c',
   'hk_physical_device.h',
   'hk_private.h',
@@ -49,8 +48,20 @@ hk_files = files(
   'hk_wsi.h'
 )
 
+hk_drirc = custom_target(
+  'hk_drirc',
+  input  : [files('hk_drirc_gen.py'), drirc_gen, '00-hk-defaults.conf'],
+  output : ['hk_drirc.c', 'hk_drirc.h'],
+  command : [
+    prog_python, '@INPUT0@',
+    '--import-path', join_paths(dir_source_root, 'src/util'),
+    '--drirc-src', '@OUTPUT0@',
+    '--drirc-hdr', '@OUTPUT1@',
+    '--validate', '@INPUT2@',
+  ],
+)
+
 hk_entrypoints = custom_target(
-  'hk_entrypoints',
   input : [vk_entrypoints_gen, vk_api_xml],
   output : ['hk_entrypoints.h', 'hk_entrypoints.c'],
   command : [
@@ -77,6 +88,7 @@ libhk = static_library(
   'hk',
   [
     hk_entrypoints,
+    hk_drirc,
     hk_files,
     sha1_h,
   ],
@@ -103,21 +115,17 @@ libvulkan_asahi = shared_library(
   install : true,
 )
 
-icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
-icd_file_name = 'libvulkan_asahi.so'
-if with_platform_windows
-  icd_lib_path = import('fs').relative_to(get_option('bindir'), with_vulkan_icd_dir)
-  icd_file_name = 'vulkan_asahi.dll'
-endif
+icd_file_name = libname_prefix + 'vulkan_asahi.' + libname_suffix
 
 asahi_icd = custom_target(
-  'asahi_icd',
   input : [vk_icd_gen, vk_api_xml],
-  output : 'asahi_icd.@0@.json'.format(host_machine.cpu()),
+  output : 'asahi_icd.' + vulkan_manifest_suffix,
   command : [
     prog_python, '@INPUT0@',
     '--api-version', '1.4', '--xml', '@INPUT1@',
-    '--lib-path', join_paths(icd_lib_path, icd_file_name),
+    '--sizeof-pointer', sizeof_pointer,
+    '--icd-lib-path', vulkan_icd_lib_path,
+    '--icd-filename', icd_file_name,
     '--out', '@OUTPUT@',
   ],
   build_by_default : true,
@@ -127,19 +135,18 @@ asahi_icd = custom_target(
 )
 
 _dev_icdname = 'asahi_devenv_icd.@0@.json'.format(host_machine.cpu())
-custom_target(
-  'asahi_devenv_icd',
+_dev_icd = custom_target(
   input : [vk_icd_gen, vk_api_xml],
   output : _dev_icdname,
   command : [
     prog_python, '@INPUT0@',
     '--api-version', '1.4', '--xml', '@INPUT1@',
-    '--lib-path', meson.current_build_dir() / icd_file_name,
+    '--sizeof-pointer', sizeof_pointer,
+    '--icd-lib-path', meson.current_build_dir(),
+    '--icd-filename', icd_file_name,
     '--out', '@OUTPUT@',
   ],
   build_by_default : true,
 )
 
-devenv.append('VK_DRIVER_FILES', meson.current_build_dir() / _dev_icdname)
-# Deprecated: replaced by VK_DRIVER_FILES above
-devenv.append('VK_ICD_FILENAMES', meson.current_build_dir() / _dev_icdname)
+devenv.append('VK_DRIVER_FILES', _dev_icd.full_path())

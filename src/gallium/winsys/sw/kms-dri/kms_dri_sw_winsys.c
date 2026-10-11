@@ -42,6 +42,7 @@
 #include <fcntl.h>
 #include <xf86drm.h>
 
+#include "drm-uapi/drm_fourcc.h"
 #include "util/compiler.h"
 #include "util/format/u_formats.h"
 #include "pipe/p_state.h"
@@ -221,6 +222,84 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
    return NULL;
 }
 
+static struct kms_sw_displaytarget *
+kms_sw_displaytarget_find_and_ref(struct kms_sw_winsys *kms_sw,
+                                  unsigned int kms_handle)
+{
+   struct kms_sw_displaytarget *kms_sw_dt;
+
+   LIST_FOR_EACH_ENTRY(kms_sw_dt, &kms_sw->bo_list, link) {
+      if (kms_sw_dt->handle == kms_handle) {
+         kms_sw_dt->ref_count++;
+
+         DEBUG_PRINT("KMS-DEBUG: imported buffer %u (size %u)\n",
+                     kms_sw_dt->handle, kms_sw_dt->size);
+
+         return kms_sw_dt;
+      }
+   }
+
+   return NULL;
+}
+
+static struct sw_displaytarget *
+kms_sw_displaytarget_create_mapped(struct sw_winsys *ws,
+                                   unsigned tex_usage,
+                                   enum pipe_format format,
+                                   unsigned width, unsigned height,
+                                   unsigned stride,
+                                   void *data,
+                                   struct winsys_handle *whandle)
+{
+   struct kms_sw_winsys *kms_sw = kms_sw_winsys(ws);
+   struct kms_sw_displaytarget *kms_sw_dt;
+   uint32_t kms_handle = -1;
+   int ret;
+
+   assert(kms_sw && whandle);
+
+   ret = drmPrimeFDToHandle(kms_sw->fd, whandle->handle, &kms_handle);
+   if (ret)
+      return NULL;
+
+   kms_sw_dt = kms_sw_displaytarget_find_and_ref(kms_sw, kms_handle);
+   if (kms_sw_dt) {
+      struct kms_sw_plane *plane;
+
+      plane = get_plane(kms_sw_dt, format, width, height, stride,
+                        whandle->offset);
+      if (!plane)
+         kms_sw_dt->ref_count--;
+      return sw_displaytarget(plane);
+   }
+
+   kms_sw_dt = CALLOC_STRUCT(kms_sw_displaytarget);
+   if (!kms_sw_dt)
+      return NULL;
+
+   list_inithead(&kms_sw_dt->planes);
+   kms_sw_dt->ref_count = 1;
+   kms_sw_dt->mapped = data;
+   kms_sw_dt->ro_mapped = MAP_FAILED;
+
+   kms_sw_dt->format = format;
+
+   mtx_init(&kms_sw_dt->map_lock, mtx_plain);
+
+   kms_sw_dt->size = whandle->size;
+   kms_sw_dt->handle = kms_handle;
+   struct kms_sw_plane *plane = get_plane(kms_sw_dt, format, width, height,
+                                          stride, whandle->offset);
+   if (!plane) {
+      FREE(kms_sw_dt);
+      return NULL;
+   }
+
+   list_add(&kms_sw_dt->link, &kms_sw->bo_list);
+
+   return sw_displaytarget(plane);
+}
+
 static void
 kms_sw_displaytarget_destroy(struct sw_winsys *ws,
                              struct sw_displaytarget *dt)
@@ -228,7 +307,6 @@ kms_sw_displaytarget_destroy(struct sw_winsys *ws,
    struct kms_sw_winsys *kms_sw = kms_sw_winsys(ws);
    struct kms_sw_plane *plane = kms_sw_plane(dt);
    struct kms_sw_displaytarget *kms_sw_dt = plane->dt;
-   struct drm_mode_destroy_dumb destroy_req;
 
    kms_sw_dt->ref_count --;
    if (kms_sw_dt->ref_count > 0)
@@ -238,9 +316,13 @@ kms_sw_displaytarget_destroy(struct sw_winsys *ws,
       DEBUG_PRINT("KMS-DEBUG: leaked map buffer %u\n", kms_sw_dt->handle);
    }
 
-   memset(&destroy_req, 0, sizeof destroy_req);
-   destroy_req.handle = kms_sw_dt->handle;
-   drmIoctl(kms_sw->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy_req);
+   if (kms_sw_dt->handle != -1) {
+      struct drm_mode_destroy_dumb destroy_req;
+
+      memset(&destroy_req, 0, sizeof destroy_req);
+      destroy_req.handle = kms_sw_dt->handle;
+      drmIoctl(kms_sw->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy_req);
+   }
 
    list_del(&kms_sw_dt->link);
 
@@ -293,26 +375,6 @@ kms_sw_displaytarget_map(struct sw_winsys *ws,
    return *ptr + plane->offset;
 fail_locked:
    mtx_unlock(&kms_sw_dt->map_lock);
-   return NULL;
-}
-
-static struct kms_sw_displaytarget *
-kms_sw_displaytarget_find_and_ref(struct kms_sw_winsys *kms_sw,
-                                  unsigned int kms_handle)
-{
-   struct kms_sw_displaytarget *kms_sw_dt;
-
-   LIST_FOR_EACH_ENTRY(kms_sw_dt, &kms_sw->bo_list, link) {
-      if (kms_sw_dt->handle == kms_handle) {
-         kms_sw_dt->ref_count++;
-
-         DEBUG_PRINT("KMS-DEBUG: imported buffer %u (size %u)\n",
-                     kms_sw_dt->handle, kms_sw_dt->size);
-
-         return kms_sw_dt;
-      }
-   }
-
    return NULL;
 }
 
@@ -462,12 +524,14 @@ kms_sw_displaytarget_get_handle(struct sw_winsys *winsys,
       whandle->handle = kms_sw_dt->handle;
       whandle->stride = plane->stride;
       whandle->offset = plane->offset;
+      whandle->modifier = DRM_FORMAT_MOD_LINEAR;
       return true;
    case WINSYS_HANDLE_TYPE_FD:
       if (!drmPrimeHandleToFD(kms_sw->fd, kms_sw_dt->handle,
-                             DRM_CLOEXEC, (int*)&whandle->handle)) {
+                             DRM_CLOEXEC | DRM_RDWR, (int*)&whandle->handle)) {
          whandle->stride = plane->stride;
          whandle->offset = plane->offset;
+         whandle->modifier = DRM_FORMAT_MOD_LINEAR;
          return true;
       }
       FALLTHROUGH;
@@ -526,6 +590,7 @@ kms_dri_create_winsys(int fd)
 
    /* screen texture functions */
    ws->base.displaytarget_create = kms_sw_displaytarget_create;
+   ws->base.displaytarget_create_mapped = kms_sw_displaytarget_create_mapped;
    ws->base.displaytarget_destroy = kms_sw_displaytarget_destroy;
    ws->base.displaytarget_from_handle = kms_sw_displaytarget_from_handle;
    ws->base.displaytarget_get_handle = kms_sw_displaytarget_get_handle;

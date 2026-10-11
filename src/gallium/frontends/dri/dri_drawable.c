@@ -96,9 +96,11 @@ dri_st_framebuffer_validate(struct st_context *st,
        pscreen->set_damage_region) {
       struct pipe_resource *resource = textures[ST_ATTACHMENT_BACK_LEFT];
 
-      pscreen->set_damage_region(pscreen, resource,
-                                 drawable->num_damage_rects,
-                                 drawable->damage_rects);
+      if (resource) {
+         pscreen->set_damage_region(pscreen, resource,
+                                    drawable->num_damage_rects,
+                                    drawable->damage_rects);
+      }
    }
 
    if (!out)
@@ -212,6 +214,9 @@ dri_destroy_drawable(struct dri_drawable *drawable)
    /* Notify the st manager that this drawable is no longer valid */
    st_api_destroy_drawable(&drawable->base);
 
+   if (screen->type == DRI_SCREEN_KOPPER)
+      kopper_destroy_drawable(drawable);
+
    FREE(drawable->damage_rects);
    FREE(drawable);
 }
@@ -306,12 +311,6 @@ dri_set_tex_buffer2(struct dri_context *ctx, GLint target,
    }
 }
 
-const __DRItexBufferExtension driTexBufferExtension = {
-   .base = { __DRI_TEX_BUFFER, 2 },
-
-   .setTexBuffer2      = dri_set_tex_buffer2,
-};
-
 /**
  * Get the format and binding of an attachment.
  */
@@ -393,16 +392,71 @@ dri_pipe_blit(struct pipe_context *pipe,
    pipe->blit(pipe, &blit);
 }
 
-static void
-dri_postprocessing(struct dri_context *ctx,
-                   struct dri_drawable *drawable,
-                   enum st_attachment_type att)
+/**
+ * Allocate the private MSAA color buffers for the color attachments in
+ * \p statts, initialized from the single-sample buffers.
+ *
+ * \p templ must have the drawable's dimensions.
+ */
+void
+dri_drawable_allocate_msaa_textures(struct dri_context *ctx,
+                                    struct dri_drawable *drawable,
+                                    const enum st_attachment_type *statts,
+                                    unsigned statts_count,
+                                    const struct pipe_resource *templ)
 {
-   struct pipe_resource *src = drawable->textures[att];
-   struct pipe_resource *zsbuf = drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL];
+   struct pipe_screen *pscreen = drawable->screen->base.screen;
+   struct pipe_resource msaa_templ = *templ;
 
-   if (ctx->pp && src)
-      pp_run(ctx->pp, src, src, zsbuf);
+   if (drawable->stvis.samples <= 1)
+      return;
+
+   for (unsigned i = 0; i < statts_count; i++) {
+      enum st_attachment_type statt = statts[i];
+
+      if (statt == ST_ATTACHMENT_DEPTH_STENCIL)
+         continue;
+
+      if (drawable->textures[statt]) {
+         msaa_templ.format = drawable->textures[statt]->format;
+         msaa_templ.bind = drawable->textures[statt]->bind &
+                           (PIPE_BIND_RENDER_TARGET | PIPE_BIND_BLENDABLE |
+                            PIPE_BIND_SAMPLER_VIEW);
+         msaa_templ.nr_samples = drawable->stvis.samples;
+         msaa_templ.nr_storage_samples = drawable->stvis.samples;
+
+         /* Try to reuse the resource.
+          * (the other resource parameters should be constant)
+          */
+         if (!drawable->msaa_textures[statt] ||
+             drawable->msaa_textures[statt]->width0 != msaa_templ.width0 ||
+             drawable->msaa_textures[statt]->height0 != msaa_templ.height0) {
+            /* Allocate a new one. */
+            pipe_resource_reference(&drawable->msaa_textures[statt], NULL);
+
+            drawable->msaa_textures[statt] =
+               pscreen->resource_create(pscreen, &msaa_templ);
+            assert(drawable->msaa_textures[statt]);
+
+            /* If there are any MSAA resources, we should initialize them
+             * such that they contain the same data as the single-sample
+             * resources we just got from the X server.
+             *
+             * The reason for this is that the gallium frontend (and
+             * therefore the app) can access the MSAA resources only.
+             * The single-sample resources are not exposed
+             * to the gallium frontend.
+             *
+             */
+            dri_pipe_blit(ctx->st->pipe,
+                          drawable->msaa_textures[statt],
+                          drawable->textures[statt]);
+         }
+      }
+      else {
+         pipe_resource_reference(&drawable->msaa_textures[statt], NULL);
+      }
+   }
 }
 
 struct notify_before_flush_cb_args {
@@ -443,8 +497,6 @@ notify_before_flush_cb(void* _args)
 
       /* FRONT_LEFT is resolved in drawable->flush_frontbuffer. */
    }
-
-   dri_postprocessing(args->ctx, args->drawable, ST_ATTACHMENT_BACK_LEFT);
 
    if (pipe->invalidate_resource &&
        (args->flags & __DRI2_FLUSH_INVALIDATE_ANCILLARY)) {

@@ -27,6 +27,7 @@
 #include "vk_device.h"
 #include "vk_format.h"
 #include "vk_image.h"
+#include "vk_buffer_view.h"
 #include "vk_physical_device.h"
 
 /* type_indexes_mask bits are set/clear for support memory type index as per
@@ -171,7 +172,7 @@ get_partition_table_index(VkFormat format)
    case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
       return 13;
    default:
-      unreachable("bad astc format\n");
+      UNREACHABLE("bad astc format\n");
       return 0;
    }
 }
@@ -180,7 +181,7 @@ static VkResult
 astc_prepare_buffer(struct vk_device *device,
                     struct vk_texcompress_astc_state *astc,
                     VkAllocationCallbacks *allocator,
-                    VkDeviceSize minTexelBufferOffsetAlignment,
+                    VkDeviceSize alignment,
                     uint8_t *single_buf_ptr,
                     VkDeviceSize *single_buf_size)
 {
@@ -199,7 +200,7 @@ astc_prepare_buffer(struct vk_device *device,
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(luts); i++) {
-      offset = align(offset, minTexelBufferOffsetAlignment);
+      offset = align(offset, alignment);
       if (single_buf_ptr) {
          memcpy(single_buf_ptr + offset, luts[i]->data, luts[i]->size_B);
          result = create_buffer_view(device, allocator, &astc->luts_buf_view[i], astc->luts_buf,
@@ -236,8 +237,7 @@ astc_prepare_buffer(struct vk_device *device,
             vk_format_get_blockheight(formats[i]),
             &lut_width, &lut_height);
       const unsigned lut_size = lut_width * lut_height;
-
-      offset = align(offset, minTexelBufferOffsetAlignment);
+      offset = align(offset, alignment);
       if (single_buf_ptr) {
          memcpy(single_buf_ptr + offset, lut_data, lut_width * lut_height);
 
@@ -262,26 +262,19 @@ create_fill_all_luts_vulkan(struct vk_device *device,
    VkResult result;
    VkDevice _device = vk_device_to_handle(device);
    const struct vk_device_dispatch_table *disp = &device->dispatch_table;
-   VkPhysicalDevice _phy_device = vk_physical_device_to_handle(device->physical);
-   const struct vk_physical_device_dispatch_table *phy_disp = &device->physical->dispatch_table;
    VkDeviceSize single_buf_size;
    uint8_t *single_buf_ptr;
 
-   VkPhysicalDeviceProperties2 phy_dev_prop = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-      .pNext = NULL,
-   };
-   phy_disp->GetPhysicalDeviceProperties2(_phy_device, &phy_dev_prop);
-
    /* get the single_buf_size */
    result = astc_prepare_buffer(device, astc, allocator,
-                                phy_dev_prop.properties.limits.minTexelBufferOffsetAlignment,
+                                astc->params.luts_alignment,
                                 NULL, &single_buf_size);
+
+   VkMemoryPropertyFlags memory_property = astc->params.luts_memory_flags;
 
    /* create gpu buffer for all the luts */
    result = vk_create_buffer(device, allocator, single_buf_size,
-                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             memory_property,
                              VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
                              &astc->luts_buf, &astc->luts_mem);
    if (unlikely(result != VK_SUCCESS))
@@ -291,8 +284,17 @@ create_fill_all_luts_vulkan(struct vk_device *device,
 
    /* fill all the luts and create views */
    result = astc_prepare_buffer(device, astc, allocator,
-                                phy_dev_prop.properties.limits.minTexelBufferOffsetAlignment,
+                                astc->params.luts_alignment,
                                 single_buf_ptr, &single_buf_size);
+
+   if ((astc->params.luts_memory_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+      disp->FlushMappedMemoryRanges(_device, 1,
+                                    &(VkMappedMemoryRange) {
+                                       .memory = astc->luts_mem,
+                                       .offset = 0,
+                                       .size   = VK_WHOLE_SIZE,
+                                    });
+   }
 
    disp->UnmapMemory(_device, astc->luts_mem);
    return result;
@@ -582,10 +584,118 @@ vk_texcompress_astc_fill_write_descriptor_sets(struct vk_texcompress_astc_state 
    assert(desc_i == ARRAY_SIZE(set->descriptor_set));
 }
 
+
+static inline void
+fill_descriptor_get_info_image(VkDescriptorGetInfoEXT *info,
+                               VkDescriptorType desc_type,
+                               VkDescriptorImageInfo *image_info)
+{
+   assert(desc_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+          desc_type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+
+   info->sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
+   info->pNext = NULL;
+   info->type = desc_type;
+
+   if (desc_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+      info->data.pSampledImage = image_info;
+   } else {
+      info->data.pStorageImage = image_info;
+   }
+}
+
+static inline void
+fill_desc_addr_info_struct(struct vk_device *device,
+                           VkDescriptorAddressInfoEXT *info,
+                           VkBufferView _buf_view)
+{
+   VK_FROM_HANDLE(vk_buffer_view, buf_view, _buf_view);
+   VkDevice _device = vk_device_to_handle(device);
+   const struct vk_device_dispatch_table *disp = &device->dispatch_table;
+
+   const VkBufferDeviceAddressInfo bda_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+      .buffer = vk_buffer_to_handle(buf_view->buffer),
+   };
+
+   info->sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT;
+   info->pNext = NULL;
+   info->address = disp->GetBufferDeviceAddress(_device, &bda_info) + buf_view->offset;
+   info->range = buf_view->range;
+   info->format = buf_view->format;
+}
+
+static inline void
+fill_descriptor_get_info_uniform_texel(VkDescriptorGetInfoEXT *info,
+                                       VkDescriptorAddressInfoEXT *addr_info)
+{
+   info->sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
+   info->pNext = NULL;
+   info->type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+   info->data.pUniformTexelBuffer = addr_info;
+}
+
+void
+vk_texcompress_astc_fill_write_descriptor_buffer(struct vk_device *device, struct vk_texcompress_astc_state *astc,
+                                                struct vk_texcompress_astc_write_descriptor_buffer *buffer,
+                                                VkImageView src_img_view, VkImageLayout src_img_layout,
+                                                VkImageView dst_img_view,
+                                                VkFormat format)
+{
+   unsigned desc_i;
+
+   desc_i = 0;
+   fill_desc_image_info_struct(&buffer->dst_desc_image_info, dst_img_view, VK_IMAGE_LAYOUT_GENERAL);
+   fill_descriptor_get_info_image(&buffer->descriptors[desc_i],
+                                  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                  &buffer->dst_desc_image_info);
+   desc_i++;
+   fill_desc_image_info_struct(&buffer->src_desc_image_info, src_img_view, src_img_layout);
+   fill_descriptor_get_info_image(&buffer->descriptors[desc_i],
+                                  VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                  &buffer->src_desc_image_info);
+   /* fill luts descriptor */
+   desc_i++;
+   for (unsigned i = 0; i < VK_TEXCOMPRESS_ASTC_NUM_LUTS; i++) {
+      fill_desc_addr_info_struct(device, &buffer->luts_desc_addr_info[i],
+                                 astc->luts_buf_view[i]);
+      fill_descriptor_get_info_uniform_texel(&buffer->descriptors[desc_i + i],
+                                             &buffer->luts_desc_addr_info[i]);
+   }
+   desc_i += VK_TEXCOMPRESS_ASTC_NUM_LUTS;
+   uint8_t t_i = get_partition_table_index(format);
+   fill_desc_addr_info_struct(device, &buffer->partition_tbl_desc_addr_info,
+                              astc->partition_tbl_buf_view[t_i]);
+   fill_descriptor_get_info_uniform_texel(&buffer->descriptors[desc_i],
+                                          &buffer->partition_tbl_desc_addr_info);
+   desc_i++;
+   assert(desc_i == ARRAY_SIZE(buffer->descriptors));
+}
+
+struct vk_texcompress_astc_params
+vk_texcompress_astc_default_params(struct vk_device *device)
+{
+   VkPhysicalDevice _phy_device = vk_physical_device_to_handle(device->physical);
+   const struct vk_physical_device_dispatch_table *phy_disp = &device->physical->dispatch_table;
+
+   VkPhysicalDeviceProperties2 phy_dev_prop = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+      .pNext = NULL,
+   };
+   phy_disp->GetPhysicalDeviceProperties2(_phy_device, &phy_dev_prop);
+
+   return (struct vk_texcompress_astc_params) {
+      .luts_alignment = phy_dev_prop.properties.limits.minTexelBufferOffsetAlignment,
+      .luts_memory_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+   };
+}
+
 VkResult
 vk_texcompress_astc_init(struct vk_device *device, VkAllocationCallbacks *allocator,
                          VkPipelineCache pipeline_cache,
-                         struct vk_texcompress_astc_state **astc)
+                         struct vk_texcompress_astc_state **astc,
+                         struct vk_texcompress_astc_params params)
 {
    VkResult result;
 
@@ -596,6 +706,8 @@ vk_texcompress_astc_init(struct vk_device *device, VkAllocationCallbacks *alloca
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    simple_mtx_init(&(*astc)->mutex, mtx_plain);
+
+   (*astc)->params = params;
 
    result = create_fill_all_luts_vulkan(device, allocator, *astc);
    if (result != VK_SUCCESS)

@@ -1,18 +1,21 @@
+// Copyright 2020 Red Hat.
+// SPDX-License-Identifier: MIT
+
 use crate::api::icd::{ArcedCLObject, CLResult};
 use crate::api::types::*;
 use crate::core::event::*;
 use crate::core::queue::*;
 
-use mesa_rust_util::properties::Properties;
+use mesa_rust_util::properties::{MultiValProperties, Properties};
 use rusticl_opencl_gen::*;
 
+use std::cmp;
 use std::convert::TryInto;
 use std::ffi::{c_void, CStr};
 use std::iter::zip;
 use std::mem::MaybeUninit;
 use std::ops::BitAnd;
 use std::sync::Arc;
-use std::{cmp, mem};
 
 // TODO: use MaybeUninit::copy_from_slice once stable
 pub fn maybe_uninit_copy_from_slice<T>(this: &mut [MaybeUninit<T>], src: &[T])
@@ -51,7 +54,7 @@ pub struct CLInfoValue<'a> {
     param_value_size_ret: Option<&'a mut MaybeUninit<usize>>,
 }
 
-impl<'a> CLInfoValue<'a> {
+impl CLInfoValue<'_> {
     /// # Safety
     /// `param_value` and `param_value_size_ret` need to be valid memory allocations or null.
     /// If `param_value` is not null it needs to point to an allocation of at least
@@ -81,7 +84,7 @@ impl<'a> CLInfoValue<'a> {
     /// Used to read from the application provided data.
     pub fn input<T>(&self) -> CLResult<&[MaybeUninit<T>]> {
         if let Some(param_value) = &self.param_value {
-            let count = param_value.len() / mem::size_of::<T>();
+            let count = param_value.len() / size_of::<T>();
             unsafe { cl_slice::from_raw_parts(param_value.as_ptr().cast(), count) }
         } else {
             Ok(&[])
@@ -96,7 +99,7 @@ impl<'a> CLInfoValue<'a> {
     ///
     /// Type specific details:
     ///  - Compatible with C arrays are `T` (if only one element is to be returned), `Vec<T>` or `&[T]`
-    /// types.
+    ///    types.
     ///  - Compatible with C strings are all basic Rust string types.
     ///  - `bool`s are automatically converted to `cl_bool`.
     ///  - For queries which can return no data, `Option<T>` can be used.
@@ -106,7 +109,7 @@ impl<'a> CLInfoValue<'a> {
     /// All types implementing [CLProp] are supported.
     pub fn write<T: CLProp>(self, t: T) -> CLResult<CLInfoRes> {
         let count = t.count();
-        let bytes = count * mem::size_of::<T::Output>();
+        let bytes = count * size_of::<T::Output>();
 
         // param_value is a pointer to memory where the appropriate result being queried is
         // returned. If param_value is NULL, it is ignored.
@@ -143,7 +146,7 @@ impl<'a> CLInfoValue<'a> {
     /// `CL_PROGRAM_BINARIES`. In that case it's meaningless to write back the same pointers. This
     /// function can be used to skip those writes.
     pub fn write_len_only<T: CLProp>(self, len: usize) -> CLResult<CLInfoRes> {
-        let bytes = len * mem::size_of::<T::Output>();
+        let bytes = len * size_of::<T::Output>();
 
         // param_value_size_ret returns the actual size in bytes of data being queried by
         // param_name. If param_value_size_ret is NULL, it is ignored.
@@ -166,7 +169,7 @@ impl<'a> CLInfoValue<'a> {
         iter: impl ExactSizeIterator<Item = T>,
     ) -> CLResult<CLInfoRes> {
         let count = iter.len();
-        let bytes = count * mem::size_of::<T::Output>();
+        let bytes = count * size_of::<T::Output>();
 
         // param_value is a pointer to memory where the appropriate result being queried is
         // returned. If param_value is NULL, it is ignored.
@@ -205,6 +208,7 @@ impl<'a> CLInfoValue<'a> {
 ///  1. To ask the implementation of how much data will be returned. The application uses this
 ///     to allocate enough memory to be passed into the next call.
 ///  2. To actually execute the query.
+///
 /// This trait abstracts this pattern properly away to make it easier to implement it.
 ///
 /// [CLInfoValue] contains helper functions to read and write data behind opaque buffers, the
@@ -294,7 +298,7 @@ cl_prop_for_type!(cl_ulong);
 cl_prop_for_type!(isize);
 cl_prop_for_type!(usize);
 
-cl_prop_for_type!(cl_device_integer_dot_product_acceleration_properties_khr);
+cl_prop_for_type!(cl_device_integer_dot_product_acceleration_properties);
 cl_prop_for_type!(cl_device_pci_bus_info_khr);
 cl_prop_for_type!(cl_image_format);
 cl_prop_for_type!(cl_name_version);
@@ -336,21 +340,6 @@ impl CLProp for &CStr {
 
     fn write_to(&self, out: &mut [MaybeUninit<u8>]) {
         self.to_bytes_with_nul().write_to(out);
-    }
-}
-
-impl<T> CLProp for Vec<T>
-where
-    T: CLProp + Copy,
-{
-    type Output = T;
-
-    fn count(&self) -> usize {
-        self.len()
-    }
-
-    fn write_to(&self, out: &mut [MaybeUninit<T>]) {
-        self.as_slice().write_to(out);
     }
 }
 
@@ -396,6 +385,18 @@ impl<T> CLProp for *mut T {
     }
 }
 
+impl<T> CLProp for *const T {
+    type Output = Self;
+
+    fn count(&self) -> usize {
+        1
+    }
+
+    fn write_to(&self, out: &mut [MaybeUninit<Self>]) {
+        out[0].write(*self);
+    }
+}
+
 impl<T> CLProp for &Properties<T>
 where
     T: CLProp + Copy + Default,
@@ -408,6 +409,21 @@ where
 
     fn write_to(&self, out: &mut [MaybeUninit<T>]) {
         self.raw_data().write_to(out);
+    }
+}
+
+impl<T> CLProp for &MultiValProperties<T>
+where
+    T: CLProp + Copy,
+{
+    type Output = T;
+
+    fn count(&self) -> usize {
+        self.as_raw_slice().count()
+    }
+
+    fn write_to(&self, out: &mut [MaybeUninit<T>]) {
+        self.as_raw_slice().write_to(out);
     }
 }
 
@@ -439,7 +455,7 @@ const CL_DEVICE_TYPES: u32 = CL_DEVICE_TYPE_ACCELERATOR
 
 pub fn check_cl_device_type(val: cl_device_type) -> CLResult<()> {
     let v: u32 = val.try_into().or(Err(CL_INVALID_DEVICE_TYPE))?;
-    if v == CL_DEVICE_TYPE_ALL || v & CL_DEVICE_TYPES == v {
+    if v != 0 && (v == CL_DEVICE_TYPE_ALL || v & CL_DEVICE_TYPES == v) {
         return Ok(());
     }
     Err(CL_INVALID_DEVICE_TYPE)
@@ -463,7 +479,7 @@ pub fn check_cl_bool<T: PartialEq + TryInto<cl_uint>>(val: T) -> Option<bool> {
 }
 
 pub fn event_list_from_cl(
-    q: &Arc<Queue>,
+    q: &Queue,
     num_events_in_wait_list: cl_uint,
     event_wait_list: *const cl_event,
 ) -> CLResult<Vec<Arc<Event>>> {
@@ -488,10 +504,6 @@ pub fn checked_compare(a: usize, o: cmp::Ordering, b: u64) -> bool {
     } else {
         (a as u64).cmp(&b) == o
     }
-}
-
-pub fn is_alligned<T>(ptr: *const T, alignment: usize) -> bool {
-    ptr as usize & (alignment - 1) == 0
 }
 
 pub fn bit_check<A: BitAnd<Output = A> + PartialEq + Default, B: Into<A>>(a: A, b: B) -> bool {
@@ -557,16 +569,15 @@ pub fn check_copy_overlap(
 
 pub mod cl_slice {
     use crate::api::util::CLResult;
-    use mesa_rust_util::ptr::addr;
     use rusticl_opencl_gen::CL_INVALID_VALUE;
-    use std::mem;
+    use std::ffi::c_void;
     use std::slice;
 
     /// Wrapper around [`std::slice::from_raw_parts`] that returns `Err(CL_INVALID_VALUE)` if any of these conditions is met:
     /// - `data` is null
     /// - `data` is not correctly aligned for `T`
-    /// - `len * std::mem::size_of::<T>()` is larger than `isize::MAX`
-    /// - `data` + `len * std::mem::size_of::<T>()` wraps around the address space
+    /// - `len * size_of::<T>()` is larger than `isize::MAX`
+    /// - `data` + `len * size_of::<T>()` wraps around the address space
     ///
     /// # Safety
     /// The behavior is undefined if any of the other requirements imposed by
@@ -585,11 +596,27 @@ pub mod cl_slice {
         unsafe { Ok(slice::from_raw_parts(data, len)) }
     }
 
+    /// same as [self::from_raw_parts] just that `len` is provided in bytes and must be a multiple
+    /// of Ts size.
+    #[inline]
+    pub unsafe fn from_raw_parts_bytes_len<'a, T>(
+        data: *const c_void,
+        len: usize,
+    ) -> CLResult<&'a [T]> {
+        let size = size_of::<T>();
+        if len % size != 0 {
+            return Err(CL_INVALID_VALUE);
+        }
+
+        let len = len / size;
+        unsafe { self::from_raw_parts(data.cast(), len) }
+    }
+
     /// Wrapper around [`std::slice::from_raw_parts_mut`] that returns `Err(CL_INVALID_VALUE)` if any of these conditions is met:
     /// - `data` is null
     /// - `data` is not correctly aligned for `T`
-    /// - `len * std::mem::size_of::<T>()` is larger than `isize::MAX`
-    /// - `data` + `len * std::mem::size_of::<T>()` wraps around the address space
+    /// - `len * size_of::<T>()` is larger than `isize::MAX`
+    /// - `data` + `len * size_of::<T>()` wraps around the address space
     ///
     /// # Safety
     /// The behavior is undefined if any of the other requirements imposed by
@@ -610,12 +637,12 @@ pub mod cl_slice {
 
     #[must_use]
     fn allocation_obviously_invalid<T>(data: *const T, len: usize) -> bool {
-        let Some(total_size) = mem::size_of::<T>().checked_mul(len) else {
+        let Some(total_size) = size_of::<T>().checked_mul(len) else {
             return true;
         };
         data.is_null()
-            || !mesa_rust_util::ptr::is_aligned(data)
+            || !data.is_aligned()
             || total_size > isize::MAX as usize
-            || addr(data).checked_add(total_size).is_none()
+            || data.addr().checked_add(total_size).is_none()
     }
 }

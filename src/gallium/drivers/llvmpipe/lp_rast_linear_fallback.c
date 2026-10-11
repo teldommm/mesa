@@ -33,6 +33,7 @@
 #include "util/u_math.h"
 #include "lp_debug.h"
 #include "lp_perf.h"
+#include "lp_rast.h"
 #include "lp_rast_priv.h"
 
 
@@ -103,7 +104,7 @@ shade_quads(struct lp_rasterizer_task *task,
    assert(!variant->key.depth.enabled);
 
    /* Propagate non-interpolated raster state */
-   task->thread_data.raster_state.viewport_index = inputs->viewport_index;
+   lp_rast_task_init_thread_data(&task->thread_data, inputs);
 
    /* run shader on 4x4 block */
    BEGIN_JIT_CALL(state, task);
@@ -117,7 +118,7 @@ shade_quads(struct lp_rasterizer_task *task,
                                    GET_DADY(inputs),
                                    cbufs,
                                    NULL,
-                                   mask,
+                                   mask, 0,
                                    &task->thread_data,
                                    strides, 0, 0, 0);
    END_JIT_CALL();

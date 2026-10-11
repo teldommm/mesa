@@ -75,7 +75,6 @@ struct dri_context
 
    /* gallium */
    struct st_context *st;
-   struct pp_queue_t *pp;
    struct hud_context *hud;
 };
 
@@ -101,7 +100,8 @@ dri_create_context(struct dri_screen *screen,
                    const struct __DriverContextConfig *ctx_config,
                    unsigned *error,
                    struct dri_context *sharedContextPrivate,
-                   void *loaderPrivate);
+                   void *loaderPrivate,
+                   bool thread_safe);
 
 #endif
 

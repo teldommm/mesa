@@ -60,12 +60,29 @@
 #include "util/u_pointer.h"
 #include "util/u_string.h"
 #include "nir_serialize.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #define DEBUG_STORE 0
 
 
 static void
 draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *var);
+
+static struct util_shader_variant *
+vs_compile_cb(void *user_data, void *cso, const void *spec_key);
+static void
+vs_destroy_cb(struct util_shader_variant *base);
+static struct util_shader_variant *
+gs_compile_cb(void *user_data, void *cso, const void *spec_key);
+static void
+gs_destroy_cb(struct util_shader_variant *base);
+static struct util_shader_variant *
+tcs_compile_cb(void *user_data, void *cso, const void *spec_key);
+static void
+tcs_destroy_cb(struct util_shader_variant *base);
+static struct util_shader_variant *
+tes_compile_cb(void *user_data, void *cso, const void *spec_key);
+static void
+tes_destroy_cb(struct util_shader_variant *base);
 
 
 struct draw_gs_llvm_iface {
@@ -405,17 +422,37 @@ draw_llvm_create(struct draw_context *draw, lp_context_ref *context)
    if (!llvm->context.ref)
       goto fail;
 
-   llvm->nr_variants = 0;
-   list_inithead(&llvm->vs_variants_list.list);
+   const struct util_shader_variant_cache_options vs_opts = {
+      .compile = vs_compile_cb,
+      .destroy = vs_destroy_cb,
+      .user_data = llvm,
+      .cap = DRAW_MAX_VARIANTS_PER_STAGE,
+   };
+   llvm->vs_opts = vs_opts;
 
-   llvm->nr_gs_variants = 0;
-   list_inithead(&llvm->gs_variants_list.list);
+   const struct util_shader_variant_cache_options gs_opts = {
+      .compile = gs_compile_cb,
+      .destroy = gs_destroy_cb,
+      .user_data = llvm,
+      .cap = DRAW_MAX_VARIANTS_PER_STAGE,
+   };
+   llvm->gs_opts = gs_opts;
 
-   llvm->nr_tcs_variants = 0;
-   list_inithead(&llvm->tcs_variants_list.list);
+   const struct util_shader_variant_cache_options tcs_opts = {
+      .compile = tcs_compile_cb,
+      .destroy = tcs_destroy_cb,
+      .user_data = llvm,
+      .cap = DRAW_MAX_VARIANTS_PER_STAGE,
+   };
+   llvm->tcs_opts = tcs_opts;
 
-   llvm->nr_tes_variants = 0;
-   list_inithead(&llvm->tes_variants_list.list);
+   const struct util_shader_variant_cache_options tes_opts = {
+      .compile = tes_compile_cb,
+      .destroy = tes_destroy_cb,
+      .user_data = llvm,
+      .cap = DRAW_MAX_VARIANTS_PER_STAGE,
+   };
+   llvm->tes_opts = tes_opts;
 
    return llvm;
 
@@ -442,7 +479,7 @@ static void
 draw_get_ir_cache_key(struct nir_shader *nir,
                       const void *key, size_t key_size,
                       uint32_t val_32bit,
-                      unsigned char ir_sha1_cache_key[20])
+                      unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN])
 {
    struct blob blob = { 0 };
    unsigned ir_size;
@@ -453,12 +490,12 @@ draw_get_ir_cache_key(struct nir_shader *nir,
    ir_binary = blob.data;
    ir_size = blob.size;
 
-   struct mesa_sha1 ctx;
-   _mesa_sha1_init(&ctx);
-   _mesa_sha1_update(&ctx, key, key_size);
-   _mesa_sha1_update(&ctx, ir_binary, ir_size);
-   _mesa_sha1_update(&ctx, &val_32bit, 4);
-   _mesa_sha1_final(&ctx, ir_sha1_cache_key);
+   blake3_hasher ctx;
+   _mesa_blake3_init(&ctx);
+   _mesa_blake3_update(&ctx, key, key_size);
+   _mesa_blake3_update(&ctx, ir_binary, ir_size);
+   _mesa_blake3_update(&ctx, &val_32bit, 4);
+   _mesa_blake3_final(&ctx, ir_blake3_cache_key);
 
    blob_finish(&blob);
 }
@@ -467,7 +504,7 @@ draw_get_ir_cache_key(struct nir_shader *nir,
 /**
  * Create LLVM-generated code for a vertex shader.
  */
-struct draw_llvm_variant *
+static struct draw_llvm_variant *
 draw_llvm_create_variant(struct draw_llvm *llvm,
                          unsigned num_inputs,
                          const struct draw_llvm_variant_key *key)
@@ -476,7 +513,7 @@ draw_llvm_create_variant(struct draw_llvm *llvm,
    struct llvm_vertex_shader *shader =
       llvm_vertex_shader(llvm->draw->vs.vertex_shader);
    char module_name[64];
-   unsigned char ir_sha1_cache_key[20];
+   unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN];
    struct lp_cached_code cached = { 0 };
    bool needs_caching = false;
    variant = MALLOC(sizeof *variant +
@@ -485,23 +522,22 @@ draw_llvm_create_variant(struct draw_llvm *llvm,
    if (!variant)
       return NULL;
 
-   variant->llvm = llvm;
    variant->shader = shader;
    memcpy(&variant->key, key, shader->variant_key_size);
 
    snprintf(module_name, sizeof(module_name), "draw_llvm_vs_variant%u",
-            variant->shader->variants_cached);
+            variant->shader->variants_created);
 
    if (shader->base.state.ir.nir && llvm->draw->disk_cache_cookie) {
       draw_get_ir_cache_key(shader->base.state.ir.nir,
                             key,
                             shader->variant_key_size,
                             num_inputs,
-                            ir_sha1_cache_key);
+                            ir_blake3_cache_key);
 
       llvm->draw->disk_cache_find_shader(llvm->draw->disk_cache_cookie,
                                          &cached,
-                                         ir_sha1_cache_key);
+                                         ir_blake3_cache_key);
       if (!cached.data_size)
          needs_caching = true;
    }
@@ -530,13 +566,10 @@ draw_llvm_create_variant(struct draw_llvm *llvm,
    if (needs_caching)
       llvm->draw->disk_cache_insert_shader(llvm->draw->disk_cache_cookie,
                                            &cached,
-                                           ir_sha1_cache_key);
+                                           ir_blake3_cache_key);
    gallivm_free_ir(variant->gallivm);
 
-   variant->list_item_global.base = variant;
-   variant->list_item_local.base = variant;
-   /*variant->no = */shader->variants_created++;
-   variant->list_item_global.base = variant;
+   shader->variants_created++;
 
    return variant;
 }
@@ -572,7 +605,8 @@ do_clamp_vertex_color(struct gallivm_state *gallivm,
 
 
 static void
-generate_vs(struct draw_llvm_variant *variant,
+generate_vs(struct draw_llvm *llvm,
+            struct draw_llvm_variant *variant,
             LLVMBuilderRef builder,
             struct lp_type vs_type,
             LLVMValueRef (*outputs)[TGSI_NUM_CHANNELS],
@@ -585,7 +619,6 @@ generate_vs(struct draw_llvm_variant *variant,
             bool clamp_vertex_color,
             struct lp_build_mask_context *bld_mask)
 {
-   struct draw_llvm *llvm = variant->llvm;
    const struct tgsi_token *tokens = llvm->draw->vs.vertex_shader->state.tokens;
    LLVMValueRef consts_ptr =
       lp_jit_resources_constants(variant->gallivm, variant->resources_type, resources_ptr);
@@ -610,9 +643,6 @@ generate_vs(struct draw_llvm_variant *variant,
    params.info = &llvm->draw->vs.vertex_shader->info;
    params.ssbo_ptr = ssbos_ptr;
    params.image = draw_image;
-   params.aniso_filter_table = lp_jit_resources_aniso_filter_table(variant->gallivm,
-                                                                   variant->resources_type,
-                                                                   resources_ptr);
 
    if (llvm->draw->vs.vertex_shader->state.ir.nir &&
        llvm->draw->vs.vertex_shader->state.type == PIPE_SHADER_IR_NIR) {
@@ -1068,7 +1098,8 @@ store_clip(struct gallivm_state *gallivm,
  * Transforms the outputs for viewport mapping
  */
 static void
-generate_viewport(struct draw_llvm_variant *variant,
+generate_viewport(struct draw_llvm *llvm,
+                  struct draw_llvm_variant *variant,
                   LLVMBuilderRef builder,
                   struct lp_type vs_type,
                   LLVMValueRef (*outputs)[TGSI_NUM_CHANNELS],
@@ -1076,7 +1107,7 @@ generate_viewport(struct draw_llvm_variant *variant,
 {
    struct gallivm_state *gallivm = variant->gallivm;
    struct lp_type f32_type = vs_type;
-   const unsigned pos = variant->llvm->draw->vs.position_output;
+   const unsigned pos = llvm->draw->vs.position_output;
    LLVMTypeRef vs_type_llvm = lp_build_vec_type(gallivm, vs_type);
    LLVMValueRef out3 = LLVMBuildLoad2(builder, vs_type_llvm, outputs[pos][3], ""); /*w0 w1 .. wn*/
    LLVMValueRef const1 = lp_build_const_vec(gallivm, f32_type, 1.0);       /*1.0 1.0 1.0 1.0*/
@@ -1636,6 +1667,8 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant)
       if (LLVMGetTypeKind(arg_types[i]) == LLVMPointerTypeKind)
          lp_add_function_attr(variant_func, i + 1, LP_FUNC_ATTR_NOALIAS);
 
+   lp_function_add_debug_info(gallivm, variant_func, func_type);
+
    if (gallivm->cache && gallivm->cache->data_size) {
       gallivm_stub_func(gallivm, variant_func);
       return;
@@ -1683,6 +1716,11 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant)
    block = LLVMAppendBasicBlockInContext(gallivm->context, variant_func, "entry");
    builder = gallivm->builder;
    LLVMPositionBuilderAtEnd(builder, block);
+
+   if (gallivm->di_function) {
+      LLVMSetCurrentDebugLocation2(
+         gallivm->builder, LLVMDIBuilderCreateDebugLocation(gallivm->context, 0, 0, gallivm->di_function, NULL));
+   }
 
    memset(&vs_type, 0, sizeof vs_type);
    vs_type.floating = true; /* floating point values */
@@ -1952,7 +1990,7 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant)
                                                     lp_build_broadcast_scalar(&blduivec, vertex_id_offset), "");
 
       ptr_aos = (const LLVMValueRef (*)[TGSI_NUM_CHANNELS]) inputs;
-      generate_vs(variant,
+      generate_vs(llvm, variant,
                   builder,
                   vs_type,
                   outputs,
@@ -1990,7 +2028,7 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant)
 
          /* do viewport mapping */
          if (!bypass_viewport) {
-            generate_viewport(variant, builder, vs_type, outputs, context_ptr);
+            generate_viewport(llvm, variant, builder, vs_type, outputs, context_ptr);
          }
       } else {
          clipmask = blduivec.zero;
@@ -2091,11 +2129,11 @@ draw_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
 
    for (unsigned i = 0 ; i < key->nr_samplers; i++) {
       lp_sampler_static_sampler_state(&draw_sampler[i].sampler_state,
-                                      llvm->draw->samplers[PIPE_SHADER_VERTEX][i]);
+                                      llvm->draw->samplers[MESA_SHADER_VERTEX][i]);
    }
    for (unsigned i = 0 ; i < key->nr_sampler_views; i++) {
       lp_sampler_static_texture_state(&draw_sampler[i].texture_state,
-                                      llvm->draw->sampler_views[PIPE_SHADER_VERTEX][i]);
+                                      llvm->draw->sampler_views[MESA_SHADER_VERTEX][i]);
    }
 
    draw_image = draw_llvm_variant_key_images(key);
@@ -2103,7 +2141,7 @@ draw_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
           key->nr_images * sizeof *draw_image);
    for (unsigned i = 0; i < key->nr_images; i++) {
       lp_sampler_static_texture_state_image(&draw_image[i].image_state,
-                                            llvm->draw->images[PIPE_SHADER_VERTEX][i]);
+                                            llvm->draw->images[MESA_SHADER_VERTEX][i]);
    }
    return key;
 }
@@ -2142,7 +2180,7 @@ draw_llvm_dump_variant_key(struct draw_llvm_variant_key *key)
 
 void
 draw_llvm_set_mapped_texture(struct draw_context *draw,
-                             enum pipe_shader_type shader_stage,
+                             mesa_shader_stage shader_stage,
                              unsigned sview_idx,
                              uint32_t width, uint32_t height, uint32_t depth,
                              uint32_t first_level, uint32_t last_level,
@@ -2184,7 +2222,7 @@ draw_llvm_set_mapped_texture(struct draw_context *draw,
 
 void
 draw_llvm_set_mapped_image(struct draw_context *draw,
-                           enum pipe_shader_type shader_stage,
+                           mesa_shader_stage shader_stage,
                            unsigned idx,
                            uint32_t width, uint32_t height, uint32_t depth,
                            const void *base_ptr,
@@ -2214,7 +2252,7 @@ draw_llvm_set_mapped_image(struct draw_context *draw,
 
 void
 draw_llvm_set_sampler_state(struct draw_context *draw,
-                            enum pipe_shader_type shader_type)
+                            mesa_shader_stage shader_type)
 {
    assert(shader_type < DRAW_MAX_SHADER_STAGE);
    for (unsigned i = 0; i < draw->num_samplers[shader_type]; i++) {
@@ -2226,32 +2264,46 @@ draw_llvm_set_sampler_state(struct draw_context *draw,
          jit_sam->min_lod = s->min_lod;
          jit_sam->max_lod = s->max_lod;
          jit_sam->lod_bias = s->lod_bias;
-         jit_sam->max_aniso = s->max_anisotropy;
          COPY_4V(jit_sam->border_color, s->border_color.f);
       }
    }
 }
 
 
-void
+static void
 draw_llvm_destroy_variant(struct draw_llvm_variant *variant)
 {
-   struct draw_llvm *llvm = variant->llvm;
-
-   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR)) {
-      debug_printf("Deleting VS variant: %u vs variants,\t%u total variants\n",
-                    variant->shader->variants_cached, llvm->nr_variants);
-   }
+   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR))
+      debug_printf("Deleting VS variant\n");
 
    gallivm_destroy(variant->gallivm);
-
-   list_del(&variant->list_item_local.list);
-   variant->shader->variants_cached--;
-   list_del(&variant->list_item_global.list);
-   llvm->nr_variants--;
-   if(variant->function_name)
-      FREE(variant->function_name);
+   FREE(variant->function_name);
    FREE(variant);
+}
+
+static struct util_shader_variant *
+vs_compile_cb(void *user_data, void *cso, const void *spec_key)
+{
+   struct draw_llvm *llvm = user_data;
+   struct llvm_vertex_shader *shader = cso;
+   const struct draw_llvm_variant_key *key = spec_key;
+   const unsigned num_inputs = MAX2(shader->base.info.num_inputs,
+                                    draw_total_vs_outputs(llvm->draw));
+
+   if (llvm->context.mutex)
+      simple_mtx_lock(llvm->context.mutex);
+   struct draw_llvm_variant *variant =
+      draw_llvm_create_variant(llvm, num_inputs, key);
+   if (llvm->context.mutex)
+      simple_mtx_unlock(llvm->context.mutex);
+
+   return variant ? &variant->base : NULL;
+}
+
+static void
+vs_destroy_cb(struct util_shader_variant *base)
+{
+   draw_llvm_destroy_variant(container_of(base, struct draw_llvm_variant, base));
 }
 
 
@@ -2369,6 +2421,8 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
       if (LLVMGetTypeKind(arg_types[i]) == LLVMPointerTypeKind)
          lp_add_function_attr(variant_func, i + 1, LP_FUNC_ATTR_NOALIAS);
 
+   lp_function_add_debug_info(gallivm, variant_func, func_type);
+
    if (gallivm->cache && gallivm->cache->data_size) {
       gallivm_stub_func(gallivm, variant_func);
       return;
@@ -2412,6 +2466,11 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
    block = LLVMAppendBasicBlockInContext(gallivm->context, variant_func, "entry");
    builder = gallivm->builder;
    LLVMPositionBuilderAtEnd(builder, block);
+
+   if (gallivm->di_function) {
+      LLVMSetCurrentDebugLocation2(
+         gallivm->builder, LLVMDIBuilderCreateDebugLocation(gallivm->context, 0, 0, gallivm->di_function, NULL));
+   }
 
    lp_build_context_init(&bld, gallivm, lp_type_int(32));
 
@@ -2464,10 +2523,6 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
    params.ssbo_ptr = ssbos_ptr;
    params.image = image;
    params.gs_vertex_streams = variant->shader->base.num_vertex_streams;
-   params.aniso_filter_table = lp_jit_resources_aniso_filter_table(gallivm,
-                                                                   variant->resources_type,
-                                                                   resources_ptr);
-
 
    if (llvm->draw->gs.geometry_shader->state.type == PIPE_SHADER_IR_TGSI)
       lp_build_tgsi_soa(variant->gallivm,
@@ -2491,7 +2546,7 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
 }
 
 
-struct draw_gs_llvm_variant *
+static struct draw_gs_llvm_variant *
 draw_gs_llvm_create_variant(struct draw_llvm *llvm,
                             unsigned num_outputs,
                             const struct draw_gs_llvm_variant_key *key)
@@ -2500,7 +2555,7 @@ draw_gs_llvm_create_variant(struct draw_llvm *llvm,
    struct llvm_geometry_shader *shader =
       llvm_geometry_shader(llvm->draw->gs.geometry_shader);
    char module_name[64];
-   unsigned char ir_sha1_cache_key[20];
+   unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN];
    struct lp_cached_code cached = { 0 };
    bool needs_caching = false;
 
@@ -2510,11 +2565,10 @@ draw_gs_llvm_create_variant(struct draw_llvm *llvm,
    if (!variant)
       return NULL;
 
-   variant->llvm = llvm;
    variant->shader = shader;
 
    snprintf(module_name, sizeof(module_name), "draw_llvm_gs_variant%u",
-            variant->shader->variants_cached);
+            variant->shader->variants_created);
 
    memcpy(&variant->key, key, shader->variant_key_size);
 
@@ -2523,11 +2577,11 @@ draw_gs_llvm_create_variant(struct draw_llvm *llvm,
                             key,
                             shader->variant_key_size,
                             num_outputs,
-                            ir_sha1_cache_key);
+                            ir_blake3_cache_key);
 
       llvm->draw->disk_cache_find_shader(llvm->draw->disk_cache_cookie,
                                          &cached,
-                                         ir_sha1_cache_key);
+                                         ir_blake3_cache_key);
       if (!cached.data_size)
          needs_caching = true;
    }
@@ -2548,37 +2602,46 @@ draw_gs_llvm_create_variant(struct draw_llvm *llvm,
    if (needs_caching)
       llvm->draw->disk_cache_insert_shader(llvm->draw->disk_cache_cookie,
                                            &cached,
-                                           ir_sha1_cache_key);
+                                           ir_blake3_cache_key);
    gallivm_free_ir(variant->gallivm);
 
-   variant->list_item_global.base = variant;
-   variant->list_item_local.base = variant;
-   /*variant->no = */shader->variants_created++;
-   variant->list_item_global.base = variant;
+   shader->variants_created++;
 
    return variant;
 }
 
 
-void
+static void
 draw_gs_llvm_destroy_variant(struct draw_gs_llvm_variant *variant)
 {
-   struct draw_llvm *llvm = variant->llvm;
-
-   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR)) {
-      debug_printf("Deleting GS variant: %u gs variants,\t%u total variants\n",
-                    variant->shader->variants_cached, llvm->nr_gs_variants);
-   }
+   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR))
+      debug_printf("Deleting GS variant\n");
 
    gallivm_destroy(variant->gallivm);
-
-   list_del(&variant->list_item_local.list);
-   variant->shader->variants_cached--;
-   list_del(&variant->list_item_global.list);
-   llvm->nr_gs_variants--;
-   if(variant->function_name)
-      FREE(variant->function_name);
+   FREE(variant->function_name);
    FREE(variant);
+}
+
+static struct util_shader_variant *
+gs_compile_cb(void *user_data, UNUSED void *cso, const void *spec_key)
+{
+   struct draw_llvm *llvm = user_data;
+   const struct draw_gs_llvm_variant_key *key = spec_key;
+
+   if (llvm->context.mutex)
+      simple_mtx_lock(llvm->context.mutex);
+   struct draw_gs_llvm_variant *variant =
+      draw_gs_llvm_create_variant(llvm, draw_total_gs_outputs(llvm->draw), key);
+   if (llvm->context.mutex)
+      simple_mtx_unlock(llvm->context.mutex);
+
+   return variant ? &variant->base : NULL;
+}
+
+static void
+gs_destroy_cb(struct util_shader_variant *base)
+{
+   draw_gs_llvm_destroy_variant(container_of(base, struct draw_gs_llvm_variant, base));
 }
 
 
@@ -2617,11 +2680,11 @@ draw_gs_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
 
    for (unsigned i = 0 ; i < key->nr_samplers; i++) {
       lp_sampler_static_sampler_state(&draw_sampler[i].sampler_state,
-                                      llvm->draw->samplers[PIPE_SHADER_GEOMETRY][i]);
+                                      llvm->draw->samplers[MESA_SHADER_GEOMETRY][i]);
    }
    for (unsigned i = 0 ; i < key->nr_sampler_views; i++) {
       lp_sampler_static_texture_state(&draw_sampler[i].texture_state,
-                                      llvm->draw->sampler_views[PIPE_SHADER_GEOMETRY][i]);
+                                      llvm->draw->sampler_views[MESA_SHADER_GEOMETRY][i]);
    }
 
    draw_image = draw_gs_llvm_variant_key_images(key);
@@ -2629,7 +2692,7 @@ draw_gs_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
           key->nr_images * sizeof *draw_image);
    for (unsigned i = 0; i < key->nr_images; i++) {
       lp_sampler_static_texture_state_image(&draw_image[i].image_state,
-                                            llvm->draw->images[PIPE_SHADER_GEOMETRY][i]);
+                                            llvm->draw->images[MESA_SHADER_GEOMETRY][i]);
    }
    return key;
 }
@@ -2966,6 +3029,8 @@ draw_tcs_llvm_generate(struct draw_llvm *llvm,
       }
    }
 
+   lp_function_add_debug_info(gallivm, variant_func, func_type);
+
    if (gallivm->cache && gallivm->cache->data_size) {
       gallivm_stub_func(gallivm, variant_func);
       gallivm_stub_func(gallivm, variant_coro);
@@ -2989,6 +3054,11 @@ draw_tcs_llvm_generate(struct draw_llvm *llvm,
    block = LLVMAppendBasicBlockInContext(gallivm->context, variant_func, "entry");
    builder = gallivm->builder;
    LLVMPositionBuilderAtEnd(builder, block);
+
+   if (gallivm->di_function) {
+      LLVMSetCurrentDebugLocation2(
+         gallivm->builder, LLVMDIBuilderCreateDebugLocation(gallivm->context, 0, 0, gallivm->di_function, NULL));
+   }
 
    lp_build_context_init(&bld, gallivm, lp_type_int(32));
 
@@ -3057,8 +3127,15 @@ draw_tcs_llvm_generate(struct draw_llvm *llvm,
                           NULL, LLVMIntEQ);
    LLVMBuildRet(builder, lp_build_zero(gallivm, lp_type_uint(32)));
 
+   lp_function_add_debug_info(gallivm, variant_coro, coro_func_type);
+
    block = LLVMAppendBasicBlockInContext(gallivm->context, variant_coro, "entry");
    LLVMPositionBuilderAtEnd(builder, block);
+
+   if (gallivm->di_function) {
+      LLVMSetCurrentDebugLocation2(
+         gallivm->builder, LLVMDIBuilderCreateDebugLocation(gallivm->context, 0, 0, gallivm->di_function, NULL));
+   }
 
    resources_ptr = LLVMGetParam(variant_coro, 0);
    input_array = LLVMGetParam(variant_coro, 1);
@@ -3125,9 +3202,6 @@ draw_tcs_llvm_generate(struct draw_llvm *llvm,
       params.image = image;
       params.coro = &coro_info;
       params.tcs_iface = &tcs_iface.base;
-      params.aniso_filter_table = lp_jit_resources_aniso_filter_table(gallivm,
-                                                                      variant->resources_type,
-                                                                      resources_ptr);
 
       lp_build_nir_soa(variant->gallivm,
                        llvm->draw->tcs.tess_ctrl_shader->state.ir.nir,
@@ -3154,7 +3228,7 @@ draw_tcs_llvm_generate(struct draw_llvm *llvm,
 }
 
 
-struct draw_tcs_llvm_variant *
+static struct draw_tcs_llvm_variant *
 draw_tcs_llvm_create_variant(struct draw_llvm *llvm,
                              unsigned num_outputs,
                              const struct draw_tcs_llvm_variant_key *key)
@@ -3162,7 +3236,7 @@ draw_tcs_llvm_create_variant(struct draw_llvm *llvm,
    struct draw_tcs_llvm_variant *variant;
    struct llvm_tess_ctrl_shader *shader = llvm_tess_ctrl_shader(llvm->draw->tcs.tess_ctrl_shader);
    char module_name[64];
-   unsigned char ir_sha1_cache_key[20];
+   unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN];
    struct lp_cached_code cached = { 0 };
    bool needs_caching = false;
 
@@ -3171,11 +3245,10 @@ draw_tcs_llvm_create_variant(struct draw_llvm *llvm,
    if (!variant)
       return NULL;
 
-   variant->llvm = llvm;
    variant->shader = shader;
 
    snprintf(module_name, sizeof(module_name), "draw_llvm_tcs_variant%u",
-            variant->shader->variants_cached);
+            variant->shader->variants_created);
 
    memcpy(&variant->key, key, shader->variant_key_size);
 
@@ -3184,11 +3257,11 @@ draw_tcs_llvm_create_variant(struct draw_llvm *llvm,
                             key,
                             shader->variant_key_size,
                             num_outputs,
-                            ir_sha1_cache_key);
+                            ir_blake3_cache_key);
 
       llvm->draw->disk_cache_find_shader(llvm->draw->disk_cache_cookie,
                                          &cached,
-                                         ir_sha1_cache_key);
+                                         ir_blake3_cache_key);
       if (!cached.data_size)
          needs_caching = true;
    }
@@ -3212,37 +3285,46 @@ draw_tcs_llvm_create_variant(struct draw_llvm *llvm,
    if (needs_caching)
       llvm->draw->disk_cache_insert_shader(llvm->draw->disk_cache_cookie,
                                            &cached,
-                                           ir_sha1_cache_key);
+                                           ir_blake3_cache_key);
    gallivm_free_ir(variant->gallivm);
 
-   variant->list_item_global.base = variant;
-   variant->list_item_local.base = variant;
-   /*variant->no = */shader->variants_created++;
-   variant->list_item_global.base = variant;
+   shader->variants_created++;
 
    return variant;
 }
 
 
-void
+static void
 draw_tcs_llvm_destroy_variant(struct draw_tcs_llvm_variant *variant)
 {
-   struct draw_llvm *llvm = variant->llvm;
-
-   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR)) {
-      debug_printf("Deleting TCS variant: %u tcs variants,\t%u total variants\n",
-                    variant->shader->variants_cached, llvm->nr_tcs_variants);
-   }
+   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR))
+      debug_printf("Deleting TCS variant\n");
 
    gallivm_destroy(variant->gallivm);
-
-   list_del(&variant->list_item_local.list);
-   variant->shader->variants_cached--;
-   list_del(&variant->list_item_global.list);
-   llvm->nr_tcs_variants--;
-   if(variant->function_name)
-      FREE(variant->function_name);
+   FREE(variant->function_name);
    FREE(variant);
+}
+
+static struct util_shader_variant *
+tcs_compile_cb(void *user_data, UNUSED void *cso, const void *spec_key)
+{
+   struct draw_llvm *llvm = user_data;
+   const struct draw_tcs_llvm_variant_key *key = spec_key;
+
+   if (llvm->context.mutex)
+      simple_mtx_lock(llvm->context.mutex);
+   struct draw_tcs_llvm_variant *variant =
+      draw_tcs_llvm_create_variant(llvm, 0, key);
+   if (llvm->context.mutex)
+      simple_mtx_unlock(llvm->context.mutex);
+
+   return variant ? &variant->base : NULL;
+}
+
+static void
+tcs_destroy_cb(struct util_shader_variant *base)
+{
+   draw_tcs_llvm_destroy_variant(container_of(base, struct draw_tcs_llvm_variant, base));
 }
 
 
@@ -3278,11 +3360,11 @@ draw_tcs_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
 
    for (i = 0 ; i < key->nr_samplers; i++) {
       lp_sampler_static_sampler_state(&draw_sampler[i].sampler_state,
-                                      llvm->draw->samplers[PIPE_SHADER_TESS_CTRL][i]);
+                                      llvm->draw->samplers[MESA_SHADER_TESS_CTRL][i]);
    }
    for (i = 0 ; i < key->nr_sampler_views; i++) {
       lp_sampler_static_texture_state(&draw_sampler[i].texture_state,
-                                      llvm->draw->sampler_views[PIPE_SHADER_TESS_CTRL][i]);
+                                      llvm->draw->sampler_views[MESA_SHADER_TESS_CTRL][i]);
    }
 
    draw_image = draw_tcs_llvm_variant_key_images(key);
@@ -3290,7 +3372,7 @@ draw_tcs_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
           key->nr_images * sizeof *draw_image);
    for (i = 0; i < key->nr_images; i++) {
       lp_sampler_static_texture_state_image(&draw_image[i].image_state,
-                                            llvm->draw->images[PIPE_SHADER_TESS_CTRL][i]);
+                                            llvm->draw->images[MESA_SHADER_TESS_CTRL][i]);
    }
    return key;
 }
@@ -3532,6 +3614,8 @@ draw_tes_llvm_generate(struct draw_llvm *llvm,
       if (LLVMGetTypeKind(arg_types[i]) == LLVMPointerTypeKind)
          lp_add_function_attr(variant_func, i + 1, LP_FUNC_ATTR_NOALIAS);
 
+   lp_function_add_debug_info(gallivm, variant_func, func_type);
+
    if (gallivm->cache && gallivm->cache->data_size) {
       gallivm_stub_func(gallivm, variant_func);
       return;
@@ -3569,6 +3653,11 @@ draw_tes_llvm_generate(struct draw_llvm *llvm,
    block = LLVMAppendBasicBlockInContext(gallivm->context, variant_func, "entry");
    builder = gallivm->builder;
    LLVMPositionBuilderAtEnd(builder, block);
+
+   if (gallivm->di_function) {
+      LLVMSetCurrentDebugLocation2(
+         gallivm->builder, LLVMDIBuilderCreateDebugLocation(gallivm->context, 0, 0, gallivm->di_function, NULL));
+   }
 
    lp_build_context_init(&bld, gallivm, lp_type_int(32));
 
@@ -3657,7 +3746,6 @@ draw_tes_llvm_generate(struct draw_llvm *llvm,
       params.ssbo_ptr = ssbos_ptr;
       params.image = image;
       params.tes_iface = &tes_iface.base;
-      params.aniso_filter_table = lp_jit_resources_aniso_filter_table(gallivm, variant->resources_type, resources_ptr);
 
       lp_build_nir_soa(variant->gallivm,
                        llvm->draw->tes.tess_eval_shader->state.ir.nir,
@@ -3687,7 +3775,7 @@ draw_tes_llvm_generate(struct draw_llvm *llvm,
 }
 
 
-struct draw_tes_llvm_variant *
+static struct draw_tes_llvm_variant *
 draw_tes_llvm_create_variant(struct draw_llvm *llvm,
                              unsigned num_outputs,
                              const struct draw_tes_llvm_variant_key *key)
@@ -3695,7 +3783,7 @@ draw_tes_llvm_create_variant(struct draw_llvm *llvm,
    struct draw_tes_llvm_variant *variant;
    struct llvm_tess_eval_shader *shader = llvm_tess_eval_shader(llvm->draw->tes.tess_eval_shader);
    char module_name[64];
-   unsigned char ir_sha1_cache_key[20];
+   unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN];
    struct lp_cached_code cached = { 0 };
    bool needs_caching = false;
 
@@ -3704,11 +3792,10 @@ draw_tes_llvm_create_variant(struct draw_llvm *llvm,
    if (!variant)
       return NULL;
 
-   variant->llvm = llvm;
    variant->shader = shader;
 
    snprintf(module_name, sizeof(module_name), "draw_llvm_tes_variant%u",
-            variant->shader->variants_cached);
+            variant->shader->variants_created);
 
    memcpy(&variant->key, key, shader->variant_key_size);
    if (shader->base.state.ir.nir && llvm->draw->disk_cache_cookie) {
@@ -3716,11 +3803,11 @@ draw_tes_llvm_create_variant(struct draw_llvm *llvm,
                             key,
                             shader->variant_key_size,
                             num_outputs,
-                            ir_sha1_cache_key);
+                            ir_blake3_cache_key);
 
       llvm->draw->disk_cache_find_shader(llvm->draw->disk_cache_cookie,
                                          &cached,
-                                         ir_sha1_cache_key);
+                                         ir_blake3_cache_key);
       if (!cached.data_size)
          needs_caching = true;
    }
@@ -3746,37 +3833,46 @@ draw_tes_llvm_create_variant(struct draw_llvm *llvm,
    if (needs_caching)
       llvm->draw->disk_cache_insert_shader(llvm->draw->disk_cache_cookie,
                                            &cached,
-                                           ir_sha1_cache_key);
+                                           ir_blake3_cache_key);
    gallivm_free_ir(variant->gallivm);
 
-   variant->list_item_global.base = variant;
-   variant->list_item_local.base = variant;
-   /*variant->no = */shader->variants_created++;
-   variant->list_item_global.base = variant;
+   shader->variants_created++;
 
    return variant;
 }
 
 
-void
+static void
 draw_tes_llvm_destroy_variant(struct draw_tes_llvm_variant *variant)
 {
-   struct draw_llvm *llvm = variant->llvm;
-
-   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR)) {
-      debug_printf("Deleting TES variant: %u tes variants,\t%u total variants\n",
-                    variant->shader->variants_cached, llvm->nr_tes_variants);
-   }
+   if (gallivm_debug & (GALLIVM_DEBUG_TGSI | GALLIVM_DEBUG_IR))
+      debug_printf("Deleting TES variant\n");
 
    gallivm_destroy(variant->gallivm);
-
-   list_del(&variant->list_item_local.list);
-   variant->shader->variants_cached--;
-   list_del(&variant->list_item_global.list);
-   llvm->nr_tes_variants--;
-   if(variant->function_name)
-      FREE(variant->function_name);
+   FREE(variant->function_name);
    FREE(variant);
+}
+
+static struct util_shader_variant *
+tes_compile_cb(void *user_data, UNUSED void *cso, const void *spec_key)
+{
+   struct draw_llvm *llvm = user_data;
+   const struct draw_tes_llvm_variant_key *key = spec_key;
+
+   if (llvm->context.mutex)
+      simple_mtx_lock(llvm->context.mutex);
+   struct draw_tes_llvm_variant *variant =
+      draw_tes_llvm_create_variant(llvm, draw_total_tes_outputs(llvm->draw), key);
+   if (llvm->context.mutex)
+      simple_mtx_unlock(llvm->context.mutex);
+
+   return variant ? &variant->base : NULL;
+}
+
+static void
+tes_destroy_cb(struct util_shader_variant *base)
+{
+   draw_tes_llvm_destroy_variant(container_of(base, struct draw_tes_llvm_variant, base));
 }
 
 
@@ -3820,11 +3916,11 @@ draw_tes_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
 
    for (unsigned i = 0 ; i < key->nr_samplers; i++) {
       lp_sampler_static_sampler_state(&draw_sampler[i].sampler_state,
-                                      llvm->draw->samplers[PIPE_SHADER_TESS_EVAL][i]);
+                                      llvm->draw->samplers[MESA_SHADER_TESS_EVAL][i]);
    }
    for (unsigned i = 0 ; i < key->nr_sampler_views; i++) {
       lp_sampler_static_texture_state(&draw_sampler[i].texture_state,
-                                      llvm->draw->sampler_views[PIPE_SHADER_TESS_EVAL][i]);
+                                      llvm->draw->sampler_views[MESA_SHADER_TESS_EVAL][i]);
    }
 
    draw_image = draw_tes_llvm_variant_key_images(key);
@@ -3832,7 +3928,7 @@ draw_tes_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
           key->nr_images * sizeof *draw_image);
    for (unsigned i = 0; i < key->nr_images; i++) {
       lp_sampler_static_texture_state_image(&draw_image[i].image_state,
-                                            llvm->draw->images[PIPE_SHADER_TESS_EVAL][i]);
+                                            llvm->draw->images[MESA_SHADER_TESS_EVAL][i]);
    }
    return key;
 }

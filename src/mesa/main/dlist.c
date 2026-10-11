@@ -45,7 +45,7 @@
 #include "varray.h"
 #include "glthread_marshal.h"
 
-#include "main/dispatch.h"
+#include "dispatch.h"
 
 #include "vbo/vbo_save.h"
 #include "util/u_inlines.h"
@@ -730,7 +730,8 @@ union int64_pair
 #define BLOCK_SIZE 256
 
 
-void mesa_print_display_list(GLuint list);
+static void
+print_list(struct gl_context *ctx, GLuint list, const char *fname);
 
 
 /**
@@ -1354,6 +1355,8 @@ save_Bitmap(GLsizei width, GLsizei height,
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "glNewList -> glBitmap");
          return;
       }
+
+      ctx->ListState.Current.NeedsFlush = true;
    }
 
    n = alloc_instruction(ctx, OPCODE_BITMAP, 6 + POINTER_DWORDS);
@@ -13168,10 +13171,6 @@ _mesa_NewList(GLuint name, GLenum mode)
    FLUSH_CURRENT(ctx, 0);       /* must be called before assert */
    ASSERT_OUTSIDE_BEGIN_END(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glNewList %u %s\n", name,
-                  _mesa_enum_to_string(mode));
-
    if (name == 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glNewList");
       return;
@@ -13200,11 +13199,12 @@ _mesa_NewList(GLuint name, GLenum mode)
    ctx->ListState.CurrentPos = 0;
    ctx->ListState.LastInstSize = 0;
    ctx->ListState.Current.UseLoopback = false;
+   ctx->ListState.Current.NeedsFlush = false;
 
    vbo_save_NewList(ctx, name, mode);
 
    ctx->Dispatch.Current = ctx->Dispatch.Save;
-   _glapi_set_dispatch(ctx->Dispatch.Current);
+   _mesa_set_dispatch(ctx, ctx->Dispatch.Current);
    if (!ctx->GLThread.enabled) {
       ctx->GLApi = ctx->Dispatch.Current;
    }
@@ -13326,9 +13326,6 @@ _mesa_EndList(void)
    SAVE_FLUSH_VERTICES(ctx);
    FLUSH_VERTICES(ctx, 0, 0);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glEndList\n");
-
    if (ctx->ExecuteFlag && _mesa_inside_dlist_begin_end(ctx)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "glEndList() called inside glBegin/End");
@@ -13346,6 +13343,16 @@ _mesa_EndList(void)
    vbo_save_EndList(ctx);
 
    (void) alloc_instruction(ctx, OPCODE_END_OF_LIST, 0);
+
+   /* Ending a display list that's part of a share group should make that new display list
+    * immediately visible to other contexts, per Q 16.110 from
+    * https://www.opengl.org/archives/resources/faq/technical/displaylist.htm
+    * If this displaylist includes enqueued uploads to a VRAM vertex buffer or a bitmap,
+    * flush those now to ensure that other contexts can see them.
+    */
+   if (ctx->ListState.Current.NeedsFlush &&
+       ctx->Shared->RefCount > 1)
+      _mesa_flush(ctx);
 
    _mesa_HashLockMutex(&ctx->Shared->DisplayList);
 
@@ -13404,7 +13411,7 @@ _mesa_EndList(void)
                           ctx->ListState.CurrentList);
 
    if (MESA_VERBOSE & VERBOSE_DISPLAY_LIST)
-      mesa_print_display_list(ctx->ListState.CurrentList->Name);
+      print_list(ctx, ctx->ListState.CurrentList->Name, NULL);
 
    _mesa_HashUnlockMutex(&ctx->Shared->DisplayList);
 
@@ -13416,7 +13423,7 @@ _mesa_EndList(void)
    ctx->CompileFlag = GL_FALSE;
 
    ctx->Dispatch.Current = ctx->Dispatch.Exec;
-   _glapi_set_dispatch(ctx->Dispatch.Current);
+   _mesa_set_dispatch(ctx, ctx->Dispatch.Current);
    if (!ctx->GLThread.enabled) {
       ctx->GLApi = ctx->Dispatch.Current;
    }
@@ -13430,16 +13437,13 @@ _mesa_CallList(GLuint list)
    GET_CURRENT_CONTEXT(ctx);
    FLUSH_CURRENT(ctx, 0);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glCallList %d\n", list);
-
    if (list == 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glCallList(list==0)");
       return;
    }
 
    if (0)
-      mesa_print_display_list( list );
+      print_list(ctx, list, NULL);
 
    /* Save the CompileFlag status, turn it off, execute the display list,
     * and restore the CompileFlag. This is needed for GL_COMPILE_AND_EXECUTE
@@ -13473,9 +13477,6 @@ _mesa_CallLists(GLsizei n, GLenum type, const GLvoid * lists)
 {
    GET_CURRENT_CONTEXT(ctx);
    GLboolean save_compile_flag;
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glCallLists %d\n", n);
 
    if (type < GL_BYTE || type > GL_4_BYTES) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glCallLists(type)");
@@ -13608,7 +13609,7 @@ void
 _mesa_init_dispatch_save(const struct gl_context *ctx)
 {
    struct _glapi_table *table = ctx->Dispatch.Save;
-   int numEntries = MAX2(_gloffset_COUNT, _glapi_get_dispatch_table_size());
+   int numEntries = MAX2(_gloffset_COUNT, _mesa_glapi_get_dispatch_table_size());
 
    /* Initially populate the dispatch table with the contents of the
     * normal-execution dispatch table.  This lets us skip populating functions
@@ -14054,19 +14055,6 @@ _mesa_glthread_should_execute_list(struct gl_context *ctx,
       n += n[0].InstSize;
    }
    return false;
-}
-
-
-/**
- * Clients may call this function to help debug display list problems.
- * This function is _ONLY_FOR_DEBUGGING_PURPOSES_.  It may be removed,
- * changed, or break in the future without notice.
- */
-void
-mesa_print_display_list(GLuint list)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   print_list(ctx, list, NULL);
 }
 
 

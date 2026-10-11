@@ -3,8 +3,6 @@
 
 files_libzink = files(
   'zink_lower_cubemap_to_array.c',
-  'nir_to_spirv/nir_to_spirv.c',
-  'nir_to_spirv/spirv_builder.c',
   'zink_batch.c',
   'zink_blit.c',
   'zink_bo.c',
@@ -16,7 +14,6 @@ files_libzink = files(
   'zink_draw.cpp',
   'zink_fence.c',
   'zink_format.c',
-  'zink_framebuffer.c',
   'zink_pipeline.c',
   'zink_program.c',
   'zink_query.c',
@@ -59,12 +56,12 @@ zink_nir_algebraic_c = custom_target(
 
 zink_c_args = []
 inc_zink_vk = []
+zink_link_args = []
 
 if host_machine.system() == 'darwin'
 
   # MoltenVK options
   if with_moltenvk_dir != ''
-    fs = import('fs')
     # Vulkan SDK 1.3.250 to 1.3.268 support
     moltenvk_includes = join_paths(with_moltenvk_dir, 'MoltenVK', 'include')
     if not fs.is_dir(moltenvk_includes)
@@ -86,24 +83,40 @@ if host_machine.system() == 'darwin'
   zink_c_args += ['-x','objective-c'] # Put compiler into objective-C mode to allow for MacOS types, like IOSurface and CAMetalLayer
   zink_c_args += ['-iframework' , 'Foundation']
 
+  # zink dlopen()s the Vulkan loader (libvulkan.1.dylib) via a bare
+  # "@rpath/..." path at runtime (see VK_LIBNAME in zink_screen.c).  This linker
+  # argument ensures the mach-o of the libvulkan.1.dylib client dyld contains
+  # the proper load commands to locate libvulkan.1.dylib at runtime.
+  if with_vulkan_loader_rpath != ''
+    zink_link_args += ['-Wl,-rpath,' + with_vulkan_loader_rpath]
+  endif
+
 endif
+
+subdir('nir_to_spirv')
 
 libzink = static_library(
   'zink',
   [files_libzink, zink_device_info, zink_instance, zink_nir_algebraic_c, vk_dispatch_table, spirv_info_h],
   gnu_symbol_visibility : 'hidden',
-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_vulkan_util, inc_zink_vk],
+  include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_vulkan_util, inc_zink_vk],
   link_args : [ld_args_build_id],
   dependencies: [
     idep_nir_headers, idep_mesautil, idep_vulkan_util_headers,
-    idep_vulkan_wsi_defines, idep_vulkan_util, dep_libdrm, vulkan_wsi_deps
+    idep_vulkan_wsi_defines, idep_vulkan_util, dep_libdrm, vulkan_wsi_deps, idep_ntv,
   ],
   c_args: zink_c_args,
 )
 
+zink_deps = [libzink]
+if not with_platform_windows
+  zink_deps += libzinkwinsys
+endif
+
 driver_zink = declare_dependency(
   compile_args : '-DGALLIUM_ZINK',
-  link_with : [libzink],
+  link_with : zink_deps,
+  link_args : zink_link_args,
 )
 
 if with_tests
@@ -117,4 +130,8 @@ if with_tests
     ),
     suite : ['zink'],
   )
+endif
+
+if with_tools.contains('zink')
+  subdir('check_requirements')
 endif

@@ -51,7 +51,7 @@ static struct {
 
    struct hash_table *explicit_matrix_types;
    struct hash_table *array_types;
-   struct hash_table *cmat_types;
+   struct hash_table_u64 *cmat_types;
    struct hash_table *struct_types;
    struct hash_table *interface_types;
    struct hash_table *subroutine_types;
@@ -347,6 +347,12 @@ glsl_get_base_glsl_type(const glsl_type *t)
       return &glsl_type_builtin_float16_t;
    case GLSL_TYPE_DOUBLE:
       return &glsl_type_builtin_double;
+   case GLSL_TYPE_BFLOAT16:
+      return &glsl_type_builtin_bfloat16_t;
+   case GLSL_TYPE_FLOAT_E4M3FN:
+      return &glsl_type_builtin_e4m3fn_t;
+   case GLSL_TYPE_FLOAT_E5M2:
+      return &glsl_type_builtin_e5m2_t;
    case GLSL_TYPE_BOOL:
       return &glsl_type_builtin_bool;
    case GLSL_TYPE_UINT64:
@@ -384,6 +390,9 @@ glsl_get_bare_type(const glsl_type *t)
    case GLSL_TYPE_UINT16:
    case GLSL_TYPE_INT16:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_UINT:
    case GLSL_TYPE_INT:
    case GLSL_TYPE_FLOAT:
@@ -423,7 +432,7 @@ glsl_get_bare_type(const glsl_type *t)
       return t;
    }
 
-   unreachable("Invalid base type");
+   UNREACHABLE("Invalid base type");
 }
 
 const glsl_type *
@@ -555,7 +564,7 @@ glsl_cmat_use_to_string(enum glsl_cmat_use use)
    case GLSL_CMAT_USE_B:           return "B";
    case GLSL_CMAT_USE_ACCUMULATOR: return "ACCUMULATOR";
    default:
-      unreachable("invalid cooperative matrix use");
+      UNREACHABLE("invalid cooperative matrix use");
    }
 };
 
@@ -593,6 +602,9 @@ glsl_ ## vname ## _type (unsigned components)    \
 
 VECN(components, float, vec)
 VECN(components, float16_t, f16vec)
+VECN(components, bfloat16_t, bf16vec)
+VECN(components, e4m3fn_t, e4m3fnvec)
+VECN(components, e5m2_t, e5m2vec)
 VECN(components, double, dvec)
 VECN(components, int, ivec)
 VECN(components, uint, uvec)
@@ -641,6 +653,12 @@ glsl_simple_explicit_type(unsigned base_type, unsigned rows, unsigned columns,
          return glsl_vec_type(rows);
       case GLSL_TYPE_FLOAT16:
          return glsl_f16vec_type(rows);
+      case GLSL_TYPE_BFLOAT16:
+         return glsl_bf16vec_type(rows);
+      case GLSL_TYPE_FLOAT_E4M3FN:
+         return glsl_e4m3fnvec_type(rows);
+      case GLSL_TYPE_FLOAT_E5M2:
+         return glsl_e5m2vec_type(rows);
       case GLSL_TYPE_DOUBLE:
          return glsl_dvec_type(rows);
       case GLSL_TYPE_BOOL:
@@ -931,7 +949,7 @@ glsl_sampler_type(enum glsl_sampler_dim dim, bool shadow,
       return &glsl_type_builtin_error;
    }
 
-   unreachable("switch statement above should be complete");
+   UNREACHABLE("switch statement above should be complete");
 }
 
 const glsl_type *
@@ -1062,7 +1080,7 @@ glsl_texture_type(enum glsl_sampler_dim dim, bool array, enum glsl_base_type typ
       return &glsl_type_builtin_error;
    }
 
-   unreachable("switch statement above should be complete");
+   UNREACHABLE("switch statement above should be complete");
 }
 
 const glsl_type *
@@ -1234,7 +1252,7 @@ glsl_image_type(enum glsl_sampler_dim dim, bool array, enum glsl_base_type type)
       return &glsl_type_builtin_error;
    }
 
-   unreachable("switch statement above should be complete");
+   UNREACHABLE("switch statement above should be complete");
 }
 
 struct PACKED array_key {
@@ -1315,12 +1333,11 @@ make_cmat_type(linear_ctx *lin_ctx, const struct glsl_cmat_description desc)
 const glsl_type *
 glsl_cmat_type(const struct glsl_cmat_description *desc)
 {
-   STATIC_ASSERT(sizeof(struct glsl_cmat_description) == 4);
-
-   const uint32_t key = desc->element_type | desc->scope << 5 |
-                        desc->rows << 8 | desc->cols << 16 |
-                        desc->use << 24;
-   const uint32_t key_hash = _mesa_hash_uint(&key);
+   const uint64_t key = (uint64_t)desc->rows |
+                        (uint64_t)desc->cols << 16 |
+                        (uint64_t)desc->element_type << 32 |
+                        (uint64_t)desc->scope << 48 |
+                        (uint64_t)desc->use << 56;
 
    simple_mtx_lock(&glsl_type_cache_mutex);
    assert(glsl_type_cache.users > 0);
@@ -1328,19 +1345,16 @@ glsl_cmat_type(const struct glsl_cmat_description *desc)
 
    if (glsl_type_cache.cmat_types == NULL) {
       glsl_type_cache.cmat_types =
-         _mesa_hash_table_create_u32_keys(mem_ctx);
+         _mesa_hash_table_u64_create(mem_ctx);
    }
-   struct hash_table *cmat_types = glsl_type_cache.cmat_types;
+   struct hash_table_u64 *cmat_types = glsl_type_cache.cmat_types;
 
-   const struct hash_entry *entry = _mesa_hash_table_search_pre_hashed(
-      cmat_types, key_hash, (void *) (uintptr_t) key);
-   if (entry == NULL) {
-      const glsl_type *t = make_cmat_type(glsl_type_cache.lin_ctx, *desc);
-      entry = _mesa_hash_table_insert_pre_hashed(cmat_types, key_hash,
-                                                 (void *) (uintptr_t) key, (void *) t);
+   const glsl_type *t = _mesa_hash_table_u64_search(cmat_types, key);
+   if (t == NULL) {
+      t = make_cmat_type(glsl_type_cache.lin_ctx, *desc);
+      _mesa_hash_table_u64_insert(cmat_types, key, (void *) t);
    }
 
-   const glsl_type *t = (const glsl_type *)entry->data;
    simple_mtx_unlock(&glsl_type_cache_mutex);
 
    assert(t->base_type == GLSL_TYPE_COOPERATIVE_MATRIX);
@@ -1487,6 +1501,9 @@ glsl_record_compare(const glsl_type *a, const glsl_type *b, bool match_name,
          return false;
       if (a->fields.structure[i].xfb_stride
           != b->fields.structure[i].xfb_stride)
+         return false;
+      if (a->fields.structure[i].per_primitive
+          != b->fields.structure[i].per_primitive)
          return false;
    }
 
@@ -1742,6 +1759,9 @@ glsl_get_component_slots(const glsl_type *t)
    case GLSL_TYPE_INT16:
    case GLSL_TYPE_FLOAT:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_BOOL:
       return glsl_get_components(t);
 
@@ -1794,6 +1814,9 @@ glsl_get_component_slots_aligned(const glsl_type *t, unsigned offset)
    case GLSL_TYPE_INT16:
    case GLSL_TYPE_FLOAT:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_BOOL:
       return glsl_get_components(t);
 
@@ -2299,7 +2322,7 @@ glsl_get_explicit_std140_type(const glsl_type *t, bool row_major)
       free(fields);
       return type;
    } else {
-      unreachable("Invalid type for UBO or SSBO");
+      UNREACHABLE("Invalid type for UBO or SSBO");
    }
 }
 
@@ -2663,7 +2686,7 @@ glsl_get_explicit_std430_type(const glsl_type *t, bool row_major)
       free(fields);
       return type;
    } else {
-      unreachable("Invalid type for SSBO");
+      UNREACHABLE("Invalid type for SSBO");
    }
 }
 
@@ -2776,7 +2799,7 @@ glsl_get_explicit_type_for_size_align(const glsl_type *t,
                                        t->matrix_columns, stride, false,
                                        *alignment);
    } else {
-      unreachable("Unhandled type.");
+      UNREACHABLE("Unhandled type.");
    }
 }
 
@@ -2839,7 +2862,7 @@ glsl_type_replace_vec3_with_vec4(const glsl_type *t)
       free(fields);
       return type;
    } else {
-      unreachable("Unhandled type.");
+      UNREACHABLE("Unhandled type.");
    }
 }
 
@@ -2880,6 +2903,9 @@ glsl_count_vec4_slots(const glsl_type *t, bool is_gl_vertex_input, bool is_bindl
    case GLSL_TYPE_INT16:
    case GLSL_TYPE_FLOAT:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_BOOL:
       return t->matrix_columns;
    case GLSL_TYPE_DOUBLE:
@@ -2978,7 +3004,7 @@ glsl_count_dword_slots(const glsl_type *t, bool is_bindless)
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_ERROR:
    default:
-      unreachable("invalid type in st_glsl_type_dword_size()");
+      UNREACHABLE("invalid type in st_glsl_type_dword_size()");
    }
 
    return 0;
@@ -3028,7 +3054,6 @@ union packed_type {
       unsigned length:13;
       unsigned explicit_stride:14;
    } array;
-   struct glsl_cmat_description cmat_desc;
    struct {
       unsigned base_type:5;
       unsigned interface_packing_or_packed:2;
@@ -3084,6 +3109,9 @@ encode_type_to_blob(struct blob *blob, const glsl_type *type)
    case GLSL_TYPE_INT:
    case GLSL_TYPE_FLOAT:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_DOUBLE:
    case GLSL_TYPE_UINT8:
    case GLSL_TYPE_INT8:
@@ -3144,13 +3172,8 @@ encode_type_to_blob(struct blob *blob, const glsl_type *type)
       encode_type_to_blob(blob, type->fields.array);
       return;
    case GLSL_TYPE_COOPERATIVE_MATRIX:
-      /* The first 5 bits of encoded/decoded are used to identify the
-       * actual type, but cmat_desc already is 32-bit without that tag, so
-       * encode just the cmat base type first, then the actual cmat desc.
-       */
       blob_write_uint32(blob, encoded.u32);
-      encoded.cmat_desc = type->cmat_desc;
-      blob_write_uint32(blob, encoded.u32);
+      blob_write_bytes(blob, &type->cmat_desc, sizeof(type->cmat_desc));
       return;
    case GLSL_TYPE_STRUCT:
    case GLSL_TYPE_INTERFACE:
@@ -3204,6 +3227,9 @@ decode_type_from_blob(struct blob_reader *blob)
    case GLSL_TYPE_INT:
    case GLSL_TYPE_FLOAT:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_DOUBLE:
    case GLSL_TYPE_UINT8:
    case GLSL_TYPE_INT8:
@@ -3259,8 +3285,9 @@ decode_type_from_blob(struct blob_reader *blob)
                              explicit_stride);
    }
    case GLSL_TYPE_COOPERATIVE_MATRIX: {
-      encoded.u32 = blob_read_uint32(blob);
-      return glsl_cmat_type(&encoded.cmat_desc);
+      const struct glsl_cmat_description *desc =
+         blob_read_bytes(blob, sizeof(struct glsl_cmat_description));
+      return glsl_cmat_type(desc);
    }
    case GLSL_TYPE_STRUCT:
    case GLSL_TYPE_INTERFACE: {
@@ -3396,7 +3423,7 @@ glsl_get_sampler_dim_coordinate_components(enum glsl_sampler_dim dim)
    case GLSL_SAMPLER_DIM_CUBE:
       return 3;
    default:
-      unreachable("Unknown sampler dim");
+      UNREACHABLE("Unknown sampler dim");
    }
 }
 
@@ -3660,7 +3687,7 @@ glsl_replace_vector_type(const glsl_type *t, unsigned components)
    } else if (glsl_type_is_vector_or_scalar(t)) {
       return glsl_vector_type(t->base_type, components);
    } else {
-      unreachable("Unhandled base type glsl_replace_vector_type()");
+      UNREACHABLE("Unhandled base type glsl_replace_vector_type()");
    }
 }
 
@@ -3685,7 +3712,7 @@ glsl_channel_type(const glsl_type *t)
    case GLSL_TYPE_BOOL:
       return glsl_simple_type(t->base_type, 1, 1);
    default:
-      unreachable("Unhandled base type glsl_channel_type()");
+      UNREACHABLE("Unhandled base type glsl_channel_type()");
    }
 }
 
@@ -3732,6 +3759,9 @@ glsl_get_natural_size_align_bytes(const glsl_type *type,
    case GLSL_TYPE_UINT16:
    case GLSL_TYPE_INT16:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_UINT:
    case GLSL_TYPE_INT:
    case GLSL_TYPE_FLOAT:
@@ -3765,13 +3795,13 @@ glsl_get_natural_size_align_bytes(const glsl_type *type,
    case GLSL_TYPE_SUBROUTINE:
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_ERROR:
-      unreachable("type does not have a natural size");
+      UNREACHABLE("type does not have a natural size");
    }
 }
 
 /**
  * Returns a byte size/alignment for a type where each array element or struct
- * field is aligned to 16 bytes.
+ * field is aligned to 4 bytes.
  */
 void
 glsl_get_word_size_align_bytes(const glsl_type *type,
@@ -3791,15 +3821,18 @@ glsl_get_word_size_align_bytes(const glsl_type *type,
    case GLSL_TYPE_UINT16:
    case GLSL_TYPE_INT16:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_UINT:
    case GLSL_TYPE_INT:
    case GLSL_TYPE_FLOAT:
    case GLSL_TYPE_DOUBLE:
    case GLSL_TYPE_UINT64:
    case GLSL_TYPE_INT64: {
-      unsigned N = glsl_get_bit_size(type) / 8;
-      *size = 16 * (type->matrix_columns - 1) + N * type->vector_elements;
-      *align = 4;
+      unsigned N = MAX2(glsl_get_bit_size(type) / 8, 4);
+      *size = N * glsl_get_components(type);
+      *align = N;
       break;
    }
 
@@ -3814,12 +3847,17 @@ glsl_get_word_size_align_bytes(const glsl_type *type,
    case GLSL_TYPE_SAMPLER:
    case GLSL_TYPE_TEXTURE:
    case GLSL_TYPE_IMAGE:
+      /* Bindless samplers and images. */
+      *size = 8;
+      *align = 8;
+      break;
+
    case GLSL_TYPE_COOPERATIVE_MATRIX:
    case GLSL_TYPE_ATOMIC_UINT:
    case GLSL_TYPE_SUBROUTINE:
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_ERROR:
-      unreachable("type does not make sense for glsl_get_vec4_size_align_bytes()");
+      UNREACHABLE("type does not have a natural size");
    }
 }
 
@@ -3845,6 +3883,9 @@ glsl_get_vec4_size_align_bytes(const glsl_type *type,
    case GLSL_TYPE_UINT16:
    case GLSL_TYPE_INT16:
    case GLSL_TYPE_FLOAT16:
+   case GLSL_TYPE_BFLOAT16:
+   case GLSL_TYPE_FLOAT_E4M3FN:
+   case GLSL_TYPE_FLOAT_E5M2:
    case GLSL_TYPE_UINT:
    case GLSL_TYPE_INT:
    case GLSL_TYPE_FLOAT:
@@ -3873,7 +3914,7 @@ glsl_get_vec4_size_align_bytes(const glsl_type *type,
    case GLSL_TYPE_SUBROUTINE:
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_ERROR:
-      unreachable("type does not make sense for glsl_get_vec4_size_align_bytes()");
+      UNREACHABLE("type does not make sense for glsl_get_vec4_size_align_bytes()");
    }
 }
 
@@ -3917,4 +3958,25 @@ unsigned
 glsl_type_get_image_count(const glsl_type *type)
 {
    return glsl_type_count(type, GLSL_TYPE_IMAGE);
+}
+
+enum glsl_base_type
+glsl_apply_signedness_to_base_type(enum glsl_base_type type, bool signedness)
+{
+   switch (type) {
+   case GLSL_TYPE_UINT:
+   case GLSL_TYPE_INT:
+      return signedness ? GLSL_TYPE_INT : GLSL_TYPE_UINT;
+   case GLSL_TYPE_UINT8:
+   case GLSL_TYPE_INT8:
+      return signedness ? GLSL_TYPE_INT8 : GLSL_TYPE_UINT8;
+   case GLSL_TYPE_UINT16:
+   case GLSL_TYPE_INT16:
+      return signedness ? GLSL_TYPE_INT16 : GLSL_TYPE_UINT16;
+   case GLSL_TYPE_UINT64:
+   case GLSL_TYPE_INT64:
+      return signedness ? GLSL_TYPE_INT64 : GLSL_TYPE_UINT64;
+   default:
+      return type;
+   }
 }

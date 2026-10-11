@@ -41,6 +41,11 @@ trap cleanup INT TERM EXIT
 # background by this script
 BACKGROUND_PIDS=
 
+# Until we uniformize the install dir to /install, we need to make it
+# available to both possible CI_PROJECT_DIR paths.
+if [ "$GIT_STRATEGY" = empty ]; then
+  ln -s "$CI_PROJECT_DIR" "${CI_PROJECT_DIR%-empty}"
+fi
 
 for path in '/dut-env-vars.sh' '/set-job-env-vars.sh' './set-job-env-vars.sh'; do
     [ -f "$path" ] && source "$path"
@@ -53,6 +58,12 @@ echo
 echo
 
 section_switch init_stage2 "Pre-testing hardware setup"
+
+job_time=$(get_job_seconds)
+uptime=$(cut -d ' ' -f1 /proc/uptime)
+echo "$(get_current_minsec) after job start == $uptime sec after kernel boot time"
+printf -v uptime_rounded "%.0f" "$uptime"
+echo "Kernel boot occurred $((job_time-uptime_rounded)) seconds after job start"
 
 set -ex
 
@@ -76,9 +87,7 @@ fi
 # - vmx for Intel VT
 # - svm for AMD-V
 #
-# Additionally, download the kernel image to boot the VM via HWCI_TEST_SCRIPT.
-#
-if [ "$HWCI_KVM" = "true" ]; then
+if [ -n "$HWCI_ENABLE_X86_KVM" ]; then
     unset KVM_KERNEL_MODULE
     {
       grep -qs '\bvmx\b' /proc/cpuinfo && KVM_KERNEL_MODULE=kvm_intel
@@ -91,11 +100,11 @@ if [ "$HWCI_KVM" = "true" ]; then
       echo "WARNING: Failed to detect CPU virtualization extensions"
     } || \
         modprobe ${KVM_KERNEL_MODULE}
+fi
 
-    mkdir -p /lava-files
-    curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
-	-o "/lava-files/${KERNEL_IMAGE_NAME}" \
-        "${KERNEL_IMAGE_BASE}/amd64/${KERNEL_IMAGE_NAME}"
+if ! [ -e /install/ ] && ! [ -e $CI_PROJECT_DIR/install/ ]; then
+  echo "Missing install/ dir"
+  exit 1
 fi
 
 # Fix prefix confusion: the build installs to $CI_PROJECT_DIR, but we expect
@@ -109,11 +118,11 @@ export LIBGL_DRIVERS_PATH=/install/lib/dri
 # telling it to look in /usr/local/lib.
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
 
+# The Broadcom devices need /usr/local/bin unconditionally added to the path
+export PATH=/usr/local/bin:$PATH
+
 # Store Mesa's disk cache under /tmp, rather than sending it out over NFS.
 export XDG_CACHE_HOME=/tmp
-
-# Make sure Python can find all our imports
-export PYTHONPATH=$(python3 -c "import sys;print(\":\".join(sys.path))")
 
 # If we need to specify a driver, it means several drivers could pick up this gpu;
 # ensure that the other driver can't accidentally be used
@@ -140,13 +149,14 @@ if [ "$HWCI_FREQ_MAX" = "true" ]; then
   # and enable throttling detection & reporting.
   # Additionally, set the upper limit for CPU scaling frequency to 65% of the
   # maximum permitted, as an additional measure to mitigate thermal throttling.
-  /intel-gpu-freq.sh -s 70% --cpu-set-max 65% -g all -d
+  /install/common/intel-gpu-freq.sh -s 70% --cpu-set-max 65% -g all -d
 fi
 
 # Start a little daemon to capture sysfs records and produce a JSON file
-if [ -x /kdl.sh ]; then
+KDL_PATH=/install/common/kdl.sh
+if [ -x "$KDL_PATH" ]; then
   echo "launch kdl.sh!"
-  /kdl.sh &
+  $KDL_PATH &
   BACKGROUND_PIDS="$! $BACKGROUND_PIDS"
 else
   echo "kdl.sh not found!"
@@ -160,13 +170,19 @@ fi
 
 # Start a little daemon to capture the first devcoredump we encounter.  (They
 # expire after 5 minutes, so we poll for them).
-if [ -x /capture-devcoredump.sh ]; then
-  /capture-devcoredump.sh &
+CAPTURE_DEVCOREDUMP=/install/common/capture-devcoredump.sh
+if [ -x "$CAPTURE_DEVCOREDUMP" ]; then
+  $CAPTURE_DEVCOREDUMP &
   BACKGROUND_PIDS="$! $BACKGROUND_PIDS"
 fi
 
 ARCH=$(uname -m)
 export VK_DRIVER_FILES="/install/share/vulkan/icd.d/${VK_DRIVER}_icd.$ARCH.json"
+
+if [ -n "$HWCI_START_WESTON" ] && [ -n "$HWCI_START_XORG" ]; then
+  echo "Please drop HWCI_START_XORG and instead use Weston XWayland for testing."
+  exit 1
+fi
 
 # If we want Xorg to be running for the test, then we start it up before the
 # HWCI_TEST_SCRIPT because we need to use xinit to start X (otherwise
@@ -189,22 +205,8 @@ if [ -n "$HWCI_START_XORG" ]; then
 fi
 
 if [ -n "$HWCI_START_WESTON" ]; then
-  WESTON_X11_SOCK="/tmp/.X11-unix/X0"
-  if [ -n "$HWCI_START_XORG" ]; then
-    echo "Please consider dropping HWCI_START_XORG and instead using Weston XWayland for testing."
-    WESTON_X11_SOCK="/tmp/.X11-unix/X1"
-  fi
-  export WAYLAND_DISPLAY=wayland-0
-
-  # Display server is Weston Xwayland when HWCI_START_XORG is not set or Xorg when it's
-  export DISPLAY=:0
-  mkdir -p /tmp/.X11-unix
-
-  env \
-    weston -Bheadless-backend.so --use-gl -Swayland-0 --xwayland --idle-time=0 &
+  . /install/common/weston.sh --renderer=gl
   BACKGROUND_PIDS="$! $BACKGROUND_PIDS"
-
-  while [ ! -S "$WESTON_X11_SOCK" ]; do sleep 1; done
 fi
 
 set +x
@@ -225,15 +227,11 @@ set -x
 # kill the job.
 cleanup
 
-# upload artifacts
+# upload artifacts (lava jobs)
 if [ -n "$S3_RESULTS_UPLOAD" ]; then
   tar --zstd -cf results.tar.zst results/;
-  ci-fairy s3cp --token-file "${S3_JWT_FILE}" results.tar.zst https://"$S3_RESULTS_UPLOAD"/results.tar.zst;
+  ci-fairy s3cp --token-file "${S3_JWT_FILE}" results.tar.zst https://"$S3_RESULTS_UPLOAD"/results.tar.zst
 fi
-
-# We still need to echo the hwci: mesa message, as some scripts rely on it, such
-# as the python ones inside the bare-metal folder
-[ ${EXIT_CODE} -eq 0 ] && RESULT=pass || RESULT=fail
 
 set +x
 section_end post_test_cleanup
@@ -242,6 +240,6 @@ section_end post_test_cleanup
 # the result of our run, so try really hard to get it out rather than losing
 # the run. The device gets shut down right at this point, and a630 seems to
 # enjoy corrupting the last line of serial output before shutdown.
-for _ in $(seq 0 3); do echo "hwci: mesa: $RESULT, exit_code: $EXIT_CODE"; sleep 1; echo; done
+for _ in $(seq 0 3); do echo "hwci: mesa: exit_code: $EXIT_CODE"; sleep 1; echo; done
 
 exit $EXIT_CODE

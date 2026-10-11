@@ -26,10 +26,12 @@
 
 #include "common/intel_debug_identifier.h"
 #include "common/intel_gem.h"
+#include "common/xe/intel_gem.h"
 #include "dev/intel_debug.h"
 #include "iris/iris_bufmgr.h"
 #include "iris/iris_batch.h"
 #include "iris/iris_context.h"
+#include "util/u_debug.h"
 
 #include "drm-uapi/xe_drm.h"
 
@@ -39,11 +41,13 @@ static uint32_t
 xe_gem_create(struct iris_bufmgr *bufmgr,
               const struct intel_memory_class_instance **regions,
               uint16_t regions_count, uint64_t size,
-              enum iris_heap heap_flags, unsigned alloc_flags)
+              enum iris_heap heap_flags, enum bo_alloc_flags alloc_flags)
 {
-   /* Xe still don't have support for protected content */
-   if (alloc_flags & BO_ALLOC_PROTECTED)
-      return -EINVAL;
+   struct drm_xe_ext_set_property pxp_ext = {
+      .base.name = DRM_XE_GEM_CREATE_EXTENSION_SET_PROPERTY,
+      .property = DRM_XE_GEM_CREATE_SET_PROPERTY_PXP_TYPE,
+      .value = DRM_XE_PXP_TYPE_HWDRM,
+   };
 
    uint32_t vm_id = iris_bufmgr_get_global_vm_id(bufmgr);
    vm_id = alloc_flags & BO_ALLOC_SHARED ? 0 : vm_id;
@@ -52,24 +56,37 @@ xe_gem_create(struct iris_bufmgr *bufmgr,
    /* TODO: we might need to consider scanout for shared buffers too as we
     * do not know what the process this is shared with will do with it
     */
-   if (alloc_flags & BO_ALLOC_SCANOUT)
+   const struct intel_device_info *devinfo = iris_bufmgr_get_device_info(bufmgr);
+   if (alloc_flags & BO_ALLOC_SCANOUT) {
       flags |= DRM_XE_GEM_CREATE_FLAG_SCANOUT;
-   if (!intel_vram_all_mappable(iris_bufmgr_get_device_info(bufmgr)) &&
+      /* Xe2+ discrete platforms (BMG) requires continuously allocated
+       * physical memory for CCS compressed images to display. Xe KMD will do
+       * this when it gets scanout flag and a size of multiplies of 64KB.
+       * The alignment of the size is not per-plane, so we do it in the
+       * drivers instead of ISL.
+       */
+      if (devinfo->has_local_mem && (alloc_flags & BO_ALLOC_COMPRESSED))
+         size = align64(size, 64 * 1024);
+   }
+   if (!intel_vram_all_mappable(devinfo) &&
        (heap_flags == IRIS_HEAP_DEVICE_LOCAL_PREFERRED ||
         heap_flags == IRIS_HEAP_DEVICE_LOCAL_CPU_VISIBLE_SMALL_BAR))
       flags |= DRM_XE_GEM_CREATE_FLAG_NEEDS_VISIBLE_VRAM;
 
+   if (iris_heap_is_compressed(heap_flags) == false &&
+       iris_bufmgr_get_device_info(bufmgr)->xe2_has_no_compression_hint)
+      flags |= DRM_XE_GEM_CREATE_FLAG_NO_COMPRESSION;
+
    struct drm_xe_gem_create gem_create = {
      .vm_id = vm_id,
-     .size = align64(size, iris_bufmgr_get_device_info(bufmgr)->mem_alignment),
+     .size = align64(size, devinfo->mem_alignment),
      .flags = flags,
    };
    for (uint16_t i = 0; i < regions_count; i++)
       gem_create.placement |= BITFIELD_BIT(regions[i]->instance);
 
-   const struct intel_device_info *devinfo = iris_bufmgr_get_device_info(bufmgr);
    const struct intel_device_info_pat_entry *pat_entry;
-   pat_entry = iris_heap_to_pat_entry(devinfo, heap_flags);
+   pat_entry = iris_heap_to_pat_entry(devinfo, heap_flags, alloc_flags & BO_ALLOC_SCANOUT);
    switch (pat_entry->mmap) {
    case INTEL_DEVICE_INFO_MMAP_MODE_WC:
       gem_create.cpu_caching = DRM_XE_GEM_CPU_CACHING_WC;
@@ -77,10 +94,13 @@ xe_gem_create(struct iris_bufmgr *bufmgr,
    case INTEL_DEVICE_INFO_MMAP_MODE_WB:
       gem_create.cpu_caching = DRM_XE_GEM_CPU_CACHING_WB;
       break;
-   default:
-      unreachable("missing");
+   case INTEL_DEVICE_INFO_MMAP_MODE_INVALID:
       gem_create.cpu_caching = DRM_XE_GEM_CPU_CACHING_WC;
+      break;
    }
+
+   if (alloc_flags & BO_ALLOC_PROTECTED)
+      gem_create.extensions = (uintptr_t)&pxp_ext;
 
    if (intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_XE_GEM_CREATE,
                    &gem_create))
@@ -95,6 +115,11 @@ xe_gem_mmap(struct iris_bufmgr *bufmgr, struct iris_bo *bo)
    struct drm_xe_gem_mmap_offset args = {
       .handle = bo->gem_handle,
    };
+   UNUSED const struct intel_device_info *devinfo = iris_bufmgr_get_device_info(bufmgr);
+
+   assert(iris_heap_to_pat_entry(devinfo, bo->real.heap, bo->real.scanout)->mmap !=
+          INTEL_DEVICE_INFO_MMAP_MODE_INVALID);
+
    if (intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_XE_GEM_MMAP_OFFSET, &args))
       return NULL;
 
@@ -104,22 +129,23 @@ xe_gem_mmap(struct iris_bufmgr *bufmgr, struct iris_bo *bo)
 }
 
 static inline int
-xe_gem_vm_bind_op(struct iris_bo *bo, uint32_t op)
+xe_gem_vm_bind_op(struct iris_bo *bo, uint32_t op, enum bo_alloc_flags iris_flags)
 {
    struct iris_bufmgr *bufmgr = bo->bufmgr;
    struct intel_bind_timeline *bind_timeline = iris_bufmgr_get_bind_timeline(bufmgr);
    const struct intel_device_info *devinfo = iris_bufmgr_get_device_info(bufmgr);
    uint32_t handle = op == DRM_XE_VM_BIND_OP_UNMAP ? 0 : bo->gem_handle;
    struct drm_xe_sync xe_sync = {
-      .handle = intel_bind_timeline_get_syncobj(bind_timeline),
       .type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ,
       .flags = DRM_XE_SYNC_FLAG_SIGNAL,
+      .addr = 0, /* init union to 0 before setting .handle */
    };
    uint64_t range, obj_offset = 0;
    uint32_t flags = 0;
    int ret, fd;
 
    fd = iris_bufmgr_get_fd(bufmgr);
+   xe_sync.handle = intel_bind_timeline_get_syncobj(bind_timeline);
 
    if (iris_bo_is_imported(bo))
       range = bo->size;
@@ -135,6 +161,8 @@ xe_gem_vm_bind_op(struct iris_bo *bo, uint32_t op)
 
    if (bo->real.capture)
       flags |= DRM_XE_VM_BIND_FLAG_DUMPABLE;
+   if (iris_flags & BO_ALLOC_PROTECTED)
+      flags |= DRM_XE_VM_BIND_FLAG_CHECK_PXP;
 
    struct drm_xe_vm_bind args = {
       .vm_id = iris_bufmgr_get_global_vm_id(bufmgr),
@@ -146,7 +174,7 @@ xe_gem_vm_bind_op(struct iris_bo *bo, uint32_t op)
       .bind.range = range,
       .bind.addr = intel_48b_address(bo->address),
       .bind.op = op,
-      .bind.pat_index = iris_heap_to_pat_entry(devinfo, bo->real.heap)->index,
+      .bind.pat_index = iris_heap_to_pat_entry(devinfo, bo->real.heap, bo->real.scanout)->index,
       .bind.flags = flags,
    };
 
@@ -161,26 +189,45 @@ xe_gem_vm_bind_op(struct iris_bo *bo, uint32_t op)
 }
 
 static bool
-xe_gem_vm_bind(struct iris_bo *bo)
+xe_gem_vm_bind(struct iris_bo *bo, enum bo_alloc_flags flags)
 {
-   return xe_gem_vm_bind_op(bo, DRM_XE_VM_BIND_OP_MAP) == 0;
+   return xe_gem_vm_bind_op(bo, DRM_XE_VM_BIND_OP_MAP, flags) == 0;
 }
 
 static bool
 xe_gem_vm_unbind(struct iris_bo *bo)
 {
-   return xe_gem_vm_bind_op(bo, DRM_XE_VM_BIND_OP_UNMAP) == 0;
+   return xe_gem_vm_bind_op(bo, DRM_XE_VM_BIND_OP_UNMAP, 0) == 0;
 }
 
 static bool
 xe_bo_madvise(struct iris_bo *bo, enum iris_madvice state)
 {
-   /* Only applicable if VM was created with DRM_XE_VM_CREATE_FAULT_MODE but
-    * that is not compatible with DRM_XE_VM_CREATE_SCRATCH_PAGE
-    *
-    * So returning as retained.
-    */
-   return true;
+   struct iris_bufmgr *bufmgr = bo->bufmgr;
+   const struct intel_device_info *devinfo = iris_bufmgr_get_device_info(bufmgr);
+   struct drm_xe_madvise madvise = {};
+   uint32_t retained_val = 0;
+
+   /* If not supported bo are always retained */
+   if (!devinfo->has_madvise_purgeable)
+      return true;
+
+   madvise.start = bo->address;
+   madvise.range = bo->size;
+   madvise.vm_id = iris_bufmgr_get_global_vm_id(bufmgr);
+   madvise.type = DRM_XE_VMA_ATTR_PURGEABLE_STATE;
+   /* Same values between iris_madvice and Xe KMD */
+   STATIC_ASSERT(IRIS_MADVICE_WILL_NEED == DRM_XE_VMA_PURGEABLE_STATE_WILLNEED);
+   STATIC_ASSERT(IRIS_MADVICE_DONT_NEED == DRM_XE_VMA_PURGEABLE_STATE_DONTNEED);
+   madvise.purge_state_val.val = state;
+   madvise.purge_state_val.retained_ptr = (uintptr_t)&retained_val;
+
+   if (intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_XE_MADVISE, &madvise)) {
+      debug_warn_once("DRM_XE_VMA_ATTR_PURGEABLE_STATE failed at least once\n");
+      return false;
+   }
+
+   return retained_val;
 }
 
 static int
@@ -391,9 +438,9 @@ xe_batch_submit(struct iris_batch *batch)
       .syncs = (uintptr_t)syncs,
       .num_syncs = sync_len,
    };
-   if (!batch->screen->devinfo->no_hw)
-       ret = intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_XE_EXEC, &exec);
 
+   ret = xe_gem_exec_ioctl(iris_bufmgr_get_fd(bufmgr), batch->screen->devinfo,
+                           &exec);
    if (ret) {
       ret = -errno;
       goto error_exec;

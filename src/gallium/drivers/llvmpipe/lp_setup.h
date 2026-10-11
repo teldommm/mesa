@@ -45,9 +45,6 @@ struct pipe_fence_handle;
 struct lp_setup_variant;
 struct lp_setup_context;
 
-void
-lp_setup_reset(struct lp_setup_context *setup);
-
 struct lp_setup_context *
 lp_setup_create(struct pipe_context *pipe,
                 struct draw_context *draw);
@@ -100,6 +97,11 @@ lp_setup_set_alpha_ref_value(struct lp_setup_context *setup,
                              float alpha_ref_value);
 
 void
+lp_setup_set_depth_bounds_test_value(struct lp_setup_context *setup,
+                                     float min_depth_bounds,
+                                     float max_depth_bounds);
+
+void
 lp_setup_set_stencil_ref_values(struct lp_setup_context *setup,
                                 const uint8_t refs[2]);
 
@@ -135,12 +137,20 @@ lp_setup_set_sample_mask(struct lp_setup_context *setup,
                          uint32_t sample_mask);
 
 void
+lp_setup_set_sample_locations(struct lp_setup_context *setup,
+                              bool sample_locations_enabled,
+                              const uint8_t *sample_locations);
+
+void
 lp_setup_set_rasterizer_discard(struct lp_setup_context *setup,
                                 bool rasterizer_discard);
 
 void
 lp_setup_set_vertex_info(struct lp_setup_context *setup,
                          struct vertex_info *info);
+
+bool
+lp_setup_linear_rasterizer_supported(void);
 
 void
 lp_setup_set_linear_mode(struct lp_setup_context *setup,

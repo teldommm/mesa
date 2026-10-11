@@ -9,8 +9,16 @@
 
 #include "tu_event.h"
 
+#include "vk_synchronization.h"
+
 #include "tu_cmd_buffer.h"
 #include "tu_rmv.h"
+
+static uint64_t *
+tu_event_map(tu_event *event)
+{
+   return (uint64_t *)tu_suballoc_bo_map(&event->bo);
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL
 tu_CreateEvent(VkDevice _device,
@@ -26,14 +34,13 @@ tu_CreateEvent(VkDevice _device,
    if (!event)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   VkResult result = tu_bo_init_new(device, &event->base, &event->bo, 0x1000,
-                                    TU_BO_ALLOC_NO_FLAGS, "event");
+   mtx_lock(&device->event_mutex);
+   VkResult result = tu_suballoc_bo_alloc(&event->bo, &device->event_suballoc, 64, 64);
+   mtx_unlock(&device->event_mutex);
    if (result != VK_SUCCESS)
       goto fail_alloc;
 
-   result = tu_bo_map(device, event->bo, NULL);
-   if (result != VK_SUCCESS)
-      goto fail_map;
+   *tu_event_map(event) = 0;
 
    TU_RMV(event_create, device, pCreateInfo, event);
 
@@ -41,8 +48,6 @@ tu_CreateEvent(VkDevice _device,
 
    return VK_SUCCESS;
 
-fail_map:
-   tu_bo_finish(device, event->bo);
 fail_alloc:
    vk_object_free(&device->vk, pAllocator, event);
    return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -61,7 +66,9 @@ tu_DestroyEvent(VkDevice _device,
 
    TU_RMV(resource_destroy, device, event);
 
-   tu_bo_finish(device, event->bo);
+   mtx_lock(&device->event_mutex);
+   tu_suballoc_bo_free(&device->event_suballoc, &event->bo);
+   mtx_unlock(&device->event_mutex);
    vk_object_free(&device->vk, pAllocator, event);
 }
 
@@ -74,7 +81,7 @@ tu_GetEventStatus(VkDevice _device, VkEvent _event)
    if (vk_device_is_lost(&device->vk))
       return VK_ERROR_DEVICE_LOST;
 
-   if (*(uint64_t*) event->bo->map == 1)
+   if (*tu_event_map(event) == 1)
       return VK_EVENT_SET;
    return VK_EVENT_RESET;
 }
@@ -83,7 +90,7 @@ VKAPI_ATTR VkResult VKAPI_CALL
 tu_SetEvent(VkDevice _device, VkEvent _event)
 {
    VK_FROM_HANDLE(tu_event, event, _event);
-   *(uint64_t*) event->bo->map = 1;
+   *tu_event_map(event) = 1;
 
    return VK_SUCCESS;
 }
@@ -92,7 +99,7 @@ VKAPI_ATTR VkResult VKAPI_CALL
 tu_ResetEvent(VkDevice _device, VkEvent _event)
 {
    VK_FROM_HANDLE(tu_event, event, _event);
-   *(uint64_t*) event->bo->map = 0;
+   *tu_event_map(event) = 0;
 
    return VK_SUCCESS;
 }
@@ -105,14 +112,15 @@ tu_CmdSetEvent2(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(tu_event, event, _event);
-   VkPipelineStageFlags2 src_stage_mask = 0;
+   VkPipelineStageFlags2 src_stage_mask =
+      vk_collect_dependency_info_src_stages(pDependencyInfo);
 
-   for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++)
-      src_stage_mask |= pDependencyInfo->pMemoryBarriers[i].srcStageMask;
-   for (uint32_t i = 0; i < pDependencyInfo->bufferMemoryBarrierCount; i++)
-      src_stage_mask |= pDependencyInfo->pBufferMemoryBarriers[i].srcStageMask;
-   for (uint32_t i = 0; i < pDependencyInfo->imageMemoryBarrierCount; i++)
-      src_stage_mask |= pDependencyInfo->pImageMemoryBarriers[i].srcStageMask;
+   if (!(pDependencyInfo->dependencyFlags &
+         VK_DEPENDENCY_ASYMMETRIC_EVENT_BIT_KHR)) {
+      tu_barrier(cmd, 1, pDependencyInfo, true);
+      /* Force emit any flushes before the RB_DONE_TS is emitted below. */
+      tu_emit_cache_flush<CHIP>(cmd);
+   }
 
    tu_write_event<CHIP>(cmd, event, src_stage_mask, 1);
 }
@@ -131,6 +139,7 @@ tu_CmdResetEvent2(VkCommandBuffer commandBuffer,
 }
 TU_GENX(tu_CmdResetEvent2);
 
+template <chip CHIP>
 VKAPI_ATTR void VKAPI_CALL
 tu_CmdWaitEvents2(VkCommandBuffer commandBuffer,
                   uint32_t eventCount,
@@ -143,14 +152,38 @@ tu_CmdWaitEvents2(VkCommandBuffer commandBuffer,
    for (uint32_t i = 0; i < eventCount; i++) {
       VK_FROM_HANDLE(tu_event, event, pEvents[i]);
 
+      /* If concurrent binning is enabled, and the dstStage includes vertex
+       * stages, make BV also wait for the event.
+       */
+      bool wait_bv = false;
+      if (CHIP >= A7XX) {
+         VkPipelineStageFlags2 dst_stage_mask =
+            vk_collect_dependency_info_dst_stages(&pDependencyInfos[i]);
+         enum tu_stage dst_stage = vk2tu_dst_stage(cmd->device, dst_stage_mask);
+         if (dst_stage <= TU_STAGE_BV) {
+            wait_bv = true;
+            tu7_set_thread_both_patchpoint(cmd, cs);
+         }
+      }
+
       tu_cs_emit_pkt7(cs, CP_WAIT_REG_MEM, 6);
       tu_cs_emit(cs, CP_WAIT_REG_MEM_0_FUNCTION(WRITE_EQ) |
                      CP_WAIT_REG_MEM_0_POLL(POLL_MEMORY));
-      tu_cs_emit_qw(cs, event->bo->iova); /* POLL_ADDR_LO/HI */
+      tu_cs_emit_qw(cs, event->bo.iova); /* POLL_ADDR_LO/HI */
       tu_cs_emit(cs, CP_WAIT_REG_MEM_3_REF(1));
       tu_cs_emit(cs, CP_WAIT_REG_MEM_4_MASK(~0u));
       tu_cs_emit(cs, CP_WAIT_REG_MEM_5_DELAY_LOOP_CYCLES(20));
-   }
 
-   tu_barrier(cmd, eventCount, pDependencyInfos);
+      if (wait_bv)
+         tu7_set_thread_br_patchpoint(cmd, cs, false);
+
+      /* If the dependency info in CmdSetEvent is the same, we can rely on all
+       * flushes/invalidates landing by the time the event is signalled.
+       * Otherwise, we have to do a full pipeline barrier.
+       */
+      if (pDependencyInfos[i].dependencyFlags &
+          VK_DEPENDENCY_ASYMMETRIC_EVENT_BIT_KHR)
+         tu_barrier(cmd, 1, &pDependencyInfos[i], false);
+   }
 }
+TU_GENX(tu_CmdWaitEvents2);

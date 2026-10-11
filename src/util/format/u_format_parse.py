@@ -234,6 +234,10 @@ class Format:
         self.block_depth = consume_int(self, source, 'block', 'depth')
         consumed(self, source, 'block')
         self.colorspace = consume_str(self, source, 'colorspace')
+        if 'subsampling' in source:
+            self.subsampling = consume_int(self, source, 'subsampling')
+        else:
+            self.subsampling = None
         self.srgb_equivalent = None
         self.linear_equivalent = None
 
@@ -276,6 +280,11 @@ class Format:
             if 'alias' in source['big_endian']:
                 self.be_alias = f"PIPE_FORMAT_{consume_str(self, source, 'big_endian', 'alias')}"
             consumed(self, source, 'big_endian')
+
+        # Allow shorter fourcc alias for fully descriptive YUV formats.
+        self.alias = None
+        if 'alias' in source:
+            self.alias = f"PIPE_FORMAT_{consume_str(self, source, 'alias')}"
 
         consumed(self, source)
         del(source)

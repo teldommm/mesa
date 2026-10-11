@@ -105,8 +105,6 @@ void trace_dump_member_begin(const char *name);
 void trace_dump_member_end(void);
 void trace_dump_null(void);
 void trace_dump_ptr(const void *value);
-/* will turn a wrapped object into the real one and dump ptr */
-void trace_dump_surface_ptr(struct pipe_surface *_surface);
 void trace_dump_transfer_ptr(struct pipe_transfer *_transfer);
 void trace_dump_nir(struct nir_shader *nir);
 
@@ -148,7 +146,8 @@ bool trace_dump_is_triggered(void);
 
 #define trace_dump_array_impl(_type, _obj, _size, _prefix) \
    do { \
-      if (_obj) { \
+      void *objptr = (void*)(_obj); \
+      if (objptr) { \
          size_t idx; \
          trace_dump_array_begin(); \
          for(idx = 0; idx < (_size); ++idx) { \
@@ -170,7 +169,8 @@ bool trace_dump_is_triggered(void);
 
 #define trace_dump_struct_array(_type, _obj, _size) \
    do { \
-      if (_obj) { \
+      void *objptr = (void*)(_obj); \
+      if (objptr) { \
          size_t idx; \
          trace_dump_array_begin(); \
          for(idx = 0; idx < (_size); ++idx) { \
@@ -188,6 +188,13 @@ bool trace_dump_is_triggered(void);
    do { \
       trace_dump_member_begin(#_member); \
       trace_dump_##_type((_obj)->_member); \
+      trace_dump_member_end(); \
+   } while(0)
+
+#define trace_dump_member_val(_type, _obj, _member) \
+   do { \
+      trace_dump_member_begin(#_member); \
+      trace_dump_##_type(&(_obj)->_member); \
       trace_dump_member_end(); \
    } while(0)
 

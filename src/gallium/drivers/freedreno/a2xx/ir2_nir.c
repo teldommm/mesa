@@ -19,14 +19,12 @@ static const nir_shader_compiler_options options = {
    .lower_fmod = true,
    .lower_fdiv = true,
    .lower_fceil = true,
-   .fuse_ffma16 = true,
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
+   .float_mul_add16 = nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+   .float_mul_add32 = nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+   .float_mul_add64 = nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
    /* .fdot_replicates = true, it is replicated, but it makes things worse */
-   .lower_all_io_to_temps = true,
    .vertex_id_zero_based = true, /* its not implemented anyway */
    .lower_bitops = true,
-   .lower_vector_cmp = true,
    .lower_fdph = true,
    .has_fsub = true,
    .has_isub = true,
@@ -50,7 +48,7 @@ ir2_get_compiler_options(void)
       NIR_PASS(this_progress, nir, pass, ##__VA_ARGS__);                       \
       this_progress;                                                           \
    })
-#define OPT_V(nir, pass, ...) NIR_PASS_V(nir, pass, ##__VA_ARGS__)
+#define OPT_V(nir, pass, ...) NIR_PASS(_, nir, pass, ##__VA_ARGS__)
 
 static void
 ir2_optimize_loop(nir_shader *s)
@@ -61,11 +59,16 @@ ir2_optimize_loop(nir_shader *s)
 
       OPT_V(s, nir_lower_vars_to_ssa);
       progress |= OPT(s, nir_opt_copy_prop_vars);
-      progress |= OPT(s, nir_copy_prop);
+      progress |= OPT(s, nir_opt_copy_prop);
       progress |= OPT(s, nir_opt_dce);
       progress |= OPT(s, nir_opt_cse);
       /* progress |= OPT(s, nir_opt_gcm, true); */
-      progress |= OPT(s, nir_opt_peephole_select, UINT_MAX, true, true);
+      nir_opt_peephole_select_options peephole_select_options = {
+         .limit = UINT_MAX,
+         .indirect_load_ok = true,
+         .expensive_alu_ok = true,
+      };
+      progress |= OPT(s, nir_opt_peephole_select, &peephole_select_options);
       progress |= OPT(s, nir_opt_intrinsics);
       progress |= OPT(s, nir_opt_algebraic);
       progress |= OPT(s, nir_opt_constant_folding);
@@ -76,7 +79,7 @@ ir2_optimize_loop(nir_shader *s)
           * things up if we want any hope of nir_opt_if or nir_opt_loop_unroll
           * to make progress.
           */
-         OPT(s, nir_copy_prop);
+         OPT(s, nir_opt_copy_prop);
          OPT(s, nir_opt_dce);
       }
       progress |= OPT(s, nir_opt_loop_unroll);
@@ -106,8 +109,8 @@ ir2_optimize_nir(nir_shader *s, bool lower)
    }
 
    OPT_V(s, nir_lower_vars_to_ssa);
-   OPT_V(s, nir_lower_indirect_derefs, nir_var_shader_in | nir_var_shader_out,
-         UINT32_MAX);
+   OPT_V(s, nir_lower_indirect_derefs_to_if_else_trees,
+         nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
 
    if (lower) {
       OPT_V(s, ir3_nir_apply_trig_workarounds);
@@ -134,8 +137,17 @@ static struct ir2_src
 load_const(struct ir2_context *ctx, float *value_f, unsigned ncomp)
 {
    struct fd2_shader_stateobj *so = ctx->so;
-   unsigned imm_ncomp, swiz, idx, i, j;
-   uint32_t *value = (uint32_t *)value_f;
+   unsigned idx, i, j;
+   unsigned imm_ncomp = 0;
+   unsigned swiz = 0;
+   uint32_t value[4];
+
+   /* type-punned through memcpy: reading the caller's float array through
+    * a uint32_t pointer is undefined and gcc on arm reorders the read
+    * ahead of the store, turning the immediate into stack garbage
+    */
+   assert(ncomp <= ARRAY_SIZE(value));
+   memcpy(value, value_f, ncomp * sizeof(*value));
 
    /* try to merge with existing immediate (TODO: try with neg) */
    for (idx = 0; idx < so->num_immediates; idx++) {
@@ -304,7 +316,7 @@ instr_create_alu(struct ir2_context *ctx, nir_op opcode, unsigned ncomp)
       [nir_op_fadd] = {ADDs, ADDv},
       [nir_op_fsub] = {ADDs, ADDv},
       [nir_op_fmul] = {MULs, MULv},
-      [nir_op_ffma] = {-1, MULADDv},
+      [nir_op_fmad] = {-1, MULADDv},
       [nir_op_fmax] = {MAXs, MAXv},
       [nir_op_fmin] = {MINs, MINv},
       [nir_op_ffloor] = {FLOORs, FLOORv},
@@ -664,7 +676,7 @@ emit_intrinsic(struct ir2_context *ctx, nir_intrinsic_instr *intr)
          ir2_src(ctx->f->inputs_count, IR2_SWIZZLE_ZW, IR2_SRC_INPUT);
       break;
    default:
-      compile_error(ctx, "unimplemented intr %d\n", intr->intrinsic);
+      compile_error(ctx, "unimplemented intr %s\n", nir_intrinsic_infos[intr->intrinsic].name);
       break;
    }
 }
@@ -743,7 +755,7 @@ emit_tex(struct ir2_context *ctx, nir_tex_instr *tex)
       rcp->src[0] = ir2_src(reg_idx, IR2_SWIZZLE_Z, IR2_SRC_REG);
       rcp->src[0].abs = true;
 
-      coord_xy = instr_create_alu_reg(ctx, nir_op_ffma, 3, instr);
+      coord_xy = instr_create_alu_reg(ctx, nir_op_fmad, 3, instr);
       coord_xy->src[0] = ir2_src(reg_idx, 0, IR2_SRC_REG);
       coord_xy->src[1] = ir2_src(rcp->idx, IR2_SWIZZLE_XXXX, IR2_SRC_SSA);
       coord_xy->src[2] = load_const(ctx, (float[]){1.5f}, 1);
@@ -863,7 +875,7 @@ extra_position_exports(struct ir2_context *ctx, bool binning)
    sc->src[0] = ctx->position;
    sc->src[1] = ir2_src(rcp->idx, IR2_SWIZZLE_XXXX, IR2_SRC_SSA);
 
-   wincoord = instr_create_alu(ctx, nir_op_ffma, 4);
+   wincoord = instr_create_alu(ctx, nir_op_fmad, 4);
    wincoord->src[0] = ir2_src(66, 0, IR2_SRC_CONST);
    wincoord->src[1] = ir2_src(sc->idx, 0, IR2_SRC_SSA);
    wincoord->src[2] = ir2_src(65, 0, IR2_SRC_CONST);
@@ -890,13 +902,13 @@ extra_position_exports(struct ir2_context *ctx, bool binning)
 
    /* 8 max set in freedreno_screen.. unneeded instrs patched out */
    for (int i = 0; i < 8; i++) {
-      instr = instr_create_alu(ctx, nir_op_ffma, 4);
+      instr = instr_create_alu(ctx, nir_op_fmad, 4);
       instr->src[0] = ir2_src(1, IR2_SWIZZLE_WYWW, IR2_SRC_CONST);
       instr->src[1] = ir2_src(off->idx, IR2_SWIZZLE_XXXX, IR2_SRC_SSA);
       instr->src[2] = ir2_src(3 + i, 0, IR2_SRC_CONST);
       instr->alu.export = 32;
 
-      instr = instr_create_alu(ctx, nir_op_ffma, 4);
+      instr = instr_create_alu(ctx, nir_op_fmad, 4);
       instr->src[0] = ir2_src(68 + i * 2, 0, IR2_SRC_CONST);
       instr->src[1] = ir2_src(wincoord->idx, 0, IR2_SRC_SSA);
       instr->src[2] = ir2_src(67 + i * 2, 0, IR2_SRC_CONST);
@@ -1091,6 +1103,18 @@ ir2_alu_to_scalar_filter_cb(const nir_instr *instr, const void *data)
 
    nir_alu_instr *alu = nir_instr_as_alu(instr);
    switch (alu->op) {
+   case nir_op_ball_fequal2:
+   case nir_op_ball_fequal3:
+   case nir_op_ball_fequal4:
+   case nir_op_bany_fnequal2:
+   case nir_op_bany_fnequal3:
+   case nir_op_bany_fnequal4:
+   case nir_op_ball_iequal2:
+   case nir_op_ball_iequal3:
+   case nir_op_ball_iequal4:
+   case nir_op_bany_inequal2:
+   case nir_op_bany_inequal3:
+   case nir_op_bany_inequal4:
    case nir_op_frsq:
    case nir_op_frcp:
    case nir_op_flog2:
@@ -1118,18 +1142,18 @@ ir2_nir_compile(struct ir2_context *ctx, bool binning)
    if (binning)
       cleanup_binning(ctx);
 
-   OPT_V(ctx->nir, nir_copy_prop);
+   OPT_V(ctx->nir, nir_opt_copy_prop);
    OPT_V(ctx->nir, nir_opt_dce);
    OPT_V(ctx->nir, nir_opt_move, nir_move_comparisons);
 
    OPT_V(ctx->nir, nir_lower_int_to_float);
+   OPT_V(ctx->nir, nir_lower_alu_to_scalar, ir2_alu_to_scalar_filter_cb, NULL);
    OPT_V(ctx->nir, nir_lower_bool_to_float, true);
    while (OPT(ctx->nir, nir_opt_algebraic))
       ;
    OPT_V(ctx->nir, nir_opt_algebraic_late);
-   OPT_V(ctx->nir, nir_lower_alu_to_scalar, ir2_alu_to_scalar_filter_cb, NULL);
 
-   OPT_V(ctx->nir, nir_convert_from_ssa, true);
+   OPT_V(ctx->nir, nir_convert_from_ssa, true, false);
 
    OPT_V(ctx->nir, nir_move_vec_src_uses_to_dest, false);
    OPT_V(ctx->nir, nir_lower_vec_to_regs, NULL, NULL);

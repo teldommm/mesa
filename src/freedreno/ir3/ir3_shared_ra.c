@@ -140,6 +140,13 @@ ra_interval_search_sloppy(struct rb_tree *tree, physreg_t reg)
    return node ? rb_node_to_interval(node) : NULL;
 }
 
+static struct ra_interval *
+ra_interval_get(struct ra_ctx *ctx, struct ir3_register *dst)
+{
+   assert(dst->name != 0 && dst->name < ctx->live->definitions_count);
+   return &ctx->intervals[dst->name];
+}
+
 /* Get the interval covering the reg, or the closest to the right if it
  * doesn't exist.
  */
@@ -290,8 +297,45 @@ static bool
 get_reg_specified(struct ra_ctx *ctx, struct ir3_register *reg, physreg_t physreg)
 {
    for (unsigned i = 0; i < reg_size(reg); i++) {
-      if (!BITSET_TEST(ctx->available, physreg + i))
-         return false;
+      physreg_t cur_physreg = physreg + i;
+
+      if (!BITSET_TEST(ctx->available, cur_physreg)) {
+         /* If physreg is unavailable, we might still be able to use it if the
+          * value it holds is in the same merge set at the same offset as the
+          * value in reg.
+          */
+         if (!reg->merge_set) {
+            return false;
+         }
+
+         /* Find the interval for the current element of physreg. */
+         struct ra_interval *interval = ra_ctx_search_right(ctx, cur_physreg);
+
+         /* It must exist since the physreg is unavailable. */
+         assert(interval->physreg_start <= cur_physreg);
+
+         struct ir3_register *live_reg = interval->interval.reg;
+
+         if (reg->merge_set != live_reg->merge_set) {
+            return false;
+         }
+
+         /* We want to check if the currently live value at physreg+i (live_reg)
+          * is at the same offset as the new value (reg+i) in their shared merge
+          * set. However, we cannot simply compare their merge set offsets as
+          * live_reg may be larger than reg+i (e.g., a collect) and reg+i may
+          * not be at the start of live_reg's interval. To account for this, we
+          * want to know the merge set offset delta between live_reg's value at
+          * physreg+i and the start of its interval. This always equals the
+          * delta between the physregs within intervals.
+          */
+         unsigned cur_merge_set_offset = reg->merge_set_offset + i;
+         unsigned interval_offset = cur_physreg - interval->physreg_start;
+         if (cur_merge_set_offset !=
+             live_reg->merge_set_offset + interval_offset) {
+            return false;
+         }
+      }
    }
 
    return true;
@@ -308,7 +352,7 @@ reg_file_size(struct ir3_register *reg)
 
 static physreg_t
 find_best_gap(struct ra_ctx *ctx, struct ir3_register *dst, unsigned size,
-              unsigned align)
+              unsigned alignment)
 {
    unsigned file_size = reg_file_size(dst);
 
@@ -318,7 +362,9 @@ find_best_gap(struct ra_ctx *ctx, struct ir3_register *dst, unsigned size,
    if (size > file_size)
       return (physreg_t) ~0;
 
-   unsigned start = ALIGN(ctx->start, align) % (file_size - size + align);
+   unsigned start = align(ctx->start, alignment);
+   if (start + size > file_size)
+      start = 0;
    unsigned candidate = start;
    do {
       bool is_available = true;
@@ -334,7 +380,7 @@ find_best_gap(struct ra_ctx *ctx, struct ir3_register *dst, unsigned size,
          return candidate;
       }
 
-      candidate += align;
+      candidate += alignment;
       if (candidate + size > file_size)
          candidate = 0;
    } while (candidate != start);
@@ -344,12 +390,14 @@ find_best_gap(struct ra_ctx *ctx, struct ir3_register *dst, unsigned size,
 
 static physreg_t
 find_best_spill_reg(struct ra_ctx *ctx, struct ir3_register *reg,
-                    unsigned size, unsigned align)
+                    unsigned size, unsigned alignment)
 {
    unsigned file_size = reg_file_size(reg);
    unsigned min_cost = UINT_MAX;
 
-   unsigned start = ALIGN(ctx->start, align) % (file_size - size + align);
+   unsigned start = align(ctx->start, alignment);
+   if (start + size > file_size)
+      start = 0;
    physreg_t candidate = start;
    physreg_t best_reg = (physreg_t)~0;
    do {
@@ -379,7 +427,7 @@ find_best_spill_reg(struct ra_ctx *ctx, struct ir3_register *reg,
          best_reg = candidate;
       }
 
-      candidate += align;
+      candidate += alignment;
       if (candidate + size > file_size)
          candidate = 0;
    } while (candidate != start);
@@ -519,9 +567,9 @@ try_demote_instruction(struct ra_ctx *ctx, struct ir3_instruction *instr)
       /* We need one source to either be demotable or an immediate. */
       if (instr->srcs_count > 1) {
          struct ra_interval *src0_interval =
-            (instr->srcs[0]->flags & IR3_REG_SSA) ? &ctx->intervals[instr->srcs[0]->def->name] : NULL;
+            (instr->srcs[0]->flags & IR3_REG_SSA) ? ra_interval_get(ctx, instr->srcs[0]->def) : NULL;
          struct ra_interval *src1_interval =
-            (instr->srcs[0]->flags & IR3_REG_SSA) ? &ctx->intervals[instr->srcs[0]->def->name] : NULL;
+            (instr->srcs[1]->flags & IR3_REG_SSA) ? ra_interval_get(ctx, instr->srcs[1]->def) : NULL;
          if (!(src0_interval && src0_interval->spill_def) &&
              !(src1_interval && src1_interval->spill_def) &&
              !(instr->srcs[0]->flags & IR3_REG_IMMED) &&
@@ -532,9 +580,9 @@ try_demote_instruction(struct ra_ctx *ctx, struct ir3_instruction *instr)
    }
    case 3: {
       struct ra_interval *src0_interval =
-         (instr->srcs[0]->flags & IR3_REG_SSA) ? &ctx->intervals[instr->srcs[0]->def->name] : NULL;
+         (instr->srcs[0]->flags & IR3_REG_SSA) ? ra_interval_get(ctx, instr->srcs[0]->def) : NULL;
       struct ra_interval *src1_interval =
-         (instr->srcs[1]->flags & IR3_REG_SSA) ? &ctx->intervals[instr->srcs[1]->def->name] : NULL;
+         (instr->srcs[1]->flags & IR3_REG_SSA) ? ra_interval_get(ctx, instr->srcs[1]->def) : NULL;
 
       /* src1 cannot be shared */
       if (src1_interval && !src1_interval->spill_def) {
@@ -555,7 +603,7 @@ try_demote_instruction(struct ra_ctx *ctx, struct ir3_instruction *instr)
    }
    case 4: {
       assert(instr->srcs[0]->flags & IR3_REG_SSA);
-      struct ra_interval *src_interval = &ctx->intervals[instr->srcs[0]->def->name];
+      struct ra_interval *src_interval = ra_interval_get(ctx, instr->srcs[0]->def);
       if (!src_interval->spill_def)
          return false;
       break;
@@ -571,12 +619,12 @@ try_demote_instruction(struct ra_ctx *ctx, struct ir3_instruction *instr)
     * skipped reloading and just demoted sources directly, so we should never
     * get here.
     */
-   assert(instr->dsts[0]->flags & IR3_REG_SHARED);
+   assert(instr->dsts[0]->flags & (IR3_REG_SHARED | IR3_REG_UNIFORM));
 
    /* Now we actually demote the instruction */
    ra_foreach_src (src, instr) {
       assert(src->flags & IR3_REG_SHARED);
-      struct ra_interval *interval = &ctx->intervals[src->def->name];
+      struct ra_interval *interval = ra_interval_get(ctx, src->def);
       if (interval->spill_def) {
          src->def = interval->spill_def;
          src->flags &= ~IR3_REG_SHARED;
@@ -589,7 +637,14 @@ try_demote_instruction(struct ra_ctx *ctx, struct ir3_instruction *instr)
       }
    }
 
-   struct ra_interval *dst_interval = &ctx->intervals[instr->dsts[0]->name];
+   if (instr->dsts[0]->flags & IR3_REG_UNIFORM) {
+      instr->dsts[0]->flags &= ~IR3_REG_UNIFORM;
+
+      /* Uniform registers are always predicates which we don't handle here. */
+      return true;
+   }
+
+   struct ra_interval *dst_interval = ra_interval_get(ctx, instr->dsts[0]);
    instr->dsts[0]->flags &= ~IR3_REG_SHARED;
    ra_interval_init(dst_interval, instr->dsts[0]);
    dst_interval->spill_def = instr->dsts[0];
@@ -613,8 +668,45 @@ free_space(struct ra_ctx *ctx, physreg_t start, unsigned size)
 }
 
 static physreg_t
+try_allocate_src_subreg(struct ra_ctx *ctx, struct ir3_register *reg,
+                        enum ir3_subreg_move subreg_move)
+{
+   assert(subreg_move != IR3_SUBREG_MOVE_NONE);
+
+   /* Subreg moves always write a half register. */
+   assert(reg_elem_size(reg) == 1);
+
+   struct ir3_register *src = reg->instr->srcs[0];
+   if (!ra_reg_is_src(src) || !(src->flags & IR3_REG_SHARED))
+      return ~0;
+
+   unsigned offset = subreg_move == IR3_SUBREG_MOVE_LOWER ? 0 : 1;
+   struct ra_interval *src_interval = ra_interval_get(ctx, src->def);
+   physreg_t src_physreg = ra_interval_get_physreg(src_interval) + offset;
+   unsigned file_size = reg_file_size(reg);
+   unsigned size = reg_size(reg);
+
+   if (src_physreg + size <= file_size &&
+       get_reg_specified(ctx, reg, src_physreg)) {
+      return src_physreg;
+   }
+
+   return ~0;
+}
+
+static physreg_t
 get_reg(struct ra_ctx *ctx, struct ir3_register *reg, bool src)
 {
+   /* For subreg moves (see ir3_is_subreg_move), try to allocate half of their
+    * full src for their dst. If this succeeds, the instruction can be removed.
+    */
+   enum ir3_subreg_move subreg_move = ir3_is_subreg_move(reg->instr);
+   if (subreg_move != IR3_SUBREG_MOVE_NONE) {
+      physreg_t src_reg = try_allocate_src_subreg(ctx, reg, subreg_move);
+      if (src_reg != (physreg_t)~0)
+         return src_reg;
+   }
+
    if (reg->merge_set && reg->merge_set->preferred_reg != (physreg_t)~0) {
       physreg_t preferred_reg =
          reg->merge_set->preferred_reg + reg->merge_set_offset;
@@ -622,6 +714,8 @@ get_reg(struct ra_ctx *ctx, struct ir3_register *reg, bool src)
           preferred_reg % reg_elem_size(reg) == 0 &&
           get_reg_specified(ctx, reg, preferred_reg))
          return preferred_reg;
+
+      ir3_ra_handle_unavailable_merge_set(reg);
    }
 
    /* If this register is a subset of a merge set which we have not picked a
@@ -649,8 +743,14 @@ get_reg(struct ra_ctx *ctx, struct ir3_register *reg, bool src)
          struct ir3_register *src = reg->instr->srcs[i];
          if (!ra_reg_is_src(src))
             continue;
+         /* When src and dst are overlapping registers with different halfness,
+          * a (ss) sync is necessary. Avoid this to not unnecessarily increase
+          * ss-stall.
+          */
+         if ((reg->flags & IR3_REG_HALF) != (src->flags & IR3_REG_HALF))
+            continue;
          if ((src->flags & IR3_REG_SHARED) && reg_size(src) >= size) {
-            struct ra_interval *src_interval = &ctx->intervals[src->def->name];
+            struct ra_interval *src_interval = ra_interval_get(ctx, src->def);
             physreg_t src_physreg = ra_interval_get_physreg(src_interval);
             if (src_physreg % reg_elem_size(reg) == 0 &&
                 src_physreg + size <= reg_file_size(reg) &&
@@ -677,7 +777,7 @@ reload_src(struct ra_ctx *ctx, struct ir3_instruction *instr,
            struct ir3_register *src)
 {
    struct ir3_register *reg = src->def;
-   struct ra_interval *interval = &ctx->intervals[reg->name];
+   struct ra_interval *interval = ra_interval_get(ctx, reg);
    unsigned size = reg_size(reg);
 
    physreg_t best_reg = get_reg(ctx, reg, true);
@@ -697,6 +797,10 @@ reload_src(struct ra_ctx *ctx, struct ir3_instruction *instr,
    interval->physreg_end = best_reg + size;
    interval->needs_reload = true;
    ir3_reg_interval_insert(&ctx->reg_ctx, &interval->interval);
+
+   while (interval->interval.parent)
+      interval = ir3_reg_interval_to_ra_interval(interval->interval.parent);
+
    interval->src = true;
 }
 
@@ -722,16 +826,16 @@ reload_interval(struct ra_ctx *ctx, struct ir3_cursor cursor,
 }
 
 static void
-reload_src_finalize(struct ra_ctx *ctx, struct ir3_instruction *instr,
+reload_src_finalize(struct ra_ctx *ctx, struct ir3_cursor reload_cursor,
                     struct ir3_register *src)
 {
    struct ir3_register *reg = src->def;
-   struct ra_interval *interval = &ctx->intervals[reg->name];
+   struct ra_interval *interval = ra_interval_get(ctx, reg);
 
    if (!interval->needs_reload)
       return;
 
-   reload_interval(ctx, ir3_before_instr(instr), interval);
+   reload_interval(ctx, reload_cursor, interval);
 
    interval->needs_reload = false;
 }
@@ -744,6 +848,19 @@ can_demote_src(struct ir3_instruction *instr)
    case OPC_META_COLLECT:
       return false;
    case OPC_MOV:
+      if (instr->block->shader->compiler->info->props.has_salu_int_narrowing_quirk) {
+         /* Avoid demoting something that would cause narrowin integer
+          * conversion from GPR to uGPR:
+          */
+         if ((instr->cat1.dst_type != instr->cat1.src_type) &&
+             (type_size(instr->cat1.dst_type) <
+              type_size(instr->cat1.src_type)) &&
+             !type_float(instr->cat1.dst_type) &&
+             (instr->dsts[0]->flags & IR3_REG_SHARED)) {
+            return false;
+         }
+      }
+
       /* non-shared -> shared floating-point conversions and
        * 8-bit sign extension don't work.
        */
@@ -754,7 +871,7 @@ can_demote_src(struct ir3_instruction *instr)
                  full_type(instr->cat1.dst_type) == TYPE_S32)));
    default:
       return (!is_alu(instr) && !is_sfu(instr)) ||
-         !(instr->dsts[0]->flags & IR3_REG_SHARED);
+         !(instr->dsts[0]->flags & (IR3_REG_SHARED | IR3_REG_UNIFORM));
    }
 }
 
@@ -766,7 +883,7 @@ mark_src(struct ra_ctx *ctx, struct ir3_register *src)
    if (!(src->flags & IR3_REG_SHARED))
       return;
 
-   struct ra_interval *interval = &ctx->intervals[src->def->name];
+   struct ra_interval *interval = ra_interval_get(ctx, src->def);
 
    if (interval->interval.inserted) {
       while (interval->interval.parent)
@@ -783,7 +900,7 @@ ensure_src_live(struct ra_ctx *ctx, struct ir3_instruction *instr,
    if (!(src->flags & IR3_REG_SHARED))
       return;
 
-   struct ra_interval *interval = &ctx->intervals[src->def->name];
+   struct ra_interval *interval = ra_interval_get(ctx, src->def);
 
    if (!interval->interval.inserted) {
       /* In some cases we cannot demote shared reg sources to non-shared regs,
@@ -811,7 +928,7 @@ assign_src(struct ra_ctx *ctx, struct ir3_register *src)
    if (!(src->flags & IR3_REG_SHARED))
       return;
 
-   struct ra_interval *interval = &ctx->intervals[src->def->name];
+   struct ra_interval *interval = ra_interval_get(ctx, src->def);
    assert(interval->interval.inserted);
    src->num = ra_physreg_to_num(ra_interval_get_physreg(interval), src->flags);
 
@@ -826,38 +943,20 @@ assign_src(struct ra_ctx *ctx, struct ir3_register *src)
    interval->src = false;
 }
 
-static bool
-is_nontrivial_collect(struct ir3_instruction *collect)
-{
-   if (collect->opc != OPC_META_COLLECT) {
-      return false;
-   }
-
-   struct ir3_register *dst = collect->dsts[0];
-
-   foreach_src_n (src, src_n, collect) {
-      if (src->num != dst->num + src_n) {
-         return true;
-      }
-   }
-
-   return false;
-}
-
 static void
 handle_dst(struct ra_ctx *ctx, struct ir3_instruction *instr,
-           struct ir3_register *dst)
+           struct ir3_register *dst, struct ir3_cursor *reload_cursor)
 {
    if (!(dst->flags & IR3_REG_SHARED))
       return;
 
-   struct ra_interval *interval = &ctx->intervals[dst->name];
+   struct ra_interval *interval = ra_interval_get(ctx, dst);
    ra_interval_init(interval, dst);
    interval->spill_def = NULL;
 
    if (dst->tied) {
       struct ir3_register *tied_def = dst->tied->def;
-      struct ra_interval *tied_interval = &ctx->intervals[tied_def->name];
+      struct ra_interval *tied_interval = ra_interval_get(ctx, tied_def);
       if ((dst->tied->flags & IR3_REG_KILL) &&
           !tied_interval->interval.parent &&
           rb_tree_is_empty(&tied_interval->interval.children)) {
@@ -886,11 +985,15 @@ handle_dst(struct ra_ctx *ctx, struct ir3_instruction *instr,
     * sources don't line-up with the destination) may cause source intervals to
     * get implicitly moved when they are inserted as children of the destination
     * interval. Since we don't support moving intervals in shared RA, this may
-    * cause illegal register allocations. Prevent this by creating a new
-    * top-level interval for the destination so that the source intervals will
-    * be left alone.
+    * cause illegal register allocations. Prevent this by making sure
+    * non-trivial collects will not share a merge set with (and will not be a
+    * parent interval of) their components. Detect this by checking if a dst got
+    * a register assignment that does not correspond with the existing preferred
+    * reg of its merge set, as this might cause a future collect covering its
+    * interval to become non-trivial.
     */
-   if (is_nontrivial_collect(instr)) {
+   if (dst->merge_set && dst->merge_set->preferred_reg != (physreg_t)~0 &&
+       physreg != dst->merge_set->preferred_reg + dst->merge_set_offset) {
       dst->merge_set = NULL;
       dst->interval_start = ctx->live->interval_offset;
       dst->interval_end = dst->interval_start + reg_size(dst);
@@ -912,18 +1015,23 @@ handle_dst(struct ra_ctx *ctx, struct ir3_instruction *instr,
       mov->cat1.src_type = mov->cat1.dst_type =
          (dst->flags & IR3_REG_HALF) ? TYPE_U16 : TYPE_U32;;
       dst->tied->num = dst->num;
+
+      /* If the tied src needs to be reloaded, this has to happen before the
+       * parallel copy we just inserted.
+       */
+      *reload_cursor = ir3_before_instr(mov);
    }
 }
 
 static void
-handle_src_late(struct ra_ctx *ctx, struct ir3_instruction *instr,
+handle_src_late(struct ra_ctx *ctx, struct ir3_cursor reload_cursor,
                 struct ir3_register *src)
 {
    if (!(src->flags & IR3_REG_SHARED))
       return;
 
-   struct ra_interval *interval = &ctx->intervals[src->def->name];
-   reload_src_finalize(ctx, instr, src);
+   struct ra_interval *interval = ra_interval_get(ctx, src->def);
+   reload_src_finalize(ctx, reload_cursor, src);
 
    /* Remove killed sources that have to be killed late due to being merged with
     * other defs.
@@ -947,11 +1055,12 @@ handle_normal_instr(struct ra_ctx *ctx, struct ir3_instruction *instr)
    ra_foreach_src_rev (src, instr)
       assign_src(ctx, src);
 
+   struct ir3_cursor reload_cursor = ir3_before_instr(instr);
    ra_foreach_dst (dst, instr)
-      handle_dst(ctx, instr, dst);
+      handle_dst(ctx, instr, dst, &reload_cursor);
 
    ra_foreach_src (src, instr)
-      handle_src_late(ctx, instr, src);
+      handle_src_late(ctx, reload_cursor, src);
 }
 
 static void
@@ -968,8 +1077,8 @@ handle_split(struct ra_ctx *ctx, struct ir3_instruction *split)
       return;
    }
 
-   struct ra_interval *src_interval = &ctx->intervals[src->def->name];
-   struct ra_interval *dst_interval = &ctx->intervals[dst->name];
+   struct ra_interval *src_interval = ra_interval_get(ctx, src->def);
+   struct ra_interval *dst_interval = ra_interval_get(ctx, dst);
 
    ra_interval_init(dst_interval, dst);
    dst_interval->spill_def = NULL;
@@ -1009,7 +1118,7 @@ handle_phi(struct ra_ctx *ctx, struct ir3_instruction *phi)
    if (!(dst->flags & IR3_REG_SHARED))
       return;
 
-   struct ra_interval *dst_interval = &ctx->intervals[dst->name];
+   struct ra_interval *dst_interval = ra_interval_get(ctx, dst);
    ra_interval_init(dst_interval, dst);
 
    /* In some rare cases, it's possible to have a phi node with a physical-only
@@ -1105,7 +1214,7 @@ handle_pcopy(struct ra_ctx *ctx, struct ir3_instruction *pcopy)
       assign_src(ctx, src);
 
    ra_foreach_src (src, pcopy)
-      handle_src_late(ctx, pcopy, src);
+      handle_src_late(ctx, ir3_before_instr(pcopy), src);
 }
 
 static void
@@ -1143,7 +1252,9 @@ reload_live_outs(struct ra_ctx *ctx, struct ir3_block *block)
       struct ir3_register *reg = ctx->live->definitions[name];
 
       struct ra_interval *interval = &ctx->intervals[name];
-      if (!interval->interval.inserted) {
+      if (!interval->interval.inserted ||
+          (interval->spill_def &&
+           interval->physreg_start != interval->physreg_start_orig)) {
          d("reloading %d at end of backedge", reg->name);
 
          /* When this interval was spilled inside the loop, we probably chose a
@@ -1185,8 +1296,7 @@ record_pred_live_outs(struct ra_ctx *ctx, struct ir3_block *block)
       if (state->visited)
          continue;
 
-      state->live_out = rzalloc_array(NULL, BITSET_WORD,
-                                      BITSET_WORDS(ctx->live->definitions_count));
+      state->live_out = BITSET_RZALLOC(NULL, ctx->live->definitions_count);
 
 
       rb_tree_foreach (struct ra_interval, interval,
@@ -1437,6 +1547,9 @@ ir3_ra_shared(struct ir3_shader_variant *v, struct ir3_liveness **live_ptr)
    ctx.live = live;
    ctx.pcopy_src_map = _mesa_pointer_hash_table_create(NULL);
 
+   /* Used to detect instructions inserted by this pass. */
+   unsigned last_old_serialno = v->ir->instr_count;
+
    foreach_block (block, &v->ir->block_list) {
       handle_block(&ctx, block);
    }
@@ -1444,8 +1557,7 @@ ir3_ra_shared(struct ir3_shader_variant *v, struct ir3_liveness **live_ptr)
    lower_pcopy(v->ir, &ctx);
 
    for (unsigned i = 0; i < live->block_count; i++) {
-      if (ctx.blocks[i].live_out)
-         ralloc_free(ctx.blocks[i].live_out);
+      ralloc_free(ctx.blocks[i].live_out);
    }
 
    ralloc_free(ctx.intervals);
@@ -1466,5 +1578,20 @@ ir3_ra_shared(struct ir3_shader_variant *v, struct ir3_liveness **live_ptr)
    ralloc_free(live);
    *live_ptr = ir3_calc_liveness(live_mem_ctx, v->ir);
    (*live_ptr)->interval_offset = interval_offset;
+
+   /* Create merge sets for the splits/collects created by this pass. */
+   foreach_block (block, &v->ir->block_list) {
+      foreach_instr (instr, &block->instr_list) {
+         if (instr->serialno > last_old_serialno &&
+             (instr->opc == OPC_META_SPLIT || instr->opc == OPC_META_COLLECT)) {
+            ir3_aggressive_coalesce(*live_ptr, instr);
+         }
+      }
+   }
+
+   /* We've created instructions that will be handled by regular RA (e.g.,
+    * shared spills) so make sure they have their interval offsets assigned.
+    */
+   ir3_update_merge_sets_index(*live_ptr, v->ir);
 }
 

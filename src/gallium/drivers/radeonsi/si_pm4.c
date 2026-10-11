@@ -7,9 +7,7 @@
 #include "si_pm4.h"
 #include "si_pipe.h"
 #include "si_build_pm4.h"
-#include "sid.h"
 #include "util/u_memory.h"
-#include "ac_debug.h"
 
 void si_pm4_clear_state(struct si_pm4_state *state, struct si_screen *sscreen,
                         bool is_compute_queue)
@@ -37,13 +35,11 @@ void si_pm4_free_state(struct si_context *sctx, struct si_pm4_state *state, unsi
    FREE(state);
 }
 
-void si_pm4_emit_commands(struct si_context *sctx, struct si_pm4_state *state)
+void si_pm4_emit_commands(struct si_context *sctx, struct ac_pm4_state *state)
 {
    struct radeon_cmdbuf *cs = &sctx->gfx_cs;
 
-   radeon_begin(cs);
-   radeon_emit_array(state->base.pm4, state->base.ndw);
-   radeon_end();
+   ac_pm4_emit_commands(&cs->current, state);
 }
 
 void si_pm4_emit_state(struct si_context *sctx, unsigned index)

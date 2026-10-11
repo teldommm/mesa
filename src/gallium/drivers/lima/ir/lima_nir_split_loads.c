@@ -54,15 +54,15 @@ replace_intrinsic(nir_builder *b, nir_intrinsic_instr *intrin)
        intrin->intrinsic != nir_intrinsic_load_uniform)
       return false;
 
-   if (intrin->src[0].ssa->parent_instr->type == nir_instr_type_load_const)
+   if (nir_src_is_const(intrin->src[0]))
       return false;
 
    struct hash_table *visited_instrs = _mesa_pointer_hash_table_create(NULL);
 
    nir_foreach_use_safe(src, &intrin->def) {
       struct hash_entry *entry =
-         _mesa_hash_table_search(visited_instrs, nir_src_parent_instr(src));
-      if (entry && (nir_src_parent_instr(src)->type != nir_instr_type_phi)) {
+         _mesa_hash_table_search(visited_instrs, nir_src_use_instr(src));
+      if (entry && (nir_src_use_instr(src)->type != nir_instr_type_phi)) {
          nir_def *def = entry->data;
          nir_src_rewrite(src, def);
          continue;
@@ -70,11 +70,11 @@ replace_intrinsic(nir_builder *b, nir_intrinsic_instr *intrin)
       b->cursor = nir_before_src(src);
       nir_def *new = clone_intrinsic(b, intrin);
       nir_src_rewrite(src, new);
-      _mesa_hash_table_insert(visited_instrs, nir_src_parent_instr(src), new);
+      _mesa_hash_table_insert(visited_instrs, nir_src_use_instr(src), new);
    }
    nir_foreach_if_use_safe(src, &intrin->def) {
       b->cursor = nir_before_src(src);
-      nir_src_rewrite(&nir_src_parent_if(src)->condition, clone_intrinsic(b, intrin));
+      nir_src_rewrite(&nir_src_use_if(src)->condition, clone_intrinsic(b, intrin));
    }
 
    nir_instr_remove(&intrin->instr);
@@ -89,8 +89,8 @@ replace_load_const(nir_builder *b, nir_load_const_instr *load_const)
 
    nir_foreach_use_safe(src, &load_const->def) {
       struct hash_entry *entry =
-         _mesa_hash_table_search(visited_instrs, nir_src_parent_instr(src));
-      if (entry && (nir_src_parent_instr(src)->type != nir_instr_type_phi)) {
+         _mesa_hash_table_search(visited_instrs, nir_src_use_instr(src));
+      if (entry && (nir_src_use_instr(src)->type != nir_instr_type_phi)) {
          nir_def *def = entry->data;
          nir_src_rewrite(src, def);
          continue;
@@ -100,7 +100,7 @@ replace_load_const(nir_builder *b, nir_load_const_instr *load_const)
                                        load_const->def.bit_size,
                                        load_const->value);
       nir_src_rewrite(src, new);
-      _mesa_hash_table_insert(visited_instrs, nir_src_parent_instr(src), new);
+      _mesa_hash_table_insert(visited_instrs, nir_src_use_instr(src), new);
    }
 
    nir_instr_remove(&load_const->instr);
@@ -115,16 +115,19 @@ lima_nir_split_loads(nir_shader *shader)
    nir_foreach_function_impl(impl, shader) {
       nir_builder b = nir_builder_create(impl);
 
+      bool impl_progress = false;
       nir_foreach_block_reverse(block, impl) {
          nir_foreach_instr_reverse_safe(instr, block) {
             if (instr->type == nir_instr_type_load_const) {
                replace_load_const(&b, nir_instr_as_load_const(instr));
-               progress = true;
+               impl_progress = true;
             } else if (instr->type == nir_instr_type_intrinsic) {
-               progress |= replace_intrinsic(&b, nir_instr_as_intrinsic(instr));
+               impl_progress |= replace_intrinsic(&b, nir_instr_as_intrinsic(instr));
             }
          }
       }
+
+      progress |= nir_progress(impl_progress, impl, nir_metadata_control_flow);
    }
 
    return progress;

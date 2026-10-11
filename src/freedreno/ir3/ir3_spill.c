@@ -109,6 +109,13 @@ struct ra_spill_ctx {
     */
    struct ir3_register *base_reg;
 
+   /* During spilling/reloading, we keep track of the least common ancestor of
+    * all spill/reload blocks and move base_reg there. This prevents using a GPR
+    * in the preamble, end hence disabling early preamble, if nothing is spilled
+    * there.
+    */
+   struct ir3_block *base_reg_block;
+
    /* Current pvtmem offset in bytes. */
    unsigned spill_slot;
 
@@ -757,6 +764,8 @@ spill(struct ra_spill_ctx *ctx, const struct reg_or_immed *val,
    } else {
       src->wrmask = reg->wrmask;
    }
+
+   ctx->base_reg_block = ir3_dominance_lca(ctx->base_reg_block, spill->block);
 }
 
 static void
@@ -927,6 +936,7 @@ reload(struct ra_spill_ctx *ctx, struct ir3_register *reg,
    dst->merge_set_offset = reg->merge_set_offset;
    dst->interval_start = reg->interval_start;
    dst->interval_end = reg->interval_end;
+   ctx->base_reg_block = ir3_dominance_lca(ctx->base_reg_block, reload->block);
    return dst;
 }
 
@@ -1022,6 +1032,13 @@ update_max_pressure(struct ra_spill_ctx *ctx)
       MAX2(ctx->max_pressure.shared_half, ctx->cur_pressure.shared_half);
 }
 
+static bool
+is_killed(struct ra_spill_ctx *ctx, struct ir3_register *src)
+{
+   struct ra_spill_interval *interval = ctx->intervals[src->def->name];
+   return ir3_ra_src_is_killed(src, &interval->interval);
+}
+
 static void
 handle_instr(struct ra_spill_ctx *ctx, struct ir3_instruction *instr)
 {
@@ -1054,7 +1071,7 @@ handle_instr(struct ra_spill_ctx *ctx, struct ir3_instruction *instr)
 
    ra_foreach_dst (dst, instr) {
       struct ir3_register *tied_src = dst->tied;
-      if ((tied_src && !(tied_src->flags & IR3_REG_FIRST_KILL)) ||
+      if ((tied_src && !is_killed(ctx, tied_src)) ||
           (dst->flags & IR3_REG_EARLY_CLOBBER))
          insert_dst(ctx, dst);
    }
@@ -1486,6 +1503,29 @@ live_in_rewrite(struct ra_spill_ctx *ctx,
 }
 
 static void
+live_in_interval_rewrite(struct ra_spill_ctx *ctx,
+                         struct ra_spill_interval *interval,
+                         struct reg_or_immed *new_val, struct ir3_block *block,
+                         unsigned pred_idx, struct ir3_cursor cursor)
+{
+   live_in_rewrite(ctx, interval, new_val, block, pred_idx);
+
+   rb_tree_foreach (struct ra_spill_interval, child,
+                    &interval->interval.children, interval.node) {
+      assert(!(new_val->flags & (IR3_REG_CONST | IR3_REG_IMMED)));
+      struct ir3_register *child_reg = child->interval.reg;
+      struct ir3_register *child_def = extract(
+         new_val->def,
+         (child_reg->interval_start - interval->interval.reg->interval_start) /
+            reg_elem_size(new_val->def),
+         reg_elems(child_reg), cursor);
+      struct reg_or_immed *child_val = ralloc(ctx, struct reg_or_immed);
+      child_val->def = child_def;
+      live_in_interval_rewrite(ctx, child, child_val, block, pred_idx, cursor);
+   }
+}
+
+static void
 reload_live_in(struct ra_spill_ctx *ctx, struct ir3_register *def,
                struct ir3_block *block)
 {
@@ -1509,7 +1549,8 @@ reload_live_in(struct ra_spill_ctx *ctx, struct ir3_register *def,
             new_val->def = reload(ctx, def, ir3_before_terminator(pred));
          new_val->flags = new_val->def->flags;
       }
-      live_in_rewrite(ctx, interval, new_val, block, i);
+      live_in_interval_rewrite(ctx, interval, new_val, block, i,
+                               ir3_before_terminator(pred));
    }
 }
 
@@ -1781,8 +1822,7 @@ record_pred_live_outs(struct ra_spill_ctx *ctx, struct ir3_block *block)
       if (state->visited)
          continue;
 
-      state->live_out = rzalloc_array(ctx, BITSET_WORD,
-                                      BITSET_WORDS(ctx->live->definitions_count));
+      state->live_out = BITSET_RZALLOC(ctx, ctx->live->definitions_count);
 
 
       rb_tree_foreach (struct ra_spill_interval, interval,
@@ -2163,6 +2203,12 @@ ir3_spill(struct ir3 *ir, struct ir3_shader_variant *v,
    cleanup_dead(ir);
 
    ir3_create_parallel_copies(ir);
+
+   if (ctx->base_reg_block &&
+       ctx->base_reg_block != ctx->base_reg->instr->block) {
+      ir3_instr_move_after_phis(ctx->base_reg->instr, ctx->base_reg_block);
+      ctx->base_reg->instr->block = ctx->base_reg_block;
+   }
 
    /* After this point, we're done mutating the IR. Liveness has been trashed,
     * so recalculate it. We'll need it for recalculating the merge sets.

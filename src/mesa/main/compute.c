@@ -167,7 +167,7 @@ validate_DispatchComputeGroupSizeARB(struct gl_context *ctx,
     *  for compute shaders with variable group size
     *  (MAX_COMPUTE_VARIABLE_GROUP_INVOCATIONS_ARB)."
     */
-   uint64_t total_invocations = info->block[0] * info->block[1];
+   uint64_t total_invocations = info->block[0] * (uint64_t) info->block[1];
    if (total_invocations <= UINT32_MAX) {
       /* Only bother multiplying the third value if total still fits in
        * 32-bit, since MaxComputeVariableGroupInvocations is also 32-bit.
@@ -295,7 +295,9 @@ prepare_compute(struct gl_context *ctx)
    if (ctx->NewState)
       _mesa_update_state(ctx);
 
-   st_validate_state(st, ST_PIPELINE_COMPUTE_STATE_MASK);
+   ST_PIPELINE_COMPUTE_STATE_MASK(mask);
+   st_validate_state(st, mask);
+   st_context_add_work(st);
 }
 
 static ALWAYS_INLINE void
@@ -306,10 +308,6 @@ dispatch_compute(GLuint num_groups_x, GLuint num_groups_y,
    struct pipe_grid_info info = { 0 };
 
    FLUSH_VERTICES(ctx, 0, 0);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDispatchCompute(%d, %d, %d)\n",
-                  num_groups_x, num_groups_y, num_groups_z);
 
    info.grid[0] = num_groups_x;
    info.grid[1] = num_groups_y;
@@ -356,9 +354,6 @@ dispatch_compute_indirect(GLintptr indirect, bool no_error)
 
    FLUSH_VERTICES(ctx, 0, 0);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDispatchComputeIndirect(%ld)\n", (long) indirect);
-
    if (!no_error && !valid_dispatch_indirect(ctx, indirect))
       return;
 
@@ -399,12 +394,6 @@ dispatch_compute_group_size(GLuint num_groups_x, GLuint num_groups_y,
 {
    GET_CURRENT_CONTEXT(ctx);
    FLUSH_VERTICES(ctx, 0, 0);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx,
-                  "glDispatchComputeGroupSizeARB(%d, %d, %d, %d, %d, %d)\n",
-                  num_groups_x, num_groups_y, num_groups_z,
-                  group_size_x, group_size_y, group_size_z);
 
    struct pipe_grid_info info = { 0 };
    info.grid[0] = num_groups_x;

@@ -28,6 +28,7 @@
  */
 
 #include "util/glheader.h"
+#include "util/perf/cpu_trace.h"
 #include "context.h"
 #include "enums.h"
 
@@ -117,7 +118,7 @@ _mesa_is_legal_tex_storage_target(const struct gl_context *ctx,
          return false;
       }
    default:
-      unreachable("impossible dimensions");
+      UNREACHABLE("impossible dimensions");
    }
 }
 
@@ -421,6 +422,12 @@ tex_storage_error_check(struct gl_context *ctx,
       return GL_TRUE;
    }
 
+   if (texObj->IsSparse && texObj->IsProtected) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glTex%sStorage%uD(protected)",
+                  suffix, dims);
+      return GL_TRUE;
+   }
+
    /* additional checks for depth textures */
    if (!_mesa_legal_texture_base_format_for_target(ctx, target, internalformat)) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "glTex%sStorage%uD(bad target for texture)",
@@ -529,6 +536,8 @@ texture_storage(struct gl_context *ctx, GLuint dims,
                               (memObj ? "Mem" : "");
    const char* suffix2 = attribs ? "Attribs" : "";
 
+   MESA_TRACE_FUNC();
+
    assert(texObj);
 
    if (!no_error) {
@@ -559,8 +568,7 @@ texture_storage(struct gl_context *ctx, GLuint dims,
          /* clear all image fields for [levels] */
          clear_texture_fields(ctx, texObj);
       }
-   }
-   else {
+   } else {
       if (!no_error) {
          if (!dimensionsOK) {
             _mesa_error(ctx, GL_INVALID_VALUE,
@@ -684,12 +692,6 @@ texstorage_error(GLuint dims, GLenum target, GLsizei levels,
       return;
    }
 
-   if (MESA_VERBOSE & (VERBOSE_API|VERBOSE_TEXTURE))
-      _mesa_debug(ctx, "%s %s %d %s %d %d %d\n", caller,
-                  _mesa_enum_to_string(target), levels,
-                  _mesa_enum_to_string(internalformat),
-                  width, height, depth);
-
    /* Check the format to make sure it is sized. */
    if (!_mesa_is_legal_tex_storage_format(ctx, internalformat)) {
       _mesa_error(ctx, GL_INVALID_ENUM,
@@ -730,12 +732,6 @@ texturestorage_error(GLuint dims, GLuint texture, GLsizei levels,
 {
    struct gl_texture_object *texObj;
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & (VERBOSE_API|VERBOSE_TEXTURE))
-      _mesa_debug(ctx, "%s %d %d %s %d %d %d\n",
-                  caller, texture, levels,
-                  _mesa_enum_to_string(internalformat),
-                  width, height, depth);
 
    /* Check the format to make sure it is sized. */
    if (!_mesa_is_legal_tex_storage_format(ctx, internalformat)) {

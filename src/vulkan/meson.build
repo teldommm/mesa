@@ -55,7 +55,7 @@ if with_platform_wayland
   vulkan_wsi_list += '-DVK_USE_PLATFORM_WAYLAND_KHR'
 endif
 if system_has_kms_drm and not with_platform_android
-  vulkan_wsi_deps += [dep_libdrm]
+  vulkan_wsi_deps += [dep_libdrm, dep_display_info]
   vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
 endif
 if with_xlib_lease
@@ -64,6 +64,11 @@ if with_xlib_lease
 endif
 if with_platform_android or with_wrapper_vk
   vulkan_wsi_list += '-DVK_USE_PLATFORM_ANDROID_KHR'
+endif
+if with_wrapper_vk
+  # X11 swapchain images backed by AHardwareBuffers, handed to the
+  # emulator's X server over a unix socket (see wsi_common_android.c).
+  vulkan_wsi_list += '-DVK_WSI_ANDROID_AHB'
 endif
 if with_platform_windows
   vulkan_wsi_list += '-DVK_USE_PLATFORM_WIN32_KHR'
@@ -94,6 +99,12 @@ if with_vulkan_device_select_layer
 endif
 if with_vulkan_screenshot_layer
   subdir('screenshot-layer')
+endif
+if with_vulkan_vram_report_limit_layer
+  subdir('vram-report-limit-layer')
+endif
+if with_vulkan_anti_lag_layer
+  subdir('anti-lag-layer')
 endif
 if with_wrapper_vk
   subdir('wrapper')

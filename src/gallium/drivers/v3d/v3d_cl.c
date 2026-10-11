@@ -51,10 +51,20 @@ v3d_cl_ensure_space(struct v3d_cl *cl, uint32_t space, uint32_t alignment)
                 return offset;
         }
         struct v3d_device_info *devinfo = &cl->job->v3d->screen->devinfo;
+
+        /* If we are growing, double the BO allocation size to reduce the
+         * number of allocations with large command buffers, capped so that
+         * jobs recording an extreme number of draws without flushing keep
+         * adding BO handles and hit the flush thresholds in v3d_draw_vbo()
+         * instead of growing ever larger CL BOs until memory exhaustion.
+         */
+        space = align(space, devinfo->page_size);
+        if (cl->bo)
+                space = MAX2(MIN2(cl->bo->size * 2, V3D_CL_MAX_GROW_SIZE),
+                             space);
+
         v3d_bo_unreference(&cl->bo);
-        cl->bo = v3d_bo_alloc(cl->job->v3d->screen,
-                              align(space, devinfo->cle_buffer_min_size),
-                              "CL");
+        cl->bo = v3d_bo_alloc(cl->job->v3d->screen, space, "CL");
         cl->base = v3d_bo_map(cl->bo);
         cl->size = cl->bo->size;
         cl->next = cl->base;
@@ -77,11 +87,16 @@ v3d_cl_ensure_space_with_branch(struct v3d_cl *cl, uint32_t space)
          */
         struct v3d_device_info *devinfo = &cl->job->v3d->screen->devinfo;
         uint32_t unusable_size = devinfo->cle_readahead + cl_packet_length(BRANCH);
-        struct v3d_bo *new_bo = v3d_bo_alloc(cl->job->v3d->screen,
-                                             align(space + unusable_size,
-                                                   devinfo->cle_buffer_min_size),
-                                             "CL");
-        assert(space + unusable_size <= new_bo->size);
+
+        /* If we are growing, double the BO allocation size to reduce the
+         * number of allocations with large command buffers.
+         */
+        space = align(space + unusable_size, devinfo->page_size);
+        if (cl->bo)
+                space = MAX2(MIN2(cl->bo->size * 2, V3D_CL_MAX_GROW_SIZE),
+                             space);
+
+        struct v3d_bo *new_bo = v3d_bo_alloc(cl->job->v3d->screen, space, "CL");
 
         /* Chain to the new BO from the old one. */
         if (cl->bo) {

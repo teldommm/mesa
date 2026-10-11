@@ -21,7 +21,12 @@
  * IN THE SOFTWARE.
  */
 
-#include "v3dv_private.h"
+#include "v3dv_device.h"
+#include "v3dv_cmd_buffer.h"
+#include "v3dv_image.h"
+#include "v3dv_entrypoints.h"
+#include "common/v3d_util.h"
+#include "perfcntrs/v3d_perfcntrs.h"
 
 #include "util/timespec.h"
 #include "compiler/nir/nir_builder.h"
@@ -331,7 +336,7 @@ v3dv_CreateQueryPool(VkDevice _device,
       break;
    }
    default:
-      unreachable("Unsupported query type");
+      UNREACHABLE("Unsupported query type");
    }
 
    /* Initialize queries in the pool */
@@ -363,7 +368,7 @@ v3dv_CreateQueryPool(VkDevice _device,
          break;
          }
       default:
-         unreachable("Unsupported query type");
+         UNREACHABLE("Unsupported query type");
       }
    }
 
@@ -688,7 +693,7 @@ write_query_result(struct v3dv_device *device,
       return write_performance_query_result(device, pool, query, do_64bit,
                                             data, slot);
    default:
-      unreachable("Unsupported query type");
+      UNREACHABLE("Unsupported query type");
    }
 }
 
@@ -702,7 +707,7 @@ get_query_result_count(struct v3dv_query_pool *pool)
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
       return pool->perfmon.ncounters;
    default:
-      unreachable("Unsupported query type");
+      UNREACHABLE("Unsupported query type");
    }
 }
 
@@ -1331,7 +1336,7 @@ v3dv_reset_query_pool_cpu(struct v3dv_device *device,
             mesa_loge("Failed to reset sync");
          break;
       default:
-         unreachable("Unsupported query type");
+         UNREACHABLE("Unsupported query type");
       }
    }
 
@@ -1376,10 +1381,10 @@ v3dv_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
          counter->scope = VK_PERFORMANCE_COUNTER_SCOPE_COMMAND_KHR;
          counter->storage = VK_PERFORMANCE_COUNTER_STORAGE_UINT64_KHR;
 
-         unsigned char sha1_result[20];
-         _mesa_sha1_compute(perfcntr_desc->name, strlen(perfcntr_desc->name), sha1_result);
+         unsigned char blake3_result[BLAKE3_KEY_LEN];
+         _mesa_blake3_compute(perfcntr_desc->name, strlen(perfcntr_desc->name), blake3_result);
 
-         memcpy(counter->uuid, sha1_result, sizeof(counter->uuid));
+         memcpy(counter->uuid, blake3_result, sizeof(counter->uuid));
       }
 
       vk_outarray_append_typed(VkPerformanceCounterDescriptionKHR,
@@ -1449,7 +1454,7 @@ get_set_query_availability_cs(const nir_shader_compiler_options *options)
       nir_vulkan_resource_index(&b, 2, 32, nir_imm_int(&b, 0),
                                 .desc_set = 0,
                                 .binding = 0,
-                                .desc_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                                .desc_type = nir_descriptor_type_storage_buffer);
 
    /* This assumes a local size of 1 and a horizontal-only dispatch. If we
     * ever change any of these parameters we need to update how we compute the
@@ -1512,7 +1517,7 @@ get_reset_occlusion_query_cs(const nir_shader_compiler_options *options)
       nir_vulkan_resource_index(&b, 2, 32, nir_imm_int(&b, 0),
                                 .desc_set = 0,
                                 .binding = 0,
-                                .desc_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                                .desc_type = nir_descriptor_type_storage_buffer);
 
    /* This assumes a local size of 1 and a horizontal-only dispatch. If we
     * ever change any of these parameters we need to update how we compute the
@@ -1538,7 +1543,7 @@ get_reset_occlusion_query_cs(const nir_shader_compiler_options *options)
 static void
 write_query_buffer(nir_builder *b,
                    nir_def *buf,
-                   nir_def **offset,
+                   nir_def *offset,
                    nir_def *value,
                    bool flag_64bit)
 {
@@ -1547,11 +1552,9 @@ write_query_buffer(nir_builder *b,
        * so we can write a 64-bit value in a single store.
        */
       nir_def *value64 = nir_vec2(b, value, nir_imm_int(b, 0));
-      nir_store_ssbo(b, value64, buf, *offset, .write_mask = 0x3, .align_mul = 8);
-      *offset = nir_iadd_imm(b, *offset, 8);
+      nir_store_ssbo(b, value64, buf, offset, .write_mask = 0x3, .align_mul = 8);
    } else {
-      nir_store_ssbo(b, value, buf, *offset, .write_mask = 0x1, .align_mul = 4);
-      *offset = nir_iadd_imm(b, *offset, 4);
+      nir_store_ssbo(b, value, buf, offset, .write_mask = 0x1, .align_mul = 4);
    }
 }
 
@@ -1570,13 +1573,13 @@ get_copy_query_results_cs(const nir_shader_compiler_options *options,
       nir_vulkan_resource_index(&b, 2, 32, nir_imm_int(&b, 0),
                                 .desc_set = 0,
                                 .binding = 0,
-                                .desc_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                                .desc_type = nir_descriptor_type_storage_buffer);
 
    nir_def *buf_out =
       nir_vulkan_resource_index(&b, 2, 32, nir_imm_int(&b, 0),
                                 .desc_set = 1,
                                 .binding = 0,
-                                .desc_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                                .desc_type = nir_descriptor_type_storage_buffer);
 
    /* Read push constants */
    nir_def *avail_offset =
@@ -1610,18 +1613,20 @@ get_copy_query_results_cs(const nir_shader_compiler_options *options,
    /* ...if partial is requested, we always write */
    if(flag_partial) {
       nir_def *query_res = nir_read_occlusion_counter(&b, buf, query_idx);
-      write_query_buffer(&b, buf_out, &offset, query_res, flag_64bit);
+      write_query_buffer(&b, buf_out, offset, query_res, flag_64bit);
    } else {
       /*...otherwise, we only write if the query is available */
       nir_if *if_stmt = nir_push_if(&b, nir_ine_imm(&b, avail, 0));
          nir_def *query_res = nir_read_occlusion_counter(&b, buf, query_idx);
-         write_query_buffer(&b, buf_out, &offset, query_res, flag_64bit);
+         write_query_buffer(&b, buf_out, offset, query_res, flag_64bit);
       nir_pop_if(&b, if_stmt);
    }
 
    /* Write query availability */
-   if (flag_avail)
-      write_query_buffer(&b, buf_out, &offset, avail, flag_64bit);
+   if (flag_avail) {
+      offset = nir_iadd_imm(&b, offset, flag_64bit ? 8 : 4);
+      write_query_buffer(&b, buf_out, offset, avail, flag_64bit);
+   }
 
    return b.shader;
 }

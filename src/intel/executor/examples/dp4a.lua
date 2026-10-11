@@ -13,7 +13,9 @@ instruction as seen in the PRM.
 
 --]]
 
-check_ver(12)
+if devinfo.ver < 12 then
+  error("DP4A instruction requires Gfx12+")
+end
 
 function DP4A(a, b, c)
   local r = c
@@ -25,14 +27,14 @@ end
 
 local r = execute {
   src = [[
-    @id   g9
+    @id   r9
 
-    @mov  g1  0x0102037F
-    @mov  g2  50
+    @mov  r1  0x0102037F
+    @mov  r2  50
 
-    dp4a(8)  g3<1>UD  g2<8,8,1>UD  g1<8,8,1>UD  g1<8,8,1>UD  { align1 @1 1Q };
+    dp4a (8) r3      r2      r1      r1      {A@1}
 
-    @write g9 g3
+    @write r9 r3
     @eot
   ]],
 }

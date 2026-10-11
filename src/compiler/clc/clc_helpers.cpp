@@ -24,12 +24,9 @@
 // OTHER DEALINGS IN THE SOFTWARE.
 
 #include <cstdlib>
-#include <filesystem>
 #include <sstream>
 #include <mutex>
 
-#include "util/ralloc.h"
-#include "util/set.h"
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/DiagnosticPrinter.h>
 #include <llvm/IR/DiagnosticInfo.h>
@@ -55,15 +52,31 @@
 #include <clang/Frontend/Utils.h>
 #include <clang/Basic/TargetInfo.h>
 
+#include <spirv-tools/libspirv.h>
 #include <spirv-tools/libspirv.hpp>
 #include <spirv-tools/linker.hpp>
 #include <spirv-tools/optimizer.hpp>
+
+#if LLVM_VERSION_MAJOR >= 16
+#include <llvm/TargetParser/Triple.h>
+#endif
 
 #if LLVM_VERSION_MAJOR >= 20
 #include <llvm/Support/VirtualFileSystem.h>
 #endif
 
+#if LLVM_VERSION_MAJOR >= 22
+#include <clang/Options/OptionUtils.h>
+#endif
+
+/* We have to include our own headers after LLVM/clang as they seem to use
+ * `UNUSED` within enum definitions:
+ * https://github.com/llvm/llvm-project/blob/ea443eeb2ab8ed49ffb783c2025fed6629a36f10/clang/include/clang/Basic/OffloadArch.h#L19
+ */
 #include "util/macros.h"
+#include "util/ralloc.h"
+#include "util/set.h"
+#include "util/u_dl.h"
 #include "glsl_types.h"
 
 #include "spirv.h"
@@ -79,10 +92,8 @@
 
 #include "clc_helpers.h"
 
-namespace fs = std::filesystem;
-
 /* Use the highest version of SPIRV supported by SPIRV-Tools. */
-constexpr spv_target_env spirv_target = SPV_ENV_UNIVERSAL_1_5;
+constexpr spv_target_env spirv_target = SPV_ENV_UNIVERSAL_1_6;
 
 constexpr SPIRV::VersionNumber invalid_spirv_trans_version = static_cast<SPIRV::VersionNumber>(0);
 
@@ -526,10 +537,10 @@ public:
             literalType = CLC_SPEC_CONSTANT_DOUBLE;
             break;
          case 16:
-            /* Can't be used for a spec constant */
+            literalType = CLC_SPEC_CONSTANT_HALF;
             break;
          default:
-            unreachable("Unexpected float bit size");
+            UNREACHABLE("Unexpected float bit size");
          }
          break;
       }
@@ -551,7 +562,7 @@ public:
                literalType = CLC_SPEC_CONSTANT_INT64;
                break;
             default:
-               unreachable("Unexpected int bit size");
+               UNREACHABLE("Unexpected int bit size");
             }
          } else {
             switch (sizeInBits) {
@@ -568,13 +579,13 @@ public:
                literalType = CLC_SPEC_CONSTANT_UINT64;
                break;
             default:
-               unreachable("Unexpected uint bit size");
+               UNREACHABLE("Unexpected uint bit size");
             }
          }
          break;
       }
       default:
-         unreachable("Unexpected type opcode");
+         UNREACHABLE("Unexpected type opcode");
       }
    }
 
@@ -600,7 +611,7 @@ public:
                data.type = CLC_SPEC_CONSTANT_BOOL;
                break;
             default:
-               unreachable("Composites and Ops are not directly specializable.");
+               UNREACHABLE("Composites and Ops are not directly specializable.");
             }
          }
       }
@@ -799,11 +810,17 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
       c->addDependencyCollector(dep);
    }
 
+#if LLVM_VERSION_MAJOR >= 21
+   auto diag_opts = c->getDiagnosticOpts();
+#else
+   auto diag_opts = &c->getDiagnosticOpts();
+#endif
+
    clang::DiagnosticsEngine diag {
       new clang::DiagnosticIDs,
-      new clang::DiagnosticOptions,
+      diag_opts,
       new clang::TextDiagnosticPrinter(diag_log_stream,
-                                       &c->getDiagnosticOpts())
+                                       diag_opts)
    };
 
 #if LLVM_VERSION_MAJOR >= 17
@@ -839,7 +856,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
    if (!clang::CompilerInvocation::CreateFromArgs(c->getInvocation(),
                                                   clang_opts,
                                                   diag)) {
-      clc_error(logger, "Couldn't create Clang invocation.\n");
+      clc_error(logger, "Couldn't create Clang invocation.\n%s\n", diag_log_str.c_str());
       return {};
    }
 
@@ -855,15 +872,19 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
    c->getDiagnosticOpts().ShowCarets = false;
 
    c->createDiagnostics(
-#if LLVM_VERSION_MAJOR >= 20
+#if LLVM_VERSION_MAJOR >= 20 && LLVM_VERSION_MAJOR < 22
                    *llvm::vfs::getRealFileSystem(),
 #endif
                    new clang::TextDiagnosticPrinter(
                            diag_log_stream,
-                           &c->getDiagnosticOpts()));
+                           diag_opts));
 
    c->setTarget(clang::TargetInfo::CreateTargetInfo(
+#if LLVM_VERSION_MAJOR >= 21
+                   c->getDiagnostics(), c->getInvocation().getTargetOpts()));
+#else
                    c->getDiagnostics(), c->getInvocation().TargetOpts));
+#endif
 
    c->getFrontendOpts().ProgramAction = clang::frontend::EmitLLVMOnly;
 
@@ -890,14 +911,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
          ::llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(opencl_c_source, ARRAY_SIZE(opencl_c_source) - 1)).release());
    }
 #else
-
-   Dl_info info;
-   if (dladdr((void *)clang::CompilerInvocation::CreateFromArgs, &info) == 0) {
-      clc_error(logger, "Couldn't find libclang path.\n");
-      return {};
-   }
-
-   char *clang_path = realpath(info.dli_fname, NULL);
+   char *clang_path = util_dl_get_path_from_proc((const void *)clang::CompilerInvocation::CreateFromArgs);
    if (clang_path == nullptr) {
       clc_error(logger, "Couldn't find libclang path.\n");
       return {};
@@ -906,27 +920,29 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
    // GetResourcePath is a way to retrieve the actual libclang resource dir based on a given binary
    // or library.
    auto tmp_res_path =
-#if LLVM_VERSION_MAJOR >= 20
+#if LLVM_VERSION_MAJOR >= 22
+      clang::GetResourcesPath(std::string(clang_path));
+#elif LLVM_VERSION_MAJOR >= 20
       Driver::GetResourcesPath(std::string(clang_path));
 #else
       Driver::GetResourcesPath(std::string(clang_path), CLANG_RESOURCE_DIR);
 #endif
-   auto clang_res_path = fs::path(tmp_res_path) / "include";
+   auto clang_res_path = tmp_res_path + "/include";
 
    free(clang_path);
 
    c->getHeaderSearchOpts().UseBuiltinIncludes = true;
    c->getHeaderSearchOpts().UseStandardSystemIncludes = true;
-   c->getHeaderSearchOpts().ResourceDir = clang_res_path.string();
+   c->getHeaderSearchOpts().ResourceDir = clang_res_path;
 
    // Add opencl-c generic search path
-   c->getHeaderSearchOpts().AddPath(clang_res_path.string(),
+   c->getHeaderSearchOpts().AddPath(clang_res_path,
                                     clang::frontend::Angled,
                                     false, false);
 
    auto clang_install_res_path =
-      fs::path(LLVM_LIB_DIR) / "clang" / std::to_string(LLVM_VERSION_MAJOR) / "include";
-   c->getHeaderSearchOpts().AddPath(clang_install_res_path.string(),
+      std::string(LLVM_LIB_DIR) + "/clang/" + std::to_string(LLVM_VERSION_MAJOR) + "/include";
+   c->getHeaderSearchOpts().AddPath(clang_install_res_path,
                                     clang::frontend::Angled,
                                     false, false);
 #endif
@@ -944,15 +960,30 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
    c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_global_int32_extended_atomics");
    c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_local_int32_base_atomics");
    c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_local_int32_extended_atomics");
+   if (args->c_compatible) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__cl_clang_bitfields");
+   }
    c->getPreprocessorOpts().addMacroDef("cl_khr_expect_assume=1");
 
    bool needs_opencl_c_h = false;
+   if (args->features.atomic_order_seq_cst) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_atomic_order_seq_cst");
+   }
+   if (args->features.atomic_scope_device) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_atomic_scope_device");
+   }
+   if (args->features.extended_bit_ops) {
+      c->getPreprocessorOpts().addMacroDef("cl_khr_extended_bit_ops=1");
+   }
    if (args->features.fp16) {
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_fp16");
    }
    if (args->features.fp64) {
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_fp64");
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_fp64");
+   }
+   if (args->features.generic_address_space) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_generic_address_space");
    }
    if (args->features.int64) {
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cles_khr_int64");
@@ -989,20 +1020,52 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
    if (args->features.images_gl_msaa) {
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_gl_msaa_sharing");
    }
+   if (args->features.images_unorm_int_2_101010) {
+      c->getPreprocessorOpts().addMacroDef("__opencl_c_ext_image_unorm_int_2_101010=1");
+      if (LLVM_VERSION_MAJOR < 20 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR < 1)) {
+         /* This feature doesn't really need any compiler support, but it does define a CLK_
+          * macro for the type, which is only available with llvm-20.1 or newer.
+          */
+         c->getPreprocessorOpts().addMacroDef("CLK_UNORM_INT_2_101010_EXT=0x10E5");
+      }
+   }
    if (args->features.intel_subgroups) {
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_intel_subgroups");
       needs_opencl_c_h = true;
    }
+   if (args->features.kernel_clock && LLVM_VERSION_MAJOR >= 19) {
+      c->getPreprocessorOpts().addMacroDef("cl_khr_kernel_clock=1");
+      c->getPreprocessorOpts().addMacroDef("__opencl_c_kernel_clock_scope_device=1");
+      c->getPreprocessorOpts().addMacroDef("__opencl_c_kernel_clock_scope_sub_group=1");
+   }
    if (args->features.subgroups) {
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_subgroups");
+      if (args->features.subgroups_ballot) {
+         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_ballot=1");
+      }
+      if (args->features.subgroups_clustered) {
+         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_clustered_reduce=1");
+      }
+      if (args->features.subgroups_extended_types) {
+         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_extended_types=1");
+      }
+      if (args->features.subgroups_named_barrier) {
+         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_named_barrier=1");
+      }
+      if (args->features.subgroups_non_uniform_arithmetic) {
+         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_non_uniform_arithmetic=1");
+      }
+      if (args->features.subgroups_non_uniform_vote) {
+         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_non_uniform_vote=1");
+      }
+      if (args->features.subgroups_rotate) {
+         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_rotate=1");
+      }
       if (args->features.subgroups_shuffle) {
          c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_shuffle=1");
       }
       if (args->features.subgroups_shuffle_relative) {
          c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_shuffle_relative=1");
-      }
-      if (args->features.subgroups_ballot) {
-         c->getPreprocessorOpts().addMacroDef("cl_khr_subgroup_ballot=1");
       }
    }
    if (args->features.subgroups_ifp) {
@@ -1123,10 +1186,14 @@ llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
    if (args->use_llvm_spirv_target) {
       const char *triple = args->address_bits == 32 ? "spirv-unknown-unknown" : "spirv64-unknown-unknown";
       std::string error_msg("");
-      auto target = TargetRegistry::lookupTarget(triple, error_msg);
+#if LLVM_VERSION_MAJOR >= 21
+      auto temp_triple = llvm::Triple(triple);
+#else
+      auto temp_triple = triple;
+#endif
+      auto target = TargetRegistry::lookupTarget(temp_triple, error_msg);
       if (target) {
-         auto TM = target->createTargetMachine(
-            triple, "", "", {}, std::nullopt, std::nullopt,
+         auto TM = target->createTargetMachine(temp_triple, "", "", {}, std::nullopt, std::nullopt,
 #if LLVM_VERSION_MAJOR >= 18
             ::llvm::CodeGenOptLevel::None
 #else
@@ -1266,6 +1333,10 @@ private:
    const struct clc_logger *logger;
 };
 
+const char* clc_spirv_tools_version() {
+   return spvSoftwareVersionString();
+}
+
 int
 clc_link_spirv_binaries(const struct clc_linker_args *args,
                         const struct clc_logger *logger,
@@ -1284,6 +1355,7 @@ clc_link_spirv_binaries(const struct clc_linker_args *args,
    context.SetMessageConsumer(msgconsumer);
    spvtools::LinkerOptions options;
    options.SetAllowPartialLinkage(args->create_library);
+   options.SetUseHighestVersion(true);
    #if defined(HAS_SPIRV_LINK_LLVM_WORKAROUND) && LLVM_VERSION_MAJOR >= 17
       options.SetAllowPtrTypeMismatch(true);
    #endif
@@ -1355,6 +1427,7 @@ clc_spirv_specialize(const struct clc_binary *in_spirv,
       case CLC_SPEC_CONSTANT_INT8:
          words.push_back((uint32_t)(int32_t)consts->specializations[i].value.i8);
          break;
+      case CLC_SPEC_CONSTANT_HALF:
       case CLC_SPEC_CONSTANT_UINT16:
          words.push_back((uint32_t)consts->specializations[i].value.u16);
          break;
