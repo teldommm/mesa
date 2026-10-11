@@ -1,4 +1,6 @@
 #include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "wrapper_private.h"
 #include "wrapper_log.h"
@@ -81,21 +83,37 @@ wrapper_setup_device_extensions(struct wrapper_physical_device *pdevice) {
    return VK_SUCCESS;
 }
 
+/* WRAPPER_EXTENSION_BLACKLIST: comma separated extension names, matched
+ * exactly (surrounding spaces ignored).  Works on a copy: strtok() on the
+ * getenv() buffer used to truncate the variable to its first entry for every
+ * later instance (Wine and DXVK each create one). */
 static void
 wrapper_apply_device_extension_blacklist(struct wrapper_physical_device *physical_device) {
-   char *blacklist = getenv("WRAPPER_EXTENSION_BLACKLIST");
+   const char *env = getenv("WRAPPER_EXTENSION_BLACKLIST");
+   if (!env || !*env)
+      return;
+
+   char *blacklist = strdup(env);
    if (!blacklist)
       return;
-   char *extension = strtok(blacklist, ",");
-   while (extension != NULL) {
+
+   char *saveptr = NULL;
+   for (char *extension = strtok_r(blacklist, ",", &saveptr); extension != NULL;
+        extension = strtok_r(NULL, ",", &saveptr)) {
+      while (*extension == ' ')
+         extension++;
+      for (char *end = extension + strlen(extension);
+           end > extension && (end[-1] == ' ' || end[-1] == '\n'); end--)
+         end[-1] = '\0';
       for (int i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
-         if (strstr(extension, vk_device_extensions[i].extensionName)) {
+         if (!strcmp(extension, vk_device_extensions[i].extensionName)) {
             WRAPPER_LOG(info, "Blacklisting extension %s", extension);
             physical_device->vk.supported_extensions.extensions[i] = false;
          }
       }
-      extension = strtok(NULL, ",");
    }
+
+   free(blacklist);
 }
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
@@ -175,7 +193,6 @@ VkResult enumerate_physical_device(struct vk_instance *_instance)
          wrapper_disable_present_wait = getenv("WRAPPER_DISABLE_PRESENT_WAIT") && atoi(getenv("WRAPPER_DISABLE_PRESENT_WAIT"));
 
       wrapper_setup_device_extensions(pdevice);
-      wrapper_apply_device_extension_blacklist(pdevice);
       wrapper_setup_device_features(pdevice);
 
       struct vk_features *supported_features = &pdevice->vk.supported_features;
@@ -337,6 +354,10 @@ VkResult enumerate_physical_device(struct vk_instance *_instance)
 	     }
 	  }
 	  
+      /* Last, so the extensions the wrapper adds or fakes above (placed
+       * memory, map_memory2, pipeline_library, ...) can be blacklisted too. */
+      wrapper_apply_device_extension_blacklist(pdevice);
+
       list_addtail(&pdevice->vk.link, &_instance->physical_devices.list);
    }
 
