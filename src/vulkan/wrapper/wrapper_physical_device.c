@@ -5,8 +5,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <android/hardware_buffer.h>
-
 #include "wrapper_private.h"
 #include "wrapper_log.h"
 #include "wrapper_entrypoints.h"
@@ -176,14 +174,15 @@ wrapper_apply_qualcomm_workarounds(struct wrapper_physical_device *pdevice,
 }
 
 /* Subgroup operations used to be hidden for every driver (that caps
- * vkd3d-proton at shader model 5.1).  Turnip's are known good and exposed by
- * default; the Qualcomm driver's need WRAPPER_SUBGROUP_OPS=1 until verified.
+ * vkd3d-proton at shader model 5.1).  They are reported on Adreno, both with
+ * Turnip and the Qualcomm driver, and still hidden for other GPUs.
  * WRAPPER_SUBGROUP_OPS=0/1 forces either way. */
 static void
 wrapper_setup_subgroup_ops(struct wrapper_physical_device *pdevice)
 {
    const VkDriverId driver_id = pdevice->driver_properties.driverID;
-   bool expose = driver_id == VK_DRIVER_ID_MESA_TURNIP;
+   bool expose = driver_id == VK_DRIVER_ID_MESA_TURNIP ||
+                 driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
 
    const char *env = getenv("WRAPPER_SUBGROUP_OPS");
    if (env && *env)
@@ -210,25 +209,6 @@ wrapper_setup_memory_budget(struct wrapper_physical_device *pdevice)
    pdevice->vk.supported_extensions.EXT_memory_budget = true;
    WRAPPER_LOG(info, "Emulating VK_EXT_memory_budget (reserve %" PRIu64 " MiB)",
                pdevice->memory_budget_reserve / 1048576);
-}
-
-/* WRAPPER_AHB_UBWC=1: allocate the swapchain AHardwareBuffers for GPU access
- * only and with GRALLOC_USAGE_PRIVATE_ALLOC_UBWC (vendor usage bit 0 of the
- * Qualcomm gralloc), so they can be UBWC compressed. */
-static void
-wrapper_setup_ahb_usage(struct wrapper_physical_device *pdevice)
-{
-   if (!debug_get_bool_option("WRAPPER_AHB_UBWC", false))
-      return;
-
-   if (pdevice->driver_properties.driverID != VK_DRIVER_ID_QUALCOMM_PROPRIETARY) {
-      WRAPPER_LOG(info, "WRAPPER_AHB_UBWC is only supported on the Qualcomm driver");
-      return;
-   }
-
-   pdevice->wsi_device.ahb_gpu_only = true;
-   pdevice->wsi_device.ahb_extra_usage = AHARDWAREBUFFER_USAGE_VENDOR_0;
-   WRAPPER_LOG(info, "Allocating UBWC swapchain buffers");
 }
 
 /* Bytes the kernel considers available, cached for 100 ms. */
@@ -440,7 +420,6 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
 
    wrapper_setup_subgroup_ops(pdevice);
    wrapper_setup_memory_budget(pdevice);
-   wrapper_setup_ahb_usage(pdevice);
 
    if (wrapper_dmaheap_cached == -1)
       wrapper_dmaheap_cached = debug_get_bool_option("WRAPPER_DMAHEAP_CACHED", false);

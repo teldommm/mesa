@@ -939,8 +939,8 @@ wsi_create_image(const struct wsi_swapchain *chain,
 
 #ifdef VK_WSI_ANDROID_AHB
    if (info->ahardware_buffer_desc != NULL &&
-       wsi_android_allocate_ahardware_buffer(info->ahardware_buffer_desc,
-                                             &image->ahardware_buffer) != 0) {
+       AHardwareBuffer_allocate(info->ahardware_buffer_desc,
+                                &image->ahardware_buffer) != 0) {
       mesa_loge("wsi: failed to allocate %ux%u AHardwareBuffer (format %u)",
                 info->ahardware_buffer_desc->width,
                 info->ahardware_buffer_desc->height,
