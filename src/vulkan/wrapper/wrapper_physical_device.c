@@ -344,7 +344,6 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
       vk_free(&_instance->alloc, pdevice);
       return result;
    }
-   wrapper_apply_device_extension_blacklist(pdevice);
    wrapper_setup_device_features(pdevice);
 
    struct vk_features *supported_features = &pdevice->vk.supported_features;
@@ -443,6 +442,13 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
       pdevice->wsi_device.force_rgba8_unorm_first = true;
       pdevice->wsi_device.force_bgra8_unorm_first = false;
    }
+
+   /* Last, so the extensions the wrapper adds or emulates above (placed
+    * memory, map_memory2, memory_budget, pipeline_library, ...) can be
+    * blacklisted too. */
+   wrapper_apply_device_extension_blacklist(pdevice);
+   if (!pdevice->vk.supported_extensions.EXT_memory_budget)
+      pdevice->emulate_memory_budget = false;
 
    *out = pdevice;
    return VK_SUCCESS;
