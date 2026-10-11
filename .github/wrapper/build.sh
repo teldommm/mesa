@@ -73,6 +73,10 @@ if [ "${SKIP_DEPS:-0}" != 1 ] && [ ! -f "$TERMUX_PREFIX/lib/pkgconfig/xcb-dri3.p
     [ -f "$deb" ] || curl -fsSL --retry 3 -o "$deb" "$TERMUX_REPO/$path"
     $SUDO dpkg-deb -x "$deb" /
   done
+  # Termux packages ship everything as 0700/0600 (files belong to the app
+  # uid on the device); make the sysroot readable for a non-root build user.
+  $SUDO chmod -R u+rwX,go+rX /data/data/com.termux
+  [ -n "$SUDO" ] && $SUDO chown -R "$(id -u):$(id -g)" /data/data/com.termux
   endlog
 fi
 [ -f "$TERMUX_PREFIX/lib/pkgconfig/xcb-dri3.pc" ] || {

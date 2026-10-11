@@ -38,6 +38,9 @@ concurrency:
 
 env:
   NDK_VERSION: r27c
+  # The runner image presets ANDROID_NDK_HOME; clear it so build.sh uses the
+  # pinned (and cached) NDK instead of whatever the image ships.
+  ANDROID_NDK_HOME: ''
   BUILD_TYPE: ${{ inputs.build_type || 'release' }}
   WORK_DIR: ${{ github.workspace }}/.wrapper-cache
   OUT_DIR: ${{ github.workspace }}/out
@@ -79,7 +82,7 @@ jobs:
           key: adrenotools-${{ hashFiles('subprojects/libadrenotools.wrap') }}
 
       - name: Build
-        run: ./.github/wrapper/build.sh
+        run: bash .github/wrapper/build.sh
 
       - name: Short SHA
         id: ver
