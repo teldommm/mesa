@@ -902,11 +902,8 @@ tu6_emit_vpc(struct tu_cs *cs,
       ir3_find_output_regid(last_shader, VARYING_SLOT_CLIP_DIST1);
    uint32_t flags_regid = gs ?
       ir3_find_output_regid(gs, VARYING_SLOT_GS_VERTEX_FLAGS_IR3) : 0;
-   const uint32_t shading_rate_regid =
-      ir3_find_output_regid(last_shader, VARYING_SLOT_PRIMITIVE_SHADING_RATE);
 
    uint32_t pointsize_loc = 0xff, position_loc = 0xff, layer_loc = 0xff, view_loc = 0xff;
-   uint32_t shading_rate_loc = 0xff;
 
    if (layer_regid != regid(63, 0)) {
       layer_loc = linkage.max_loc;
@@ -916,12 +913,6 @@ tu6_emit_vpc(struct tu_cs *cs,
    if (view_regid != regid(63, 0)) {
       view_loc = linkage.max_loc;
       ir3_link_add(&linkage, VARYING_SLOT_VIEWPORT, view_regid, 0x1, linkage.max_loc);
-   }
-
-   if (shading_rate_regid != regid(63, 0)) {
-      shading_rate_loc = linkage.max_loc;
-      ir3_link_add(&linkage, VARYING_SLOT_PRIMITIVE_SHADING_RATE,
-                   shading_rate_regid, 0x1, linkage.max_loc);
    }
 
    unsigned extra_pos = 0;
@@ -1035,8 +1026,7 @@ tu6_emit_vpc(struct tu_cs *cs,
                         CONDREG(layer_regid, A6XX_PC_VS_OUT_CNTL_LAYER) |
                         CONDREG(view_regid, A6XX_PC_VS_OUT_CNTL_VIEW) |
                         COND(primid, A6XX_PC_VS_OUT_CNTL_PRIMITIVE_ID) |
-                        A6XX_PC_VS_OUT_CNTL_CLIP_MASK(clip_cull_mask) |
-                        CONDREG(shading_rate_regid, A6XX_PC_VS_OUT_CNTL_SHADINGRATE));
+                        A6XX_PC_VS_OUT_CNTL_CLIP_MASK(clip_cull_mask));
       } else {
          tu_cs_emit(cs, COND(primid, A6XX_PC_VS_OUT_CNTL_PRIMITIVE_ID));
       }
@@ -1053,11 +1043,11 @@ tu6_emit_vpc(struct tu_cs *cs,
    tu_cs_emit_pkt4(cs, cfg->reg_vpc_xs_layer_cntl, 1);
    tu_cs_emit(cs, A6XX_VPC_VS_LAYER_CNTL_LAYERLOC(layer_loc) |
                   A6XX_VPC_VS_LAYER_CNTL_VIEWLOC(view_loc) |
-                  A6XX_VPC_VS_LAYER_CNTL_SHADINGRATELOC(shading_rate_loc));
+                  0xff0000);
    tu_cs_emit_pkt4(cs, cfg->reg_vpc_xs_layer_cntl_v2, 1);
    tu_cs_emit(cs, A6XX_VPC_VS_LAYER_CNTL_LAYERLOC(layer_loc) |
                   A6XX_VPC_VS_LAYER_CNTL_VIEWLOC(view_loc) |
-                  A6XX_VPC_VS_LAYER_CNTL_SHADINGRATELOC(shading_rate_loc));
+                  0xff0000);
 
    tu_cs_emit_pkt4(cs, cfg->reg_gras_xs_layer_cntl, 1);
    tu_cs_emit(cs, CONDREG(layer_regid, A6XX_GRAS_GS_LAYER_CNTL_WRITES_LAYER) |
@@ -1094,7 +1084,7 @@ tu_get_tess_iova(struct tu_device *dev,
    if (!dev->tess_bo) {
       mtx_lock(&dev->mutex);
       if (!dev->tess_bo) {
-         tu_bo_init_new(dev, NULL, &dev->tess_bo, TU_TESS_BO_SIZE,
+         tu_bo_init_new(dev, &dev->tess_bo, TU_TESS_BO_SIZE,
                         TU_BO_ALLOC_INTERNAL_RESOURCE, "tess");
       }
       mtx_unlock(&dev->mutex);
@@ -1451,7 +1441,6 @@ tu_append_executable(struct tu_pipeline *pipeline,
 
 static void
 tu_hash_stage(struct mesa_sha1 *ctx,
-              VkPipelineCreateFlags2KHR pipeline_flags,
               const VkPipelineShaderStageCreateInfo *stage,
               const nir_shader *nir,
               const struct tu_shader_key *key)
@@ -1465,20 +1454,31 @@ tu_hash_stage(struct mesa_sha1 *ctx,
       blob_finish(&blob);
    } else {
       unsigned char stage_hash[SHA1_DIGEST_LENGTH];
-      vk_pipeline_hash_shader_stage(pipeline_flags, stage, NULL, stage_hash);
+      vk_pipeline_hash_shader_stage(stage, NULL, stage_hash);
       _mesa_sha1_update(ctx, stage_hash, sizeof(stage_hash));
    }
    _mesa_sha1_update(ctx, key, sizeof(*key));
 }
 
+/* Hash flags which can affect ir3 shader compilation which aren't known until
+ * logical device creation.
+ */
+static void
+tu_hash_compiler(struct mesa_sha1 *ctx, const struct ir3_compiler *compiler)
+{
+   _mesa_sha1_update(ctx, &compiler->options.robust_buffer_access2,
+                     sizeof(compiler->options.robust_buffer_access2));
+   _mesa_sha1_update(ctx, &ir3_shader_debug, sizeof(ir3_shader_debug));
+}
+
 static void
 tu_hash_shaders(unsigned char *hash,
-                VkPipelineCreateFlags2KHR pipeline_flags,
                 const VkPipelineShaderStageCreateInfo **stages,
                 nir_shader *const *nir,
                 const struct tu_pipeline_layout *layout,
                 const struct tu_shader_key *keys,
-                VkGraphicsPipelineLibraryFlagsEXT state)
+                VkGraphicsPipelineLibraryFlagsEXT state,
+                const struct ir3_compiler *compiler)
 {
    struct mesa_sha1 ctx;
 
@@ -1489,21 +1489,20 @@ tu_hash_shaders(unsigned char *hash,
 
    for (int i = 0; i < MESA_SHADER_STAGES; ++i) {
       if (stages[i] || nir[i]) {
-         tu_hash_stage(&ctx, pipeline_flags, stages[i], nir[i], &keys[i]);
+         tu_hash_stage(&ctx, stages[i], nir[i], &keys[i]);
       }
    }
    _mesa_sha1_update(&ctx, &state, sizeof(state));
-   enum ir3_shader_debug ir3_debug_key = ir3_shader_debug_hash_key();
-   _mesa_sha1_update(&ctx, &ir3_debug_key, sizeof(ir3_debug_key));
+   tu_hash_compiler(&ctx, compiler);
    _mesa_sha1_final(&ctx, hash);
 }
 
 static void
 tu_hash_compute(unsigned char *hash,
-                VkPipelineCreateFlags2KHR pipeline_flags,
                 const VkPipelineShaderStageCreateInfo *stage,
                 const struct tu_pipeline_layout *layout,
-                const struct tu_shader_key *key)
+                const struct tu_shader_key *key,
+                const struct ir3_compiler *compiler)
 {
    struct mesa_sha1 ctx;
 
@@ -1512,10 +1511,9 @@ tu_hash_compute(unsigned char *hash,
    if (layout)
       _mesa_sha1_update(&ctx, layout->sha1, sizeof(layout->sha1));
 
-   tu_hash_stage(&ctx, pipeline_flags, stage, NULL, key);
-   enum ir3_shader_debug ir3_debug_key = ir3_shader_debug_hash_key();
-   _mesa_sha1_update(&ctx, &ir3_debug_key, sizeof(ir3_debug_key));
+   tu_hash_stage(&ctx, stage, NULL, key);
 
+   tu_hash_compiler(&ctx, compiler);
    _mesa_sha1_final(&ctx, hash);
 }
 
@@ -1661,6 +1659,7 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
                                     struct tu_pipeline *pipeline)
 {
    VkResult result = VK_SUCCESS;
+   const struct ir3_compiler *compiler = builder->device->compiler;
    const VkPipelineShaderStageCreateInfo *stage_infos[MESA_SHADER_STAGES] = {
       NULL
    };
@@ -1718,57 +1717,6 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
       tu_shader_key_subgroup_size(&keys[stage], allow_varying_subgroup_size,
                                   require_full_subgroups, subgroup_info,
                                   builder->device);
-
-      if (stage_infos[stage]) {
-         struct vk_pipeline_robustness_state rs;
-         vk_pipeline_robustness_state_fill(&builder->device->vk, &rs,
-                                           builder->create_info->pNext,
-                                           stage_infos[stage]->pNext);
-         tu_shader_key_robustness(&keys[stage], &rs);
-         if (builder->create_flags & VK_PIPELINE_CREATE_2_VIEW_INDEX_FROM_DEVICE_INDEX_BIT_KHR)
-            keys[stage].lower_view_index_to_device_index = true;
-      }
-   }
-
-   if ((builder->state &
-        VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) &&
-       builder->graphics_state.ial &&
-       builder->create_info->renderPass == VK_NULL_HANDLE) {
-      const struct vk_input_attachment_location_state *ial =
-         builder->graphics_state.ial;
-
-      keys[MESA_SHADER_FRAGMENT].dynamic_renderpass = true;
-
-      uint32_t attachments_referenced = 0;
-
-      if (ial->color_attachment_count == MESA_VK_COLOR_ATTACHMENT_COUNT_UNKNOWN) {
-         attachments_referenced |=
-            BITFIELD_MASK(MAX_RTS) << TU_DYN_INPUT_ATT_OFFSET;
-      } else {
-         for (unsigned i = 0; i < ial->color_attachment_count; i++) {
-            if (ial->color_map[i] != MESA_VK_ATTACHMENT_UNUSED) {
-               attachments_referenced |=
-                  (1u << (ial->color_map[i] + TU_DYN_INPUT_ATT_OFFSET));
-               }
-         }
-      }
-
-      if (ial->depth_att != MESA_VK_ATTACHMENT_UNUSED) {
-         if (ial->depth_att == MESA_VK_ATTACHMENT_NO_INDEX)
-            attachments_referenced |= 1;
-         else
-            attachments_referenced |= 1u << (ial->depth_att + 1);
-      }
-
-      if (ial->stencil_att != MESA_VK_ATTACHMENT_UNUSED) {
-         if (ial->stencil_att == MESA_VK_ATTACHMENT_NO_INDEX)
-            attachments_referenced |= 1;
-         else
-            attachments_referenced |= 1u << (ial->stencil_att + 1);
-      }
-
-      keys[MESA_SHADER_FRAGMENT].read_only_input_attachments =
-         ~attachments_referenced;
    }
 
    if (builder->create_flags &
@@ -1838,8 +1786,8 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
    }
 
    unsigned char pipeline_sha1[20];
-   tu_hash_shaders(pipeline_sha1, builder->create_flags, stage_infos, nir,
-                   &builder->layout, keys, builder->state);
+   tu_hash_shaders(pipeline_sha1, stage_infos, nir, &builder->layout, keys,
+                   builder->state, compiler);
 
    unsigned char nir_sha1[21];
    memcpy(nir_sha1, pipeline_sha1, sizeof(pipeline_sha1));
@@ -1899,7 +1847,6 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
       }
 
       result = tu_compile_shaders(builder->device,
-                                  builder->create_flags,
                                   stage_infos,
                                   nir,
                                   keys,
@@ -2303,9 +2250,6 @@ tu_emit_program_state(struct tu_cs *sub_cs,
       !last_shader->writes_viewport &&
       shaders[MESA_SHADER_FRAGMENT]->fs.has_fdm &&
       dev->physical_device->info->a6xx.has_per_view_viewport;
-   prog->writes_shading_rate = last_shader->writes_shading_rate;
-   prog->reads_shading_rate = fs->reads_shading_rate;
-   prog->accesses_smask = fs->reads_smask || fs->writes_smask;
 }
 
 static const enum mesa_vk_dynamic_graphics_state tu_vertex_input_state[] = {
@@ -2755,7 +2699,7 @@ static unsigned
 tu6_sample_locations_size(struct tu_device *dev, bool enable,
                           const struct vk_sample_locations_state *samp_loc)
 {
-   return 6 + (enable ? 9 : 0);
+   return 6 + (enable ? 6 : 0);
 }
 
 template <chip CHIP>
@@ -2781,7 +2725,7 @@ tu6_emit_sample_locations(struct tu_cs *cs, bool enable,
    assert(samp_loc->grid_size.width == 1);
    assert(samp_loc->grid_size.height == 1);
 
-   uint64_t sample_locations = 0;
+   uint32_t sample_locations = 0;
    for (uint32_t i = 0; i < samp_loc->per_pixel; i++) {
       /* From VkSampleLocationEXT:
        *
@@ -2796,18 +2740,18 @@ tu6_emit_sample_locations(struct tu_cs *cs, bool enable,
                       SAMPLE_LOCATION_MAX);
 
       sample_locations |=
-         ((uint64_t)(A6XX_RB_SAMPLE_LOCATION_0_SAMPLE_0_X(x) |
-                     A6XX_RB_SAMPLE_LOCATION_0_SAMPLE_0_Y(y))) << i*8;
+         (A6XX_RB_SAMPLE_LOCATION_0_SAMPLE_0_X(x) |
+          A6XX_RB_SAMPLE_LOCATION_0_SAMPLE_0_Y(y)) << i*8;
    }
 
-   tu_cs_emit_pkt4(cs, REG_A6XX_GRAS_SAMPLE_LOCATION_0, 2);
-   tu_cs_emit_qw(cs, sample_locations);
+   tu_cs_emit_pkt4(cs, REG_A6XX_GRAS_SAMPLE_LOCATION_0, 1);
+   tu_cs_emit(cs, sample_locations);
 
-   tu_cs_emit_pkt4(cs, REG_A6XX_RB_SAMPLE_LOCATION_0, 2);
-   tu_cs_emit_qw(cs, sample_locations);
+   tu_cs_emit_pkt4(cs, REG_A6XX_RB_SAMPLE_LOCATION_0, 1);
+   tu_cs_emit(cs, sample_locations);
 
-   tu_cs_emit_pkt4(cs, REG_A6XX_SP_TP_SAMPLE_LOCATION_0, 2);
-   tu_cs_emit_qw(cs, sample_locations);
+   tu_cs_emit_pkt4(cs, REG_A6XX_SP_TP_SAMPLE_LOCATION_0, 1);
+   tu_cs_emit(cs, sample_locations);
 }
 
 static const enum mesa_vk_dynamic_graphics_state tu_depth_bias_state[] = {
@@ -2827,8 +2771,8 @@ void
 tu6_emit_depth_bias(struct tu_cs *cs, const struct vk_rasterization_state *rs)
 {
    tu_cs_emit_pkt4(cs, REG_A6XX_GRAS_SU_POLY_OFFSET_SCALE, 3);
-   tu_cs_emit(cs, A6XX_GRAS_SU_POLY_OFFSET_SCALE(rs->depth_bias.slope_factor).value);
-   tu_cs_emit(cs, A6XX_GRAS_SU_POLY_OFFSET_OFFSET(rs->depth_bias.constant_factor).value);
+   tu_cs_emit(cs, A6XX_GRAS_SU_POLY_OFFSET_SCALE(rs->depth_bias.slope).value);
+   tu_cs_emit(cs, A6XX_GRAS_SU_POLY_OFFSET_OFFSET(rs->depth_bias.constant).value);
    tu_cs_emit(cs, A6XX_GRAS_SU_POLY_OFFSET_OFFSET_CLAMP(rs->depth_bias.clamp).value);
 }
 
@@ -2947,14 +2891,12 @@ static const enum mesa_vk_dynamic_graphics_state tu_blend_state[] = {
    MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE,
    MESA_VK_DYNAMIC_MS_ALPHA_TO_ONE_ENABLE,
    MESA_VK_DYNAMIC_MS_SAMPLE_MASK,
-   MESA_VK_DYNAMIC_COLOR_ATTACHMENT_MAP,
 };
 
 template <chip CHIP>
 static unsigned
 tu6_blend_size(struct tu_device *dev,
                const struct vk_color_blend_state *cb,
-               const struct vk_color_attachment_location_state *cal,
                bool alpha_to_coverage_enable,
                bool alpha_to_one_enable,
                uint32_t sample_mask)
@@ -2968,7 +2910,6 @@ template <chip CHIP>
 static void
 tu6_emit_blend(struct tu_cs *cs,
                const struct vk_color_blend_state *cb,
-               const struct vk_color_attachment_location_state *cal,
                bool alpha_to_coverage_enable,
                bool alpha_to_one_enable,
                uint32_t sample_mask)
@@ -2978,14 +2919,12 @@ tu6_emit_blend(struct tu_cs *cs,
 
    uint32_t blend_enable_mask = 0;
    for (unsigned i = 0; i < cb->attachment_count; i++) {
-      if (!(cb->color_write_enables & (1u << i)) ||
-          cal->color_map[i] == MESA_VK_ATTACHMENT_UNUSED)
+      const struct vk_color_blend_attachment_state *att = &cb->attachments[i];
+      if (!(cb->color_write_enables & (1u << i)))
          continue;
 
-      const struct vk_color_blend_attachment_state *att = &cb->attachments[i];
-
       if (rop_reads_dst || att->blend_enable) {
-         blend_enable_mask |= 1u << cal->color_map[i];
+         blend_enable_mask |= 1u << i;
       }
    }
 
@@ -3017,9 +2956,6 @@ tu6_emit_blend(struct tu_cs *cs,
                                           .sample_mask = sample_mask));
 
    for (unsigned i = 0; i < num_rts; i++) {
-      if (cal->color_map[i] == MESA_VK_ATTACHMENT_UNUSED)
-         continue;
-      unsigned remapped_idx = cal->color_map[i];
       const struct vk_color_blend_attachment_state *att = &cb->attachments[i];
       if ((cb->color_write_enables & (1u << i)) && i < cb->attachment_count) {
          const enum a3xx_rb_blend_opcode color_op = tu6_blend_op(att->color_blend_op);
@@ -3035,13 +2971,13 @@ tu6_emit_blend(struct tu_cs *cs,
             tu6_blend_factor((VkBlendFactor)att->dst_alpha_blend_factor);
 
          tu_cs_emit_regs(cs,
-                         A6XX_RB_MRT_CONTROL(remapped_idx,
+                         A6XX_RB_MRT_CONTROL(i,
                                              .blend = att->blend_enable,
                                              .blend2 = att->blend_enable,
                                              .rop_enable = cb->logic_op_enable,
                                              .rop_code = rop,
                                              .component_enable = att->write_mask),
-                         A6XX_RB_MRT_BLEND_CONTROL(remapped_idx,
+                         A6XX_RB_MRT_BLEND_CONTROL(i,
                                                    .rgb_src_factor = src_color_factor,
                                                    .rgb_blend_opcode = color_op,
                                                    .rgb_dest_factor = dst_color_factor,
@@ -3050,8 +2986,8 @@ tu6_emit_blend(struct tu_cs *cs,
                                                    .alpha_dest_factor = dst_alpha_factor));
       } else {
             tu_cs_emit_regs(cs,
-                            A6XX_RB_MRT_CONTROL(remapped_idx,),
-                            A6XX_RB_MRT_BLEND_CONTROL(remapped_idx,));
+                            A6XX_RB_MRT_CONTROL(i,),
+                            A6XX_RB_MRT_BLEND_CONTROL(i,));
       }
    }
 }
@@ -3099,7 +3035,7 @@ tu6_rast_size(struct tu_device *dev,
               bool per_view_viewport)
 {
    if (CHIP == A6XX) {
-      return 15 + (dev->physical_device->info->a6xx.has_legacy_pipeline_shading_rate ? 8 : 0);
+      return 15 + (dev->physical_device->info->a6xx.has_shading_rate ? 8 : 0);
    } else {
       return 17;
    }
@@ -3169,7 +3105,7 @@ tu6_emit_rast(struct tu_cs *cs,
                    A6XX_GRAS_SU_POINT_MINMAX(.min = 1.0f / 16.0f, .max = 4092.0f),
                    A6XX_GRAS_SU_POINT_SIZE(1.0f));
 
-   if (CHIP == A6XX && cs->device->physical_device->info->a6xx.has_legacy_pipeline_shading_rate) {
+   if (CHIP == A6XX && cs->device->physical_device->info->a6xx.has_shading_rate) {
       tu_cs_emit_regs(cs, A6XX_RB_UNKNOWN_8A00());
       tu_cs_emit_regs(cs, A6XX_RB_UNKNOWN_8A10());
       tu_cs_emit_regs(cs, A6XX_RB_UNKNOWN_8A20());
@@ -3299,7 +3235,6 @@ static const enum mesa_vk_dynamic_graphics_state tu_prim_mode_sysmem_state[] = {
 template <chip CHIP>
 static unsigned
 tu6_prim_mode_sysmem_size(struct tu_device *dev,
-                          struct tu_shader *fs,
                           bool raster_order_attachment_access,
                           VkImageAspectFlags feedback_loops,
                           bool *sysmem_single_prim_mode)
@@ -3310,7 +3245,6 @@ tu6_prim_mode_sysmem_size(struct tu_device *dev,
 template <chip CHIP>
 static void
 tu6_emit_prim_mode_sysmem(struct tu_cs *cs,
-                          struct tu_shader *fs,
                           bool raster_order_attachment_access,
                           VkImageAspectFlags feedback_loops,
                           bool *sysmem_single_prim_mode)
@@ -3332,8 +3266,7 @@ tu6_emit_prim_mode_sysmem(struct tu_cs *cs,
     * for advanced_blend in sysmem mode if a feedback loop is detected.
     */
    enum a6xx_single_prim_mode sysmem_prim_mode =
-      (raster_order_attachment_access || feedback_loops ||
-       fs->fs.dynamic_input_attachments_used) ?
+      (raster_order_attachment_access || feedback_loops) ?
       FLUSH_PER_OVERLAP_AND_OVERWRITE : NO_FLUSH;
 
    if (sysmem_prim_mode == FLUSH_PER_OVERLAP_AND_OVERWRITE)
@@ -3342,95 +3275,6 @@ tu6_emit_prim_mode_sysmem(struct tu_cs *cs,
    tu_cs_emit_regs(cs, A6XX_GRAS_SC_CNTL(.ccusinglecachelinesize = 2,
                                          .single_prim_mode = sysmem_prim_mode));
 }
-
-static const enum mesa_vk_dynamic_graphics_state tu_fragment_shading_rate_state[] = {
-   MESA_VK_DYNAMIC_FSR,
-};
-
-template <chip CHIP>
-static unsigned
-tu6_fragment_shading_rate_size(struct tu_device *dev,
-                               const vk_fragment_shading_rate_state *fsr,
-                               bool enable_att_fsr,
-                               bool enable_prim_fsr,
-                               bool fs_reads_fsr,
-                               bool sample_shading)
-{
-   return 6;
-}
-
-template <chip CHIP>
-static void
-tu6_emit_fragment_shading_rate(struct tu_cs *cs,
-                               const vk_fragment_shading_rate_state *fsr,
-                               bool enable_att_fsr,
-                               bool enable_prim_fsr,
-                               bool fs_reads_fsr,
-                               bool accesses_smask)
-{
-   /* gl_ShadingRateEXT don't read 1x1 value with null config, so
-    * if it is read - we have to emit the config.
-    */
-   if (!fsr || (!fs_reads_fsr && vk_fragment_shading_rate_is_disabled(fsr))) {
-      tu_cs_emit_regs(cs, A6XX_RB_FSR_CONFIG());
-      tu_cs_emit_regs(cs, A7XX_SP_FSR_CONFIG());
-      tu_cs_emit_regs(cs, A7XX_GRAS_FSR_CONFIG());
-      return;
-   }
-
-   uint32_t frag_width = fsr->fragment_size.width;
-   uint32_t frag_height = fsr->fragment_size.height;
-
-   bool enable_draw_fsr = true;
-   if (enable_att_fsr) {
-      if (fsr->combiner_ops[1] ==
-          VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR) {
-         enable_draw_fsr = false;
-         enable_prim_fsr = false;
-      } else if (fsr->combiner_ops[1] ==
-                 VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR) {
-         enable_att_fsr = false;
-      }
-   }
-   if (enable_prim_fsr) {
-      if (fsr->combiner_ops[0] ==
-          VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR) {
-         enable_draw_fsr = false;
-      } else if (fsr->combiner_ops[0] ==
-                 VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR) {
-         enable_prim_fsr = false;
-      }
-   }
-
-   /* Force 1x1 FSR because we don't support
-    * fragmentShadingRateWithShaderSampleMask.
-    */
-   if (accesses_smask) {
-      enable_att_fsr = enable_prim_fsr = false;
-      frag_width = frag_height = 1;
-      enable_draw_fsr = true;
-   }
-
-   tu_cs_emit_regs(
-      cs,
-      A6XX_RB_FSR_CONFIG(.unk2 = true, .pipeline_fsr_enable = enable_draw_fsr,
-                         .attachment_fsr_enable = enable_att_fsr,
-                         .primitive_fsr_enable = enable_prim_fsr));
-   tu_cs_emit_regs(
-      cs, A7XX_SP_FSR_CONFIG(.pipeline_fsr_enable = enable_draw_fsr,
-                             .attachment_fsr_enable = enable_att_fsr,
-                             .primitive_fsr_enable = enable_prim_fsr));
-   tu_cs_emit_regs(
-      cs, A7XX_GRAS_FSR_CONFIG(
-                .pipeline_fsr_enable = enable_draw_fsr,
-                .frag_size_x = util_logbase2(frag_width),
-                .frag_size_y = util_logbase2(frag_height),
-                .combiner_op_1 = (a6xx_fsr_combiner) fsr->combiner_ops[0],
-                .combiner_op_2 = (a6xx_fsr_combiner) fsr->combiner_ops[1],
-                .attachment_fsr_enable = enable_att_fsr,
-                .primitive_fsr_enable = enable_prim_fsr));
-}
-
 
 static inline bool
 emit_pipeline_state(BITSET_WORD *keep, BITSET_WORD *remove,
@@ -3546,7 +3390,6 @@ tu_pipeline_builder_emit_state(struct tu_pipeline_builder *builder,
       BITSET_SET(pipeline_set, MESA_VK_DYNAMIC_CB_BLEND_CONSTANTS);
    }
    DRAW_STATE(blend, TU_DYNAMIC_STATE_BLEND, cb,
-              builder->graphics_state.cal,
               builder->graphics_state.ms->alpha_to_coverage_enable,
               builder->graphics_state.ms->alpha_to_one_enable,
               builder->graphics_state.ms->sample_mask);
@@ -3557,7 +3400,6 @@ tu_pipeline_builder_emit_state(struct tu_pipeline_builder *builder,
       tu_calc_bandwidth(&pipeline->bandwidth, cb,
                         builder->graphics_state.rp);
    DRAW_STATE(blend_constants, TU_DYNAMIC_STATE_BLEND_CONSTANTS, cb);
-
    if (attachments_valid &&
        !(builder->graphics_state.rp->attachments &
          MESA_VK_RP_ATTACHMENT_ANY_COLOR_BITS)) {
@@ -3611,25 +3453,10 @@ tu_pipeline_builder_emit_state(struct tu_pipeline_builder *builder,
       DRAW_STATE_COND(prim_mode_sysmem,
                       TU_DYNAMIC_STATE_PRIM_MODE_SYSMEM,
                       has_raster_order_state,
-                      pipeline->shaders[MESA_SHADER_FRAGMENT],
                       pipeline->output.raster_order_attachment_access ||
                       pipeline->ds.raster_order_attachment_access,
                       vk_pipeline_flags_feedback_loops(builder->graphics_state.pipeline_flags),
                       &pipeline->prim_order.sysmem_single_prim_mode);
-   }
-
-   if (builder->device->physical_device->info->a6xx.has_attachment_shading_rate) {
-      bool has_fsr_att =
-         builder->graphics_state.pipeline_flags &
-         VK_PIPELINE_CREATE_2_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
-      DRAW_STATE_COND(fragment_shading_rate,
-                      TU_DYNAMIC_STATE_A7XX_FRAGMENT_SHADING_RATE,
-                      attachments_valid && pipeline_contains_all_shader_state(pipeline),
-                      builder->graphics_state.fsr,
-                      has_fsr_att,
-                      pipeline->program.writes_shading_rate,
-                      pipeline->program.reads_shading_rate,
-                      pipeline->program.accesses_smask);
    }
 #undef DRAW_STATE
 #undef DRAW_STATE_COND
@@ -3776,7 +3603,6 @@ tu_emit_draw_state(struct tu_cmd_buffer *cmd)
               &cmd->vk.dynamic_graphics_state.rs);
    DRAW_STATE(blend, TU_DYNAMIC_STATE_BLEND,
               &cmd->vk.dynamic_graphics_state.cb,
-              &cmd->vk.dynamic_graphics_state.cal,
               cmd->vk.dynamic_graphics_state.ms.alpha_to_coverage_enable,
               cmd->vk.dynamic_graphics_state.ms.alpha_to_one_enable,
               cmd->vk.dynamic_graphics_state.ms.sample_mask);
@@ -3797,17 +3623,6 @@ tu_emit_draw_state(struct tu_cmd_buffer *cmd)
                         &cmd->state.vk_rp);
    DRAW_STATE(blend_constants, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
               &cmd->vk.dynamic_graphics_state.cb);
-
-   if (cmd->device->physical_device->info->a6xx.has_attachment_shading_rate) {
-      DRAW_STATE_COND(fragment_shading_rate,
-               TU_DYNAMIC_STATE_A7XX_FRAGMENT_SHADING_RATE,
-               cmd->state.dirty & (TU_CMD_DIRTY_SUBPASS | TU_CMD_DIRTY_SHADING_RATE),
-               &cmd->vk.dynamic_graphics_state.fsr,
-               cmd->state.subpass->fsr_attachment != VK_ATTACHMENT_UNUSED,
-               cmd->state.program.writes_shading_rate,
-               cmd->state.program.reads_shading_rate,
-               cmd->state.program.accesses_smask);
-   }
    DRAW_STATE_COND(rast, TU_DYNAMIC_STATE_RAST,
                    cmd->state.dirty & (TU_CMD_DIRTY_SUBPASS |
                                        TU_CMD_DIRTY_PER_VIEW_VIEWPORT),
@@ -3836,9 +3651,7 @@ tu_emit_draw_state(struct tu_cmd_buffer *cmd)
       DRAW_STATE_COND(prim_mode_sysmem,
                       TU_DYNAMIC_STATE_PRIM_MODE_SYSMEM,
                       cmd->state.dirty & (TU_CMD_DIRTY_RAST_ORDER |
-                                          TU_CMD_DIRTY_FEEDBACK_LOOPS |
-                                          TU_CMD_DIRTY_FS),
-                      cmd->state.shaders[MESA_SHADER_FRAGMENT],
+                                          TU_CMD_DIRTY_FEEDBACK_LOOPS),
                       cmd->state.raster_order_attachment_access,
                       cmd->vk.dynamic_graphics_state.feedback_loops |
                       cmd->state.pipeline_feedback_loops,
@@ -4054,7 +3867,6 @@ tu_pipeline_builder_build(struct tu_pipeline_builder *builder,
 
       result = tu_pipeline_builder_compile_shaders(builder, *pipeline);
       if (result != VK_SUCCESS) {
-         tu_pipeline_finish(*pipeline, builder->device, builder->alloc);
          vk_object_free(&builder->device->vk, builder->alloc, *pipeline);
          return result;
       }
@@ -4286,11 +4098,6 @@ tu_pipeline_builder_init_graphics(
             VK_PIPELINE_CREATE_2_RENDERING_FRAGMENT_DENSITY_MAP_ATTACHMENT_BIT_EXT;
       }
 
-      if (subpass->fsr_attachment != VK_ATTACHMENT_UNUSED) {
-         rp_flags |=
-            VK_PIPELINE_CREATE_2_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
-      }
-
       builder->unscaled_input_fragcoord = 0;
       for (unsigned i = 0; i < subpass->input_count; i++) {
          /* Input attachments stored in GMEM must be loaded with unscaled
@@ -4444,16 +4251,10 @@ tu_compute_pipeline_create(VkDevice device,
                                require_full_subgroups, subgroup_info,
                                dev);
 
-   struct vk_pipeline_robustness_state rs;
-   vk_pipeline_robustness_state_fill(&dev->vk, &rs,
-                                     pCreateInfo->pNext,
-                                     stage_info->pNext);
-   tu_shader_key_robustness(&key, &rs);
-
    void *pipeline_mem_ctx = ralloc_context(NULL);
 
    unsigned char pipeline_sha1[20];
-   tu_hash_compute(pipeline_sha1, flags, stage_info, layout, &key);
+   tu_hash_compute(pipeline_sha1, stage_info, layout, &key, dev->compiler);
 
    struct tu_shader *shader = NULL;
 
@@ -4484,8 +4285,8 @@ tu_compute_pipeline_create(VkDevice device,
 
       struct ir3_shader_key ir3_key = {};
 
-      nir_shader *nir = tu_spirv_to_nir(dev, pipeline_mem_ctx, flags,
-                                        stage_info, &key, MESA_SHADER_COMPUTE);
+      nir_shader *nir = tu_spirv_to_nir(dev, pipeline_mem_ctx, stage_info,
+                                        MESA_SHADER_COMPUTE);
 
       nir_initial_disasm = executable_info ?
          nir_shader_as_str(nir, pipeline->base.executables_mem_ctx) : NULL;

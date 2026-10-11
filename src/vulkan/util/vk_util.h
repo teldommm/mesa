@@ -306,9 +306,7 @@ struct vk_pipeline_cache_header {
 
 #define typed_memcpy(dest, src, count) do { \
    STATIC_ASSERT(sizeof(*(src)) == sizeof(*(dest))); \
-   if ((dest) != NULL && (src) != NULL && (count) > 0) { \
-       memcpy((dest), (src), (count) * sizeof(*(src))); \
-   } \
+   memcpy((dest), (src), (count) * sizeof(*(src))); \
 } while (0)
 
 static inline gl_shader_stage
@@ -362,7 +360,7 @@ vk_spec_info_to_nir_spirv(const VkSpecializationInfo *spec_info,
    if (name != _stack_##name) free(name)
 
 static inline uint8_t
-vk_index_type_to_bytes(VkIndexType type)
+vk_index_type_to_bytes(enum VkIndexType type)
 {
    switch (type) {
    case VK_INDEX_TYPE_NONE_KHR:  return 0;
@@ -374,7 +372,7 @@ vk_index_type_to_bytes(VkIndexType type)
 }
 
 static inline uint32_t
-vk_index_to_restart(VkIndexType type)
+vk_index_to_restart(enum VkIndexType type)
 {
    switch (type) {
    case VK_INDEX_TYPE_UINT8_KHR: return 0xff;

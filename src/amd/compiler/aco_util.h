@@ -247,18 +247,6 @@ public:
       free(buffer);
    }
 
-   /* Move-constructor and -assignment */
-   monotonic_buffer_resource(monotonic_buffer_resource&& other) : monotonic_buffer_resource()
-   {
-      *this = std::move(other);
-   }
-   monotonic_buffer_resource& operator=(monotonic_buffer_resource&& other)
-   {
-      release();
-      std::swap(buffer, other.buffer);
-      return *this;
-   }
-
    /* Delete copy-constructor and -assignment to avoid double free() */
    monotonic_buffer_resource(const monotonic_buffer_resource&) = delete;
    monotonic_buffer_resource& operator=(const monotonic_buffer_resource&) = delete;
@@ -527,23 +515,6 @@ struct IDSet {
 
    explicit IDSet(monotonic_buffer_resource& m) : words(m) {}
    explicit IDSet(const IDSet& other, monotonic_buffer_resource& m) : words(other.words, m) {}
-
-   bool operator==(const IDSet& other) const
-   {
-      auto it = words.begin();
-      for (auto block : other.words) {
-         if (block.second == block_t{0})
-            continue;
-         while (it != words.end() && it->second == block_t{0})
-            it++;
-         if (it == words.end() || block != *it)
-            return false;
-         it++;
-      }
-
-      return true;
-   }
-   bool operator!=(const IDSet& other) const { return !(*this == other); }
 
 private:
    static uint32_t get_first_set(const block_t& words)
@@ -1046,7 +1017,6 @@ template <typename T, unsigned offset, unsigned size>
 using bitfield_array64 = bitfield_array<T, offset, size, uint64_t>;
 
 using bitarray8 = bitfield_array<uint8_t, 0, 8, uint8_t>;
-using bitarray32 = bitfield_array<uint32_t, 0, 32, uint32_t>;
 
 /*
  * Resizable array optimized for small lengths. If it's smaller than Size, the elements will be
@@ -1069,8 +1039,8 @@ public:
    using difference_type = std::ptrdiff_t;
 
    constexpr small_vec() = default;
-   constexpr small_vec(const small_vec& other) { *this = other; }
-   constexpr small_vec(small_vec&& other) noexcept { *this = std::move(other); }
+   constexpr small_vec(const small_vec&) = delete;
+   constexpr small_vec(small_vec&& other) { *this = std::move(other); }
 
    ~small_vec()
    {
@@ -1078,16 +1048,8 @@ public:
          free(data);
    }
 
-   constexpr small_vec& operator=(const small_vec& other)
-   {
-      clear();
-      reserve(other.capacity);
-      length = other.length;
-      memcpy(begin(), other.begin(), length * sizeof(value_type));
-      return *this;
-   }
-
-   constexpr small_vec& operator=(small_vec&& other) noexcept
+   constexpr small_vec& operator=(const small_vec&) = delete;
+   constexpr small_vec& operator=(small_vec&& other)
    {
       clear();
       void* ptr = this;

@@ -213,9 +213,6 @@ public:
    std::vector<aco_ptr<Instruction>> *instructions;
    std::vector<aco_ptr<Instruction>>::iterator it;
    bool is_precise = false;
-   bool is_sz_preserve = false;
-   bool is_inf_preserve = false;
-   bool is_nan_preserve = false;
    bool is_nuw = false;
 
    Builder(Program *pgm) : program(pgm), use_iterator(false), start(false), lm(pgm ? pgm->lane_mask : s2), instructions(NULL) {}
@@ -309,7 +306,7 @@ public:
    }
 
    Definition def(RegClass rc, PhysReg reg) {
-      return Definition(tmp(rc), reg);
+      return Definition(program->allocateId(rc), reg, rc);
    }
 
    inline aco_opcode w64or32(WaveSpecificOpcode opcode) const {
@@ -365,7 +362,7 @@ public:
           assert(tmp.type() == RegType::sgpr && tmp.bytes() <= 8);
        % endif
        Operand op(tmp);
-       op.setPrecolored(aco::${fixed});
+       op.setFixed(aco::${fixed});
        return op;
    }
 
@@ -374,7 +371,7 @@ public:
           //vcc_hi and exec_hi can still be used in wave32
           assert(def.regClass().type() == RegType::sgpr && def.bytes() <= 8);
        % endif
-       def.setPrecolored(aco::${fixed});
+       def.setFixed(aco::${fixed});
        return def;
    }
 
@@ -555,19 +552,19 @@ formats = [("pseudo", [Format.PSEUDO], list(itertools.product(range(5), range(6)
            ("sop1", [Format.SOP1], [(0, 1), (1, 0), (1, 1), (2, 1), (3, 2)]),
            ("sop2", [Format.SOP2], itertools.product([1, 2], [2, 3])),
            ("sopk", [Format.SOPK], itertools.product([0, 1, 2], [0, 1])),
-           ("sopp", [Format.SOPP], [(0, 0), (0, 1)]),
+           ("sopp", [Format.SOPP], itertools.product([0, 1], [0, 1])),
            ("sopc", [Format.SOPC], [(1, 2)]),
            ("smem", [Format.SMEM], [(0, 4), (0, 3), (1, 0), (1, 3), (1, 2), (1, 1), (0, 0)]),
-           ("ds", [Format.DS], [(1, 0), (1, 1), (1, 2), (1, 3), (0, 3), (0, 4)]),
+           ("ds", [Format.DS], [(1, 1), (1, 2), (1, 3), (0, 3), (0, 4)]),
            ("ldsdir", [Format.LDSDIR], [(1, 1)]),
            ("mubuf", [Format.MUBUF], [(0, 4), (1, 3), (1, 4)]),
            ("mtbuf", [Format.MTBUF], [(0, 4), (1, 3)]),
            ("mimg", [Format.MIMG], itertools.product([0, 1], [3, 4, 5, 6, 7])),
            ("exp", [Format.EXP], [(0, 4), (0, 5)]),
-           ("branch", [Format.PSEUDO_BRANCH], [(0, 0), (0, 1)]),
+           ("branch", [Format.PSEUDO_BRANCH], itertools.product([1], [0, 1])),
            ("barrier", [Format.PSEUDO_BARRIER], [(0, 0)]),
            ("reduction", [Format.PSEUDO_REDUCTION], [(3, 3)]),
-           ("vop1", [Format.VOP1], [(0, 0), (1, 1), (1, 2), (2, 2)]),
+           ("vop1", [Format.VOP1], [(0, 0), (1, 1), (2, 2)]),
            ("vop1_sdwa", [Format.VOP1, Format.SDWA], [(1, 1)]),
            ("vop2", [Format.VOP2], itertools.product([1, 2], [2, 3])),
            ("vop2_sdwa", [Format.VOP2, Format.SDWA], itertools.product([1, 2], [2, 3])),
@@ -620,9 +617,6 @@ formats = [(f if len(f) == 5 else f + ('',)) for f in formats]
         % for i in range(num_definitions):
             instr->definitions[${i}] = def${i};
             instr->definitions[${i}].setPrecise(is_precise);
-            instr->definitions[${i}].setSZPreserve(is_sz_preserve);
-            instr->definitions[${i}].setInfPreserve(is_inf_preserve);
-            instr->definitions[${i}].setNaNPreserve(is_nan_preserve);
             instr->definitions[${i}].setNUW(is_nuw);
         % endfor
         % for i in range(num_operands):

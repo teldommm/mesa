@@ -12,7 +12,6 @@
 #include "svga_resource_buffer.h"
 #include "svga_resource_texture.h"
 #include "svga_surface.h"
-#include "svga_resource_buffer_upload.h"
 
 //#include "util/u_blit_sw.h"
 #include "util/format/u_format.h"
@@ -367,9 +366,6 @@ can_blit_via_copy_region_vgpu10(struct svga_context *svga,
                                 const struct pipe_blit_info *blit_info)
 {
    struct svga_texture *dtex, *stex;
-
-   if (blit_info->swizzle_enable)
-      return false;
 
    /* can't copy between different resource types */
    if (svga_resource_type(blit_info->src.resource->target) !=
@@ -810,13 +806,6 @@ is_texture_valid_to_copy(struct svga_context *svga,
    if (resource->target == PIPE_BUFFER) {
       struct svga_buffer *buf = svga_buffer(resource);
       struct svga_buffer_surface *bufsurf = buf->bufsurf;
-
-      if (!bufsurf) {
-         if (svga_buffer_validate_host_surface(svga, buf, buf->bind_flags)
-               != PIPE_OK)
-            return false;
-         bufsurf = buf->bufsurf;
-      }
 
       return (bufsurf &&
 	      bufsurf->surface_state >= SVGA_SURFACE_STATE_UPDATED);

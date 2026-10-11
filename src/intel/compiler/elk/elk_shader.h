@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_SHADER_H
+#define ELK_SHADER_H
 
 #include <stdint.h>
 #include "elk_cfg.h"
@@ -189,3 +190,5 @@ struct elk_gs_compile
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* ELK_SHADER_H */

@@ -31,6 +31,8 @@
  * we support.
  */
 
+#ifdef USE_V3D_SIMULATOR
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -592,3 +594,5 @@ void v3dX(simulator_get_perfcnt_total)(uint32_t *count)
 {
         *count = ARRAY_SIZE(v3d_performance_counters);
 }
+
+#endif /* USE_V3D_SIMULATOR */

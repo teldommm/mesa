@@ -298,15 +298,7 @@ i965_asm_set_instruction_options(struct brw_codegen *p,
 	}
 	brw_inst_set_debug_control(p->devinfo, brw_last_inst,
 			           options.debug_control);
-	if (brw_has_branch_ctrl(p->devinfo, brw_inst_opcode(p->isa, brw_last_inst))) {
-		if (options.acc_wr_control)
-			error(NULL, "Instruction does not support AccWrEnable\n");
-
-		brw_inst_set_branch_control(p->devinfo, brw_last_inst,
-		                            options.branch_control);
-	} else if (options.branch_control) {
-		error(NULL, "Instruction does not support BranchCtrl\n");
-	} else if (p->devinfo->ver < 20) {
+	if (p->devinfo->ver < 20) {
 		brw_inst_set_acc_wr_control(p->devinfo, brw_last_inst,
 					    options.acc_wr_control);
 	}
@@ -458,9 +450,6 @@ add_label(struct brw_codegen *p, const char* label_name, enum instr_label_type t
 /* thread control */
 %token ATOMIC SWITCH
 
-/* branch control */
-%token BRANCH_CTRL
-
 /* quater control */
 %token QTR_2Q QTR_3Q QTR_4Q QTR_2H QTR_2N QTR_3N QTR_4N QTR_5N
 %token QTR_6N QTR_7N QTR_8N
@@ -477,7 +466,7 @@ add_label(struct brw_codegen *p, const char* label_name, enum instr_label_type t
 /* register type */
 %token <integer> GENREG ADDRREG ACCREG FLAGREG NOTIFYREG STATEREG
 %token <integer> CONTROLREG IPREG PERFORMANCEREG THREADREG CHANNELENABLEREG
-%token <integer> MASKREG SCALARREG
+%token <integer> MASKREG
 
 %token <integer> INTEGER
 %token <llint> LONG
@@ -525,7 +514,7 @@ add_label(struct brw_codegen *p, const char* label_name, enum instr_label_type t
 %type <integer> swizzle
 
 /* registers */
-%type <reg> accreg addrreg channelenablereg controlreg flagreg ipreg scalarreg
+%type <reg> accreg addrreg channelenablereg controlreg flagreg ipreg
 %type <reg> notifyreg nullreg performancereg threadcontrolreg statereg maskreg
 %type <integer> subregnum
 
@@ -551,8 +540,6 @@ add_label(struct brw_codegen *p, const char* label_name, enum instr_label_type t
 %token <integer> REG_DIST_INT
 %token <integer> REG_DIST_LONG
 %token <integer> REG_DIST_ALL
-%token <integer> REG_DIST_MATH
-%token <integer> REG_DIST_SCALAR
 %token <integer> SBID_ALLOC
 %token <integer> SBID_WAIT_SRC
 %token <integer> SBID_WAIT_DST
@@ -590,9 +577,6 @@ add_instruction_option(struct options *options, struct instoption opt)
 		break;
 	case ATOMIC:
 		options->thread_control |= BRW_THREAD_ATOMIC;
-		break;
-	case BRANCH_CTRL:
-		options->branch_control = true;
 		break;
 	case NODDCHK:
 		options->no_dd_check = true;
@@ -686,7 +670,7 @@ unaryinstruction:
 						    $4.flag_subreg_nr);
 		}
 
-		if ($7.file != IMM) {
+		if ($7.file != BRW_IMMEDIATE_VALUE) {
 			brw_inst_set_src0_vstride(p->devinfo, brw_last_inst,
 						  $7.vstride);
 		}
@@ -897,7 +881,7 @@ sendinstruction:
 		brw_set_src0(p, brw_last_inst, $5);
 		brw_inst_set_bits(brw_last_inst, 127, 96, $6);
 		brw_inst_set_src1_file_type(p->devinfo, brw_last_inst,
-				            IMM,
+				            BRW_IMMEDIATE_VALUE,
 					    BRW_TYPE_UD);
 		brw_inst_set_sfid(p->devinfo, brw_last_inst, $7);
 		brw_inst_set_eot(p->devinfo, brw_last_inst, $9.end_of_thread);
@@ -928,16 +912,16 @@ sendinstruction:
 		brw_set_src0(p, brw_last_inst, $5);
 		brw_set_src1(p, brw_last_inst, $6);
 
-		if ($7.file == IMM) {
+		if ($7.file == BRW_IMMEDIATE_VALUE) {
 			brw_inst_set_send_sel_reg32_desc(p->devinfo, brw_last_inst, 0);
 			brw_inst_set_send_desc(p->devinfo, brw_last_inst, $7.ud);
 		} else {
 			brw_inst_set_send_sel_reg32_desc(p->devinfo, brw_last_inst, 1);
 		}
 
-		if ($8.file == IMM) {
+		if ($8.file == BRW_IMMEDIATE_VALUE) {
 			brw_inst_set_send_sel_reg32_ex_desc(p->devinfo, brw_last_inst, 0);
-			brw_inst_set_sends_ex_desc(p->devinfo, brw_last_inst, $8.ud, false);
+			brw_inst_set_sends_ex_desc(p->devinfo, brw_last_inst, $8.ud);
 		} else {
 			brw_inst_set_send_sel_reg32_ex_desc(p->devinfo, brw_last_inst, 1);
 			brw_inst_set_send_ex_desc_ia_subreg_nr(p->devinfo, brw_last_inst, $8.subnr >> 2);
@@ -951,42 +935,6 @@ sendinstruction:
 			brw_inst_set_send_ex_bso(p->devinfo, brw_last_inst, 1);
 			brw_inst_set_send_src1_len(p->devinfo, brw_last_inst,
 						   $10.src1_len);
-		}
-
-		brw_pop_insn_state(p);
-	}
-	| predicate sendsopcode execsize dst GENREGFILE LSQUARE scalarreg RSQUARE desc ex_desc sharedfunction msgdesc instoptions
-	{
-                assert(p->devinfo->ver >= 30);
-
-		i965_asm_set_instruction_options(p, $13);
-		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
-		brw_set_dest(p, brw_last_inst, $4);
-		brw_set_src0(p, brw_last_inst, $7);
-		brw_set_src1(p, brw_last_inst, brw_null_reg());
-
-		if ($9.file == IMM) {
-			brw_inst_set_send_sel_reg32_desc(p->devinfo, brw_last_inst, 0);
-			brw_inst_set_send_desc(p->devinfo, brw_last_inst, $9.ud);
-		} else {
-			brw_inst_set_send_sel_reg32_desc(p->devinfo, brw_last_inst, 1);
-		}
-
-		if ($10.file == IMM) {
-			brw_inst_set_send_sel_reg32_ex_desc(p->devinfo, brw_last_inst, 0);
-			brw_inst_set_sends_ex_desc(p->devinfo, brw_last_inst, $10.ud, true);
-		} else {
-			brw_inst_set_send_sel_reg32_ex_desc(p->devinfo, brw_last_inst, 1);
-			brw_inst_set_send_ex_desc_ia_subreg_nr(p->devinfo, brw_last_inst, $10.subnr >> 2);
-		}
-
-		brw_inst_set_sfid(p->devinfo, brw_last_inst, $11);
-		brw_inst_set_eot(p->devinfo, brw_last_inst, $13.end_of_thread);
-		brw_inst_set_group(p->devinfo, brw_last_inst, $13.chan_offset);
-
-		if ($12.ex_bso) {
-			brw_inst_set_send_ex_bso(p->devinfo, brw_last_inst, 1);
-                        /* Not settings src1 length, as its implied zero. */
 		}
 
 		brw_pop_insn_state(p);
@@ -1210,7 +1158,7 @@ syncinstruction:
 			error(&@2, "sync instruction is supported only on gfx12+\n");
 		}
 
-		if ($5.file == IMM &&
+		if ($5.file == BRW_IMMEDIATE_VALUE &&
 		    $3 != TGL_SYNC_ALLRD &&
 		    $3 != TGL_SYNC_ALLWR) {
 			error(&@2, "Only allrd and allwr support immediate argument\n");
@@ -1333,7 +1281,6 @@ dstoperandex_typed:
 	| notifyreg
 	| performancereg
 	| statereg
-	| scalarreg
 	;
 
 dstreg:
@@ -1482,7 +1429,6 @@ srcarcoperandex_typed:
 	| ipreg
 	| maskreg
 	| statereg
-	| scalarreg
 	;
 
 indirectsrcoperand:
@@ -1557,7 +1503,7 @@ directgenreg:
 	GENREG subregnum
 	{
 		memset(&$$, '\0', sizeof($$));
-		$$.file = FIXED_GRF;
+		$$.file = BRW_GENERAL_REGISTER_FILE;
 		$$.nr = $1 * reg_unit(p->devinfo);
 		$$.subnr = $2;
 	}
@@ -1567,7 +1513,7 @@ indirectgenreg:
 	GENREGFILE LSQUARE addrparam RSQUARE
 	{
 		memset(&$$, '\0', sizeof($$));
-		$$.file = FIXED_GRF;
+		$$.file = BRW_GENERAL_REGISTER_FILE;
 		$$.subnr = $3.subnr;
 		$$.indirect_offset = $3.indirect_offset;
 	}
@@ -1582,7 +1528,7 @@ addrreg:
 			error(&@2, "Address sub register number %d"
 				   "out of range\n", $2);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_ADDRESS;
 		$$.subnr = $2;
 	}
@@ -1598,7 +1544,7 @@ accreg:
 				   " out of range\n", $1);
 
 		memset(&$$, '\0', sizeof($$));
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_ACCUMULATOR;
 		$$.subnr = $2;
 	}
@@ -1618,7 +1564,7 @@ flagreg:
 			error(&@2, "Flag subregister number %d"
 				   " out of range\n", $2);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_FLAG | $1;
 		$$.subnr = $2;
 	}
@@ -1631,7 +1577,7 @@ maskreg:
 			error(&@1, "Mask register number %d"
 				   " out of range\n", $1);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_MASK;
 		$$.subnr = $2;
 	}
@@ -1645,23 +1591,11 @@ notifyreg:
 			error(&@2, "Notification sub register number %d"
 				   " out of range\n", $2);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_NOTIFICATION_COUNT;
 		$$.subnr = $2;
 	}
 	;
-
-scalarreg:
-	SCALARREG subregnum
-	{
-		if ($2 > 31)
-			error(&@2, "Scalar sub register number %d"
-			           " out of range\n", $2);
-
-		$$.file = ARF;
-		$$.nr = BRW_ARF_SCALAR;
-		$$.subnr = $2;
-	}
 
 statereg:
 	STATEREG subregnum
@@ -1674,7 +1608,7 @@ statereg:
 			error(&@2, "State sub register number %d"
 				   " out of range\n", $2);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_STATE;
 		$$.subnr = $2;
 	}
@@ -1687,7 +1621,7 @@ controlreg:
 			error(&@2, "control sub register number %d"
 				   " out of range\n", $2);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_CONTROL;
 		$$.subnr = $2;
 	}
@@ -1708,7 +1642,7 @@ threadcontrolreg:
 			error(&@2, "Thread control sub register number %d"
 				   " out of range\n", $2);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_TDR;
 		$$.subnr = $2;
 	}
@@ -1727,7 +1661,7 @@ performancereg:
 			error(&@2, "Performance sub register number %d"
 				   " out of range\n", $2);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_TIMESTAMP;
 		$$.subnr = $2;
 	}
@@ -1740,7 +1674,7 @@ channelenablereg:
 			error(&@1, "Channel enable register number %d"
 				   " out of range\n", $1);
 
-		$$.file = ARF;
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_MASK;
 		$$.subnr = $2;
 	}
@@ -2114,18 +2048,6 @@ depinfo:
 		$$.regdist = $1;
 		$$.pipe = TGL_PIPE_ALL;
 	}
-	| REG_DIST_MATH
-	{
-		memset(&$$, 0, sizeof($$));
-		$$.regdist = $1;
-		$$.pipe = TGL_PIPE_MATH;
-	}
-	| REG_DIST_SCALAR
-	{
-		memset(&$$, 0, sizeof($$));
-		$$.regdist = $1;
-		$$.pipe = TGL_PIPE_SCALAR;
-	}
 	| SBID_ALLOC
 	{
 		memset(&$$, 0, sizeof($$));
@@ -2162,7 +2084,6 @@ instoption:
 	| EOT 	        { $$.type = INSTOPTION_FLAG; $$.uint_value = EOT; }
 	| SWITCH 	{ $$.type = INSTOPTION_FLAG; $$.uint_value = SWITCH; }
 	| ATOMIC 	{ $$.type = INSTOPTION_FLAG; $$.uint_value = ATOMIC; }
-	| BRANCH_CTRL 	{ $$.type = INSTOPTION_FLAG; $$.uint_value = BRANCH_CTRL; }
 	| CMPTCTRL 	{ $$.type = INSTOPTION_FLAG; $$.uint_value = CMPTCTRL; }
 	| WECTRL 	{ $$.type = INSTOPTION_FLAG; $$.uint_value = WECTRL; }
 	| QTR_2Q 	{ $$.type = INSTOPTION_CHAN_OFFSET; $$.uint_value = 8; }

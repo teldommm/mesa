@@ -6,7 +6,7 @@ Source
 ------
 
 This repository lives at https://gitlab.freedesktop.org/mesa/mesa.
-Other repositories are likely forks, and code found there is not supported. This is a fork of https://github.com/xMeM/mesa
+Other repositories are likely forks, and code found there is not supported.
 
 
 Build & install
@@ -18,9 +18,11 @@ Meson (`docs/meson.rst <https://docs.mesa3d.org/meson.html>`_):
 
 .. code-block:: sh
 
-  $ meson setup build
-  $ ninja -C build/
-  $ sudo ninja -C build/ install
+  $ mkdir build
+  $ cd build
+  $ meson ..
+  $ sudo ninja install
+
 
 Support
 -------

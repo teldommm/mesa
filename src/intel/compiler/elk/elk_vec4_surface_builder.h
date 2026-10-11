@@ -22,7 +22,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_VEC4_SURFACE_BUILDER_H
+#define ELK_VEC4_SURFACE_BUILDER_H
 
 #include "elk_vec4_builder.h"
 
@@ -48,3 +49,5 @@ namespace elk {
                           elk_predicate pred = ELK_PREDICATE_NONE);
    }
 }
+
+#endif

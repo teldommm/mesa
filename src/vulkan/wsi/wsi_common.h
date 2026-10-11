@@ -97,7 +97,7 @@ struct vk_instance;
 
 struct driOptionCache;
 
-#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_METAL + 1)
+#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_HEADLESS + 1)
 
 struct wsi_device {
    /* Allocator for the instance */
@@ -105,8 +105,6 @@ struct wsi_device {
 
    VkPhysicalDevice pdevice;
    VkPhysicalDeviceMemoryProperties memory_props;
-   VkPhysicalDeviceProperties2 properties2;
-   
    uint32_t queue_family_count;
    uint64_t queue_supports_blit;
 
@@ -129,6 +127,7 @@ struct wsi_device {
    uint32_t optimalBufferCopyRowPitchAlignment;
    VkPresentModeKHR override_present_mode;
    bool force_bgra8_unorm_first;
+   /* Wrapper: put RGBA8 first (WRAPPER_SURFACE_FORMAT=rgba8 / Mali) */
    bool force_rgba8_unorm_first;
 
    /* Whether to enable adaptive sync for a swapchain if implemented and
@@ -181,8 +180,8 @@ struct wsi_device {
    } win32;
 
    bool sw;
-   bool forcesync;
 
+   bool wants_ahardware_buffer;
    bool needs_blit;
 
    /* Set to true if the implementation is ok with linear WSI images. */
@@ -208,11 +207,6 @@ struct wsi_device {
     * to be able to synchronize with the WSI present semaphore being unsignalled.
     * This requires VK_KHR_timeline_semaphore. */
    bool khr_present_wait;
-
-   struct {
-      /* Don't use the commit-timing protocol for pacing */
-      bool disable_timestamps;
-   } wayland;
 
    /*
     * This sets the ownership for a WSI memory object:
@@ -250,7 +244,6 @@ struct wsi_device {
    WSI_CB(BeginCommandBuffer);
    WSI_CB(CmdPipelineBarrier);
    WSI_CB(CmdCopyImage);
-   WSI_CB(CmdBlitImage);
    WSI_CB(CmdCopyImageToBuffer);
    WSI_CB(CreateBuffer);
    WSI_CB(CreateCommandPool);
@@ -290,9 +283,11 @@ struct wsi_device {
 #undef WSI_CB
 
     struct wsi_interface *                  wsi[VK_ICD_WSI_PLATFORM_MAX];
-
-    const char *engine_name;
 };
+
+bool
+wsi_init_pthread_cond_monotonic(pthread_cond_t* cond);
+
 
 typedef PFN_vkVoidFunction (VKAPI_PTR *WSI_FN_GetPhysicalDeviceProcAddr)(VkPhysicalDevice physicalDevice, const char* pName);
 
@@ -387,6 +382,33 @@ wsi_device_supports_explicit_sync(struct wsi_device *device);
          warned = true; \
       } \
    } while (0)
+
+int __android_log_print(
+  int prio,
+  const char *tag,
+  const char *fmt,
+  ...
+);
+
+int should_log(void);
+
+void wlog(const char* fmt, ...);
+
+#define LOG_A(...) __android_log_print(6, "VkWrapper", __VA_ARGS__)
+
+#define W_WFORMAT(fmt, ...) fmt " \t (%s:%d)", ## __VA_ARGS__, __FUNCTION__, __LINE__
+
+#define W___WLOG__(LEVEL, fmt, ...) \
+    if (should_log() >= LEVEL) { \
+        wlog(W_WFORMAT(fmt, ## __VA_ARGS__)); \
+        LOG_A(W_WFORMAT(fmt, ## __VA_ARGS__)); \
+    }
+
+#define WSI_LOGT(fmt, ...) W___WLOG__(4, "" fmt, ## __VA_ARGS__)
+#define WSI_LOGA(fmt, ...) W___WLOG__(5, "! " fmt, ## __VA_ARGS__)
+#define WSI_LOGD(fmt, ...) W___WLOG__(3, fmt, ## __VA_ARGS__)
+#define WSI_LOG(fmt, ...)  W___WLOG__(2, fmt, ## __VA_ARGS__)
+#define WSI_LOGE(fmt, ...) W___WLOG__(1, "[ERROR] " fmt, ## __VA_ARGS__)
 
 #ifdef __cplusplus
 }

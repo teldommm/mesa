@@ -12,7 +12,6 @@
 #include "util/macros.h"
 
 #else
-#define PRAGMA_POISON(param)
 #define BITFIELD_BIT(i) (1u << i)
 
 typedef ulong uint64_t;
@@ -47,26 +46,20 @@ typedef struct VkDrawIndirectCommand {
 /**
  * Flags for generated_draws.cl
  */
-enum anv_generated_draw_flags {
-   ANV_GENERATED_FLAG_INDEXED        = BITFIELD_BIT(0),
-   ANV_GENERATED_FLAG_PREDICATED     = BITFIELD_BIT(1),
-   /* Only used on Gfx9, means the pipeline is using gl_DrawID */
-   ANV_GENERATED_FLAG_DRAWID         = BITFIELD_BIT(2),
-   /* Only used on Gfx9, means the pipeline is using gl_BaseVertex or
-    * gl_BaseInstance
-    */
-   ANV_GENERATED_FLAG_BASE           = BITFIELD_BIT(3),
-   /* Whether the count is indirect  */
-   ANV_GENERATED_FLAG_COUNT          = BITFIELD_BIT(4),
-   /* Whether the generation shader writes to the ring buffer */
-   ANV_GENERATED_FLAG_RING_MODE      = BITFIELD_BIT(5),
-   /* Whether TBIMR tile-based rendering shall be enabled. */
-   ANV_GENERATED_FLAG_TBIMR          = BITFIELD_BIT(6),
-   /* Wa_16011107343 */
-   ANV_GENERATED_FLAG_WA_16011107343 = BITFIELD_BIT(7),
-   /* Wa_22018402687 */
-   ANV_GENERATED_FLAG_WA_22018402687 = BITFIELD_BIT(8),
-};
+#define ANV_GENERATED_FLAG_INDEXED    BITFIELD_BIT(0)
+#define ANV_GENERATED_FLAG_PREDICATED BITFIELD_BIT(1)
+/* Only used on Gfx9, means the pipeline is using gl_DrawID */
+#define ANV_GENERATED_FLAG_DRAWID     BITFIELD_BIT(2)
+/* Only used on Gfx9, means the pipeline is using gl_BaseVertex or
+ * gl_BaseInstance
+ */
+#define ANV_GENERATED_FLAG_BASE       BITFIELD_BIT(3)
+/* Whether the count is indirect  */
+#define ANV_GENERATED_FLAG_COUNT      BITFIELD_BIT(4)
+/* Whether the generation shader writes to the ring buffer */
+#define ANV_GENERATED_FLAG_RING_MODE  BITFIELD_BIT(5)
+/* Whether TBIMR tile-based rendering shall be enabled. */
+#define ANV_GENERATED_FLAG_TBIMR      BITFIELD_BIT(6)
 
 /**
  * Flags for query_copy.cl
@@ -126,10 +119,6 @@ void genX(write_draw)(global uint32_t *dst_ptr,
                       bool uses_base,
                       bool uses_draw_id,
                       uint32_t mocs);
-
-void genX(copy_data)(global void *dst_ptr,
-                     global void *src_ptr,
-                     uint32_t size);
 
 #endif /* __OPENCL_VERSION__ */
 

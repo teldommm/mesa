@@ -754,7 +754,7 @@ ADDR_E_RETURNCODE CiLib::HwlComputeSurfaceInfo(
 ****************************************************************************************************
 *   CiLib::HwlFmaskSurfaceInfo
 *   @brief
-*       Entry of CI's ComputeFmaskInfo
+*       Entry of r800's ComputeFmaskInfo
 *   @return
 *       ADDR_E_RETURNCODE
 ****************************************************************************************************

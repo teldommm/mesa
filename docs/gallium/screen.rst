@@ -128,19 +128,21 @@ The integer capabilities:
   buffers.  If not, gallium frontends must upload all data which is not in HW
   resources.  If user-space buffers are supported, the driver must also still
   accept HW resource buffers.
-* ``PIPE_CAP_VERTEX_INPUT_ALIGNMENT``: This CAP describes a HW
-  limitation.
-  If ``PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE```,
-  pipe_vertex_buffer::buffer_offset must always be aligned
-  to 4, and pipe_vertex_buffer::stride must always be aligned to 4,
-  and pipe_vertex_element::src_offset must always be
-  aligned to 4.
-  If ``PIPE_VERTEX_INPUT_ALIGNMENT_ELEMENT``,
-  the sum of
+* ``PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY``: This CAP describes a HW
+  limitation.  If true, pipe_vertex_buffer::buffer_offset must always be aligned
+  to 4.  If false, there are no restrictions on the offset.
+* ``PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY``: This CAP describes a HW
+  limitation.  If true, pipe_vertex_buffer::stride must always be aligned to 4.
+  If false, there are no restrictions on the stride.
+* ``PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY``: This CAP describes
+  a HW limitation.  If true, pipe_vertex_element::src_offset must always be
+  aligned to 4.  If false, there are no restrictions on src_offset.
+* ``PIPE_CAP_VERTEX_ATTRIB_ELEMENT_ALIGNED_ONLY``: This CAP describes
+  a HW limitation.  If true, the sum of
   ``pipe_vertex_element::src_offset + pipe_vertex_buffer::buffer_offset + pipe_vertex_buffer::stride``
   must always be aligned to the component size for the vertex attributes
-  which access that buffer.
-  If ``PIPE_VERTEX_INPUT_ALIGNMENT_NONE``, there are no restrictions on these values.
+  which access that buffer.  If false, there are no restrictions on these values.
+  This CAP cannot be used with any other alignment-requiring CAPs.
 * ``PIPE_CAP_COMPUTE``: Whether the implementation supports the
   compute entry points defined in pipe_context and pipe_screen.
 * ``PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT``: Describes the required
@@ -375,6 +377,9 @@ The integer capabilities:
 * ``PIPE_CAP_CULL_DISTANCE``: Whether the driver supports the
   :ext:`GL_ARB_cull_distance` extension and thus implements proper support for
   culling planes.
+* ``PIPE_CAP_CULL_DISTANCE_NOCOMBINE``: Whether the driver wants to skip
+  running the ``nir_lower_clip_cull_distance_arrays`` pass in order to get
+  VARYING_SLOT_CULL_DIST0 slot variables.
 * ``PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES``: Whether primitive restart is
   supported for patch primitives.
 * ``PIPE_CAP_SHADER_GROUP_VOTE``: Whether the ``VOTE_*`` ops can be used in
@@ -558,8 +563,8 @@ The integer capabilities:
 
 * ``PIPE_CAP_CL_GL_SHARING``: True if driver supports everything required by a frontend implementing the CL extension, and
   also supports importing/exporting all of pipe_texture_target via dma buffers.
-* ``PIPE_CAP_PREFER_COMPUTE_FOR_MULTIMEDIA``: Whether VDPAU and VAAPI
-  should use a compute-based blit instead of pipe_context::blit and compute pipeline for compositing images.
+* ``PIPE_CAP_PREFER_COMPUTE_FOR_MULTIMEDIA``: Whether VDPAU, VAAPI, and
+  OpenMAX should use a compute-based blit instead of pipe_context::blit and compute pipeline for compositing images.
 * ``PIPE_CAP_FRAGMENT_SHADER_INTERLOCK``: True if fragment shader interlock
   functionality is supported.
 * ``PIPE_CAP_ATOMIC_FLOAT_MINMAX``: Atomic float point minimum,
@@ -644,13 +649,6 @@ The integer capabilities:
 * ``PIPE_CAP_HAS_CONST_BW``: Whether the driver only supports non-data-dependent layouts (ie. not bandwidth compressed formats like AFBC, UBWC, etc), or supports ``PIPE_BIND_CONST_BW`` to disable data-dependent layouts on requested resources.
 * ``PIPE_CAP_PERFORMANCE_MONITOR``: Whether GL_AMD_performance_monitor should be exposed.
 * ``PIPE_CAP_TEXTURE_SAMPLER_INDEPENDENT``: Whether sampler views and sampler states are independent objects, meaning both can be freely mixed and matched by the frontend. This isn't required for OpenGL where on the shader level those are the same object. However for proper gallium nine and OpenCL support this is required.
-* ``PIPE_CAP_ASTC_DECODE_MODE``: Whether the driver supports ASTC decode precision. The :ext:`GL_EXT_texture_compression_astc_decode_mode` extension will only get exposed if :ext:`GL_KHR_texture_compression_astc_ldr<GL_KHR_texture_compression_astc_hdr>` is also supported.
-* ``PIPE_CAP_SHADER_SUBGROUP_SIZE``: A fixed subgroup size shader runs on GPU when GLSL GL_KHR_shader_subgroup_* extensions are enabled.
-* ``PIPE_CAP_SHADER_SUBGROUP_SUPPORTED_STAGES``: Bitmask of shader stages which support GL_KHR_shader_subgroup_* intrinsics.
-* ``PIPE_CAP_SHADER_SUBGROUP_SUPPORTED_FEATURES``: Bitmask of shader subgroup features listed in :ext:`GL_KHR_shader_subgroup`.
-* ``PIPE_CAP_SHADER_SUBGROUP_QUAD_ALL_STAGES``: Whether shader subgroup quad operations are supported by shader stages other than fragment shader.
-* ``PIPE_CAP_MULTIVIEW``: Whether multiview rendering of array textures is supported. A return of ``1`` indicates support for OVR_multiview, and ``2`` additionally supports OVR_multiview2. 
-* ``PIPE_CAP_CALL_FINALIZE_NIR_IN_LINKER``: Whether ``pipe_screen::finalize_nir`` can be called in the GLSL linker before the NIR is stored in the shader cache. It's always called again after st/mesa adds code for shader variants. It must be 1 if the driver wants to report compile failures to the GLSL linker. It must be 0 if two consecutive ``finalize_nir`` calls on the same shader can break it, or if ``finalize_nir`` can't handle NIR that isn't fully lowered for the driver, or if ``finalize_nir`` breaks passes that st/mesa runs after it. Setting it to 1 is generally safe for drivers that expose nir_io_has_intrinsics and that don't enable any optional shader variants in st/mesa. Since it's difficult to support, any future refactoring can change it to 0.
 
 
 .. _pipe_capf:
@@ -715,6 +713,10 @@ support different features.
 
 * ``PIPE_SHADER_CAP_MAX_TEMPS``: The maximum number of temporary registers.
 * ``PIPE_SHADER_CAP_CONT_SUPPORTED``: Whether continue is supported.
+* ``PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR``: Whether indirect addressing
+  of the input file is supported.
+* ``PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR``: Whether indirect addressing
+  of the output file is supported.
 * ``PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR``: Whether indirect addressing
   of the temporary file is supported.
 * ``PIPE_SHADER_CAP_INDIRECT_CONST_ADDR``: Whether indirect addressing

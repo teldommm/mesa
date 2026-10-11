@@ -29,7 +29,8 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
-#pragma once
+#ifndef ELK_EU_DEFINES_H
+#define ELK_EU_DEFINES_H
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -1256,3 +1257,5 @@ enum ENUM_PACKED lsc_vect_size {
 };
 
 #define LSC_ONE_ADDR_REG   1
+
+#endif /* ELK_EU_DEFINES_H */

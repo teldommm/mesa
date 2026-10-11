@@ -2,25 +2,23 @@
 # SPDX-License-Identifier: MIT
 
 gen_xml_files = [
-  'gen40.xml',
+  'gen4.xml',
   'gen45.xml',
-  'gen50.xml',
-  'gen60.xml',
-  'gen70.xml',
+  'gen5.xml',
+  'gen6.xml',
+  'gen7.xml',
   'gen75.xml',
-  'gen80.xml',
-  'gen90.xml',
-  'gen110.xml',
-  'gen120.xml',
+  'gen8.xml',
+  'gen9.xml',
+  'gen11.xml',
+  'gen12.xml',
   'gen125.xml',
-  'gen200.xml',
-  'gen300.xml',
+  'gen20.xml',
 ]
 
 gen_xml_rt_files = [
   'gen125_rt.xml',
-  'gen200_rt.xml',
-  'gen300_rt.xml',
+  'gen20_rt.xml',
 ]
 
 gen_pack_header_deps = files('intel_genxml.py', 'util.py')
@@ -104,8 +102,6 @@ endforeach
 
 genX_cl_included_symbols = [
   # instructions
-  '3DSTATE_DS',
-  '3DSTATE_HS',
   '3DSTATE_INDEX_BUFFER',
   '3DSTATE_VERTEX_BUFFERS',
   '3DPRIMITIVE',

@@ -13,14 +13,8 @@
         - src/amd/ci/$GPU_VERSION-fails.txt
         - src/amd/ci/$GPU_VERSION-flakes.txt
         - src/amd/ci/$GPU_VERSION-skips.txt
-        - src/amd/ci/$GPU_VERSION-slow-skips.txt
-        - src/amd/ci/$VK_DRIVER-skips.txt
-        - src/amd/ci/$GALLIUM_DRIVER-skips.txt
-        - src/amd/ci/$DRIVER_NAME-skips.txt
         - src/amd/ci/$PIGLIT_TRACES_FILE
-        - src/amd/ci/$GPU_VERSION-vkd3d-fails.txt
-        - src/amd/ci/$GPU_VERSION-vkd3d-flakes.txt
-        - src/amd/ci/$GPU_VERSION-vkd3d-skips.txt
+        - src/amd/ci/$VKD3D_PROTON_RESULTS-vkd3d.txt
         - src/amd/common/**/*
         - src/amd/llvm/**/*
         - src/amd/registers/**/*
@@ -31,20 +25,6 @@
         - src/gallium/winsys/amdgpu/**/*
         - src/amd/vpelib/**/*
       when: on_success
-
-.radeonsi-manual-rules:
-  stage: amd-postmerge
-  extends: .no-auto-retry
-  rules:
-    - !reference [.test, rules]
-    - !reference [.collabora-farm-manual-rules, rules]
-    - !reference [.gl-manual-rules, rules]
-    - changes:
-        *amd_common_file_list
-      when: manual
-    - changes:
-        *radeonsi_file_list
-      when: manual
 
 .radv-rules:
   stage: amd
@@ -61,7 +41,7 @@
       when: on_success
 
 .radv-manual-rules:
-  stage: amd-postmerge
+  stage: amd
   rules:
     - !reference [.test, rules]
     - !reference [.vulkan-manual-rules, rules]
@@ -94,7 +74,7 @@
     - !reference [.radv-rules, rules]
 
 .radv-valve-manual-rules:
-  stage: amd-postmerge
+  stage: amd
   extends: .no-auto-retry
   rules:
     - !reference [.test, rules]
@@ -119,7 +99,7 @@
       when: on_success
 
 .radeonsi-vaapi-manual-rules:
-  stage: amd-postmerge
+  stage: amd
   rules:
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
@@ -136,7 +116,7 @@
     - !reference [.radeonsi-rules, rules]
 
 .radeonsi-valve-manual-rules:
-  stage: amd-postmerge
+  stage: amd
   rules:
     - !reference [.test, rules]
     - !reference [.valve-farm-manual-rules, rules]
@@ -208,6 +188,7 @@
 # job prefixes: radeonsi (OpenGL), radv (Vulkan), amd (radeonsi+radv)
 .stoney-test:x86_64:
   variables:
+    DEQP_EXPECTED_RENDERER: STONEY
     FLAKES_CHANNEL: "#amd-ci"
 
 .radeonsi-stoney-test:x86_64:
@@ -226,6 +207,7 @@
     - .lava-hp-14-db0003na-grunt:x86_64
     - .radv-collabora-rules
   variables:
+    DEQP_VER: vk
     DRIVER_NAME: radv
     GPU_VERSION: radv-stoney-aco
 
@@ -404,7 +386,7 @@
     - .b2c-test-radv-vk
     - .b2c-deqp-test
   variables:
-    DEQP_SUITE: radv-valve
+    DEQP_VER: vk
 
 ############### vkd3d-proton
 .vkd3d-kabini-valve:
@@ -414,4 +396,4 @@
     - .kabini-test-valve
     - .radv-valve-manual-rules
   variables:
-    GPU_VERSION: radv-kabini
+    VKD3D_PROTON_RESULTS: radv-kabini

@@ -200,7 +200,12 @@ llvmpipe_get_query_result(struct pipe_context *pipe,
          for (unsigned i = 0; i < num_threads; i++) {
             sum += pq->end[i];
          }
-         pq->stats.ps_invocations = sum;
+         /* The FS/PS operates on a block of pixels at a time.  The counter is
+          * incremented per block so we multiply by pixels per block here.
+          * This will not be a pixel-exact result.
+          */
+         pq->stats.ps_invocations =
+            sum * LP_RASTER_BLOCK_SIZE * LP_RASTER_BLOCK_SIZE;
          result->pipeline_statistics = pq->stats;
       }
       break;
@@ -329,6 +334,7 @@ llvmpipe_get_query_result_resource(struct pipe_context *pipe,
             for (unsigned i = 0; i < num_threads; i++) {
                value += pq->end[i];
             }
+            value *= LP_RASTER_BLOCK_SIZE * LP_RASTER_BLOCK_SIZE;
             break;
          case PIPE_STAT_QUERY_HS_INVOCATIONS:
             value = pq->stats.hs_invocations;

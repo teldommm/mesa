@@ -23,10 +23,6 @@
 
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 enum intel_kmd_type {
    INTEL_KMD_TYPE_INVALID = 0,
    INTEL_KMD_TYPE_I915,
@@ -36,7 +32,3 @@ enum intel_kmd_type {
 };
 
 enum intel_kmd_type intel_get_kmd_type(int fd);
-
-#ifdef __cplusplus
-}
-#endif

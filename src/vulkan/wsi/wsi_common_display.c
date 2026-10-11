@@ -176,7 +176,7 @@ struct wsi_display_sync {
 
 static uint64_t fence_sequence;
 
-#ifdef __ANDROID__
+#ifdef __TERMUX__
 static void thread_signal_handler (int signum) {
    pthread_exit (0);
 }
@@ -453,6 +453,7 @@ wsi_GetPhysicalDeviceDisplayPropertiesKHR(VkPhysicalDevice physicalDevice,
                                           uint32_t *pPropertyCount,
                                           VkDisplayPropertiesKHR *pProperties)
 {
+   LOG_A("Inside of wsi_GetPhysicalDeviceDisplayPropertiesKHR");
    VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
    struct wsi_device *wsi_device = pdevice->wsi_device;
    struct wsi_display *wsi =
@@ -1347,7 +1348,7 @@ wsi_display_wait_thread(void *data)
       .events = POLLIN
    };
 
-#if !defined __ANDROID__ && !defined __TERMUX__
+#ifndef __TERMUX__
    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 #endif
    for (;;) {
@@ -1377,7 +1378,7 @@ wsi_display_start_wait_thread(struct wsi_display *wsi)
 static void
 wsi_display_stop_wait_thread(struct wsi_display *wsi)
 {
-#ifdef __ANDROID__
+#ifdef __TERMUX__
    struct sigaction actions;
    memset (&actions, 0, sizeof (actions));
    sigemptyset (&actions.sa_mask);
@@ -1388,7 +1389,7 @@ wsi_display_stop_wait_thread(struct wsi_display *wsi)
 
    mtx_lock(&wsi->wait_mutex);
    if (wsi->wait_thread) {
-#if !defined __ANDROID__ && !defined __TERMUX__
+#ifndef __TERMUX__
       pthread_cancel(wsi->wait_thread);
 #else
       pthread_kill(wsi->wait_thread, SIGUSR2);
@@ -2236,7 +2237,7 @@ udev_event_listener_thread(void *data)
 
    int udev_fd = udev_monitor_get_fd(mon);
 
-#ifndef __ANDROID__
+#ifndef __TERMUX__
    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 #endif
 
@@ -2363,7 +2364,7 @@ wsi_display_finish_wsi(struct wsi_device *wsi_device,
    struct wsi_display *wsi =
       (struct wsi_display *) wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY];
 
-#ifdef __ANDROID__
+#ifdef __TERMUX__
    struct sigaction actions;
    memset (&actions, 0, sizeof (actions));
    sigemptyset (&actions.sa_mask);
@@ -2383,7 +2384,7 @@ wsi_display_finish_wsi(struct wsi_device *wsi_device,
       wsi_display_stop_wait_thread(wsi);
 
       if (wsi->hotplug_thread) {
-#if !defined __ANDROID__ && !defined __TERMUX__
+#ifndef __TERMUX__
          pthread_cancel(wsi->hotplug_thread);
 #else
          pthread_kill(wsi->hotplug_thread, SIGUSR2);
@@ -2861,7 +2862,7 @@ wsi_AcquireXlibDisplayEXT(VkPhysicalDevice physicalDevice,
    if (!crtc)
       return VK_ERROR_INITIALIZATION_FAILED;
 
-#ifdef HAVE_X11_DRM
+#ifdef HAVE_DRI3_MODIFIERS
    xcb_randr_lease_t lease = xcb_generate_id(connection);
    xcb_randr_create_lease_cookie_t cl_c =
       xcb_randr_create_lease(connection, root, lease, 1, 1,

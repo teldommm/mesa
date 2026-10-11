@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#pragma once
+#ifndef ELK_NIR_PRIVATE_H
+#define ELK_NIR_PRIVATE_H
 
 #include "elk_reg.h"
 #include "nir.h"
@@ -19,4 +20,6 @@ enum elk_reg_type elk_type_for_nir_type(const struct intel_device_info *devinfo,
 
 #ifdef __cplusplus
 }
+#endif
+
 #endif

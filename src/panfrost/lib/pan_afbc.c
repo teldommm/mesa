@@ -67,7 +67,7 @@
  */
 
 static enum pipe_format
-unswizzled_format(unsigned arch, enum pipe_format format)
+unswizzled_format(enum pipe_format format)
 {
    switch (format) {
    case PIPE_FORMAT_A8_UNORM:
@@ -84,13 +84,11 @@ unswizzled_format(unsigned arch, enum pipe_format format)
    case PIPE_FORMAT_R8G8B8X8_UNORM:
    case PIPE_FORMAT_B8G8R8A8_UNORM:
    case PIPE_FORMAT_B8G8R8X8_UNORM:
-      return PIPE_FORMAT_R8G8B8A8_UNORM;
    case PIPE_FORMAT_A8R8G8B8_UNORM:
    case PIPE_FORMAT_X8R8G8B8_UNORM:
    case PIPE_FORMAT_X8B8G8R8_UNORM:
    case PIPE_FORMAT_A8B8G8R8_UNORM:
-      /* v7 can only support AFBC for RGB and BGR */
-      return arch == 7 ? format : PIPE_FORMAT_R8G8B8A8_UNORM;
+      return PIPE_FORMAT_R8G8B8A8_UNORM;
 
    case PIPE_FORMAT_B5G6R5_UNORM:
       return PIPE_FORMAT_R5G6B5_UNORM;
@@ -103,11 +101,9 @@ unswizzled_format(unsigned arch, enum pipe_format format)
    case PIPE_FORMAT_B10G10R10X2_UNORM:
       return PIPE_FORMAT_R10G10B10A2_UNORM;
 
+   case PIPE_FORMAT_A4B4G4R4_UNORM:
    case PIPE_FORMAT_B4G4R4A4_UNORM:
       return PIPE_FORMAT_R4G4B4A4_UNORM;
-   case PIPE_FORMAT_A4B4G4R4_UNORM:
-      /* v7 can only support AFBC for RGB and BGR */
-      return arch == 7 ? format : PIPE_FORMAT_R4G4B4A4_UNORM;
 
    default:
       return format;
@@ -144,7 +140,7 @@ panfrost_afbc_format(unsigned arch, enum pipe_format format)
    }
 
    /* We handle swizzling orthogonally to AFBC */
-   format = unswizzled_format(arch, format);
+   format = unswizzled_format(format);
 
    /* clang-format off */
    switch (format) {
@@ -180,26 +176,6 @@ panfrost_afbc_can_ytr(enum pipe_format format)
 
    /* The fourth channel if it exists doesn't matter */
    return desc->colorspace == UTIL_FORMAT_COLORSPACE_RGB;
-}
-
-bool
-panfrost_afbc_can_split(unsigned arch, enum pipe_format format,
-                        uint64_t modifier)
-{
-   unsigned block_width = panfrost_afbc_superblock_width(modifier);
-
-   if (arch < 6)
-      return false;
-
-   if (block_width == 16) {
-      return true;
-   } else if (block_width == 32) {
-      enum pan_afbc_mode mode = panfrost_afbc_format(arch, format);
-      return (mode == PAN_AFBC_MODE_R8G8B8A8 ||
-              mode == PAN_AFBC_MODE_R10G10B10A2);
-   }
-
-   return false;
 }
 
 /* Only support packing for RGB formats for now. */

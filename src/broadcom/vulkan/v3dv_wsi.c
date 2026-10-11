@@ -41,15 +41,7 @@ v3dv_wsi_can_present_on_device(VkPhysicalDevice _pdevice, int fd)
 {
    V3DV_FROM_HANDLE(v3dv_physical_device, pdevice, _pdevice);
    assert(pdevice->display_fd != -1);
-   assert(pdevice->render_fd != -1);
-
-   /* v3dv handles presentation by allocating wsi buffers in the display
-    * device, so both render and display devices can match here.
-    * In particular, this callback receives the render device when
-    * running in an XWayland environment.
-    */
-   return wsi_common_drm_devices_equal(fd, pdevice->display_fd) ||
-          wsi_common_drm_devices_equal(fd, pdevice->render_fd);
+   return wsi_common_drm_devices_equal(fd, pdevice->display_fd);
 }
 
 

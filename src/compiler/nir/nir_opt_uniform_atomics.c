@@ -33,11 +33,51 @@
  *    res = atomicAdd(addr, tmp);
  * res = subgroupBroadcastFirst(res) + subgroupExclusiveAdd(1);
  *
- * This pass requires divergence information.
+ * This pass requires and preserves LCSSA and divergence information.
  */
 
 #include "nir/nir.h"
 #include "nir/nir_builder.h"
+
+static nir_op
+atomic_op_to_alu(nir_atomic_op op)
+{
+   switch (op) {
+   case nir_atomic_op_iadd:
+      return nir_op_iadd;
+   case nir_atomic_op_imin:
+      return nir_op_imin;
+   case nir_atomic_op_umin:
+      return nir_op_umin;
+   case nir_atomic_op_imax:
+      return nir_op_imax;
+   case nir_atomic_op_umax:
+      return nir_op_umax;
+   case nir_atomic_op_iand:
+      return nir_op_iand;
+   case nir_atomic_op_ior:
+      return nir_op_ior;
+   case nir_atomic_op_ixor:
+      return nir_op_ixor;
+   case nir_atomic_op_fadd:
+      return nir_op_fadd;
+   case nir_atomic_op_fmin:
+      return nir_op_fmin;
+   case nir_atomic_op_fmax:
+      return nir_op_fmax;
+
+   /* We don't handle exchanges or wraps */
+   case nir_atomic_op_xchg:
+   case nir_atomic_op_cmpxchg:
+   case nir_atomic_op_fcmpxchg:
+   case nir_atomic_op_inc_wrap:
+   case nir_atomic_op_dec_wrap:
+   case nir_atomic_op_ordered_add_gfx12_amd:
+      return nir_num_opcodes;
+   }
+
+   unreachable("Unknown atomic op");
+}
 
 static nir_op
 parse_atomic_op(nir_intrinsic_instr *intr, unsigned *offset_src,
@@ -48,26 +88,26 @@ parse_atomic_op(nir_intrinsic_instr *intr, unsigned *offset_src,
       *offset_src = 1;
       *data_src = 2;
       *offset2_src = *offset_src;
-      return nir_atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
+      return atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
    case nir_intrinsic_shared_atomic:
    case nir_intrinsic_global_atomic:
    case nir_intrinsic_deref_atomic:
       *offset_src = 0;
       *data_src = 1;
       *offset2_src = *offset_src;
-      return nir_atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
+      return atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
    case nir_intrinsic_global_atomic_amd:
       *offset_src = 0;
       *data_src = 1;
       *offset2_src = 2;
-      return nir_atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
+      return atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
    case nir_intrinsic_image_deref_atomic:
    case nir_intrinsic_image_atomic:
    case nir_intrinsic_bindless_image_atomic:
       *offset_src = 1;
       *data_src = 3;
       *offset2_src = *offset_src;
-      return nir_atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
+      return atomic_op_to_alu(nir_intrinsic_atomic_op(intr));
 
    default:
       return nir_num_opcodes;
@@ -213,12 +253,12 @@ optimize_atomic(nir_builder *b, nir_intrinsic_instr *intrin, bool return_prev)
    nir_def *data = intrin->src[data_src].ssa;
 
    /* Separate uniform reduction and scan is faster than doing a combined scan+reduce */
-   bool combined_scan_reduce = return_prev &&
-                               nir_src_is_divergent(&intrin->src[data_src]);
+   bool combined_scan_reduce = return_prev && data->divergent;
    nir_def *reduce = NULL, *scan = NULL;
    reduce_data(b, op, data, &reduce, combined_scan_reduce ? &scan : NULL);
 
    nir_src_rewrite(&intrin->src[data_src], reduce);
+   nir_update_instr_divergence(b->shader, &intrin->instr);
 
    nir_def *cond = nir_elect(b, 1);
 
@@ -247,15 +287,15 @@ optimize_atomic(nir_builder *b, nir_intrinsic_instr *intrin, bool return_prev)
 }
 
 static void
-optimize_and_rewrite_atomic(nir_builder *b, nir_intrinsic_instr *intrin,
-                            bool fs_atomics_predicated)
+optimize_and_rewrite_atomic(nir_builder *b, nir_intrinsic_instr *intrin)
 {
    nir_if *helper_nif = NULL;
-   if (b->shader->info.stage == MESA_SHADER_FRAGMENT && !fs_atomics_predicated) {
+   if (b->shader->info.stage == MESA_SHADER_FRAGMENT) {
       nir_def *helper = nir_is_helper_invocation(b, 1);
       helper_nif = nir_push_if(b, nir_inot(b, helper));
    }
 
+   ASSERTED bool original_result_divergent = intrin->def.divergent;
    bool return_prev = !nir_def_is_unused(&intrin->def);
 
    nir_def old_result = intrin->def;
@@ -274,19 +314,17 @@ optimize_and_rewrite_atomic(nir_builder *b, nir_intrinsic_instr *intrin,
    }
 
    if (result) {
-      /* It's possible the result is used as source for another atomic,
-       * so this needs to be correct.
-       */
-      result->divergent = old_result.divergent;
+      assert(result->divergent == original_result_divergent);
       nir_def_rewrite_uses(&old_result, result);
    }
 }
 
 static bool
-opt_uniform_atomics(nir_function_impl *impl, bool fs_atomics_predicated)
+opt_uniform_atomics(nir_function_impl *impl)
 {
    bool progress = false;
    nir_builder b = nir_builder_create(impl);
+   b.update_divergence = true;
 
    nir_foreach_block(block, impl) {
       nir_foreach_instr_safe(instr, block) {
@@ -299,16 +337,16 @@ opt_uniform_atomics(nir_function_impl *impl, bool fs_atomics_predicated)
              nir_num_opcodes)
             continue;
 
-         if (nir_src_is_divergent(&intrin->src[offset_src]))
+         if (nir_src_is_divergent(intrin->src[offset_src]))
             continue;
-         if (nir_src_is_divergent(&intrin->src[offset2_src]))
+         if (nir_src_is_divergent(intrin->src[offset2_src]))
             continue;
 
          if (is_atomic_already_optimized(b.shader, intrin))
             continue;
 
          b.cursor = nir_before_instr(instr);
-         optimize_and_rewrite_atomic(&b, intrin, fs_atomics_predicated);
+         optimize_and_rewrite_atomic(&b, intrin);
          progress = true;
       }
    }
@@ -317,7 +355,7 @@ opt_uniform_atomics(nir_function_impl *impl, bool fs_atomics_predicated)
 }
 
 bool
-nir_opt_uniform_atomics(nir_shader *shader, bool fs_atomics_predicated)
+nir_opt_uniform_atomics(nir_shader *shader)
 {
    bool progress = false;
 
@@ -331,9 +369,7 @@ nir_opt_uniform_atomics(nir_shader *shader, bool fs_atomics_predicated)
       return false;
 
    nir_foreach_function_impl(impl, shader) {
-      nir_metadata_require(impl, nir_metadata_block_index);
-
-      if (opt_uniform_atomics(impl, fs_atomics_predicated)) {
+      if (opt_uniform_atomics(impl)) {
          progress = true;
          nir_metadata_preserve(impl, nir_metadata_none);
       } else {

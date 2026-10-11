@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef BRW_KERNEL_H
+#define BRW_KERNEL_H
 
 #include "brw_compiler.h"
 
@@ -73,3 +74,5 @@ brw_nir_from_spirv(void *mem_ctx, unsigned gfx_version,
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
+#endif /* BRW_KERNEL_H */

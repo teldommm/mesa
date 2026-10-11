@@ -1519,6 +1519,12 @@ ntt_emit_alu(struct ntt_compile *c, nir_alu_instr *instr)
       [nir_op_fsign] = { TGSI_OPCODE_SSG, TGSI_OPCODE_DSSG },
       [nir_op_isign] = { TGSI_OPCODE_ISSG, TGSI_OPCODE_I64SSG },
       [nir_op_ftrunc] = { TGSI_OPCODE_TRUNC, TGSI_OPCODE_DTRUNC },
+      [nir_op_fddx] = { TGSI_OPCODE_DDX },
+      [nir_op_fddy] = { TGSI_OPCODE_DDY },
+      [nir_op_fddx_coarse] = { TGSI_OPCODE_DDX },
+      [nir_op_fddy_coarse] = { TGSI_OPCODE_DDY },
+      [nir_op_fddx_fine] = { TGSI_OPCODE_DDX_FINE },
+      [nir_op_fddy_fine] = { TGSI_OPCODE_DDY_FINE },
       [nir_op_pack_half_2x16] = { TGSI_OPCODE_PK2H },
       [nir_op_unpack_half_2x16] = { TGSI_OPCODE_UP2H },
       [nir_op_ibitfield_extract] = { TGSI_OPCODE_IBFE },
@@ -2593,21 +2599,6 @@ ntt_emit_intrinsic(struct ntt_compile *c, nir_intrinsic_instr *instr)
       ntt_READ_INVOC(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]), ntt_get_src(c, instr->src[1]));
       return;
 
-   case nir_intrinsic_ddx:
-   case nir_intrinsic_ddx_coarse:
-      ntt_DDX(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
-      return;
-   case nir_intrinsic_ddx_fine:
-      ntt_DDX_FINE(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
-      return;
-   case nir_intrinsic_ddy:
-   case nir_intrinsic_ddy_coarse:
-      ntt_DDY(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
-      return;
-   case nir_intrinsic_ddy_fine:
-      ntt_DDY_FINE(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
-      return;
-
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_ssbo_atomic:
@@ -3265,15 +3256,13 @@ ntt_should_vectorize_instr(const nir_instr *instr, const void *data)
    return 4;
 }
 
-/* TODO: These parameters are wrong. */
 static bool
 ntt_should_vectorize_io(unsigned align, unsigned bit_size,
                         unsigned num_components, unsigned high_offset,
-                        unsigned hole_size,
                         nir_intrinsic_instr *low, nir_intrinsic_instr *high,
                         void *data)
 {
-   if (bit_size != 32 || hole_size || !nir_num_components_valid(num_components))
+   if (bit_size != 32)
       return false;
 
    /* Our offset alignment should aways be at least 4 bytes */
@@ -3297,11 +3286,13 @@ ntt_no_indirects_mask(nir_shader *s, struct pipe_screen *screen)
    unsigned pipe_stage = pipe_shader_type_from_mesa(s->info.stage);
    unsigned indirect_mask = 0;
 
-   if (!(s->options->support_indirect_inputs & BITFIELD_BIT(pipe_stage))) {
+   if (!screen->get_shader_param(screen, pipe_stage,
+                                 PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR)) {
       indirect_mask |= nir_var_shader_in;
    }
 
-   if (!(s->options->support_indirect_outputs & BITFIELD_BIT(pipe_stage))) {
+   if (!screen->get_shader_param(screen, pipe_stage,
+                                 PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR)) {
       indirect_mask |= nir_var_shader_out;
    }
 
@@ -3918,7 +3909,7 @@ const void *nir_to_tgsi_options(struct nir_shader *s,
    }
 
    NIR_PASS_V(s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
-              type_size, nir_lower_io_use_interpolated_input_intrinsics);
+              type_size, (nir_lower_io_options)0);
 
    nir_to_tgsi_lower_txp(s);
    NIR_PASS_V(s, nir_to_tgsi_lower_tex);
@@ -4079,6 +4070,7 @@ static const nir_shader_compiler_options nir_to_tgsi_compiler_options = {
    .lower_usub_sat = true,
    .lower_vector_cmp = true,
    .lower_int64_options = nir_lower_imul_2x32_64,
+   .use_interpolated_input_intrinsics = true,
 
    /* TGSI doesn't have a semantic for local or global index, just local and
     * workgroup id.

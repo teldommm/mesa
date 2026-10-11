@@ -1,6 +1,24 @@
 /*
- * Copyright © 2013 Rob Clark <robclark@freedesktop.org>
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -24,6 +42,11 @@ struct ir3_ra_reg_set;
 struct ir3_shader;
 
 struct ir3_compiler_options {
+   /* If true, UBO/SSBO accesses are assumed to be bounds-checked as defined by
+    * VK_EXT_robustness2 and optimizations may have to be more conservative.
+    */
+   bool robust_buffer_access2;
+
    /* If true, promote UBOs (except for constant data) to constants using ldc.k
     * in the preamble. The driver should ignore everything in ubo_state except
     * for the constant data UBO, which is excluded because the command pushing
@@ -47,10 +70,10 @@ struct ir3_compiler_options {
    /* True if 8-bit descriptors are available. */
    bool storage_8bit;
 
-   /* If base_vertex should be lowered in nir */
-   bool lower_base_vertex;
+  /* If base_vertex should be lowered in nir */
+  bool lower_base_vertex;
 
-   bool shared_push_consts;
+  bool shared_push_consts;
 
    /* "dual_color_blend_by_location" workaround is enabled: */
    bool dual_color_blend_by_location;
@@ -199,14 +222,6 @@ struct ir3_compiler {
     */
    bool has_getfiberid;
 
-   /* True if the shfl instruction is supported. Needed for subgroup rotate and
-    * (more efficient) shuffle.
-    */
-   bool has_shfl;
-
-   /* True if the bitwise triops (sh[lr][gm]/andg) are supported. */
-   bool has_bitwise_triops;
-
    /* Number of available predicate registers (p0.c) */
    uint32_t num_predicates;
 
@@ -218,15 +233,12 @@ struct ir3_compiler {
 
    /* True if predt/predf/prede are supported. */
    bool has_predication;
-   bool predtf_nop_quirk;
-   bool prede_nop_quirk;
 
    /* MAX_COMPUTE_VARIABLE_GROUP_INVOCATIONS_ARB */
    uint32_t max_variable_workgroup_size;
 
    bool has_dp2acc;
    bool has_dp4acc;
-   bool has_compliant_dp4acc;
 
    /* Type to use for 1b nir bools: */
    type_t bool_type;
@@ -278,11 +290,6 @@ struct ir3_compiler {
     * whether the shader can use early preamble in ir3.
     */
    bool has_early_preamble;
-
-   /* True if (rptN) is supported for bary.f. */
-   bool has_rpt_bary_f;
-
-   bool reading_shading_rate_requires_smask_quirk;
 };
 
 void ir3_compiler_destroy(struct ir3_compiler *compiler);
@@ -337,11 +344,13 @@ enum ir3_shader_debug {
    IR3_DBG_FULLNOP = BITFIELD_BIT(16),
    IR3_DBG_NOEARLYPREAMBLE = BITFIELD_BIT(17),
    IR3_DBG_NODESCPREFETCH = BITFIELD_BIT(18),
-   IR3_DBG_EXPANDRPT = BITFIELD_BIT(19),
 
    /* MESA_DEBUG-only options: */
    IR3_DBG_SCHEDMSGS = BITFIELD_BIT(20),
    IR3_DBG_RAMSGS = BITFIELD_BIT(21),
+
+   /* Only used for the disk-caching logic: */
+   IR3_DBG_ROBUST_UBO_ACCESS = BITFIELD_BIT(30),
 };
 
 extern enum ir3_shader_debug ir3_shader_debug;
@@ -383,21 +392,6 @@ ir3_debug_print(struct ir3 *ir, const char *when)
       mesa_logi("%s:", when);
       ir3_print(ir);
    }
-}
-
-/* Return the debug flags that influence shader codegen and should be included
- * in the hash key. Note that we use a deny list so that we don't accidentally
- * forget to include new flags.
- */
-static inline enum ir3_shader_debug
-ir3_shader_debug_hash_key()
-{
-   return (enum ir3_shader_debug)(
-      ir3_shader_debug &
-      ~(IR3_DBG_SHADER_VS | IR3_DBG_SHADER_TCS | IR3_DBG_SHADER_TES |
-        IR3_DBG_SHADER_GS | IR3_DBG_SHADER_FS | IR3_DBG_SHADER_CS |
-        IR3_DBG_DISASM | IR3_DBG_OPTMSGS | IR3_DBG_NOCACHE |
-        IR3_DBG_SHADER_INTERNAL | IR3_DBG_SCHEDMSGS | IR3_DBG_RAMSGS));
 }
 
 ENDC;

@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#pragma once
+#ifndef BRW_ASM_INTERNAL_H
+#define BRW_ASM_INTERNAL_H
 
 /* Assembler internal state and definitions used by the brw_gram/brw_lex. */
 
@@ -65,7 +66,6 @@ struct options {
    unsigned access_mode:1;
    unsigned compression_control:2;
    unsigned thread_control:2;
-   unsigned branch_control:1;
    unsigned no_dd_check:1; // Dependency control
    unsigned no_dd_clear:1; // Dependency control
    unsigned mask_control:1;
@@ -101,3 +101,6 @@ struct target_label {
    char *name;
    int offset;
 };
+
+#endif /* BRW_ASM_H */
+

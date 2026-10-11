@@ -25,8 +25,8 @@ ColumnLimit: 0
 PenaltyBreakBeforeFirstCallParameter: 1
 PenaltyExcessCharacter: 100
 
-ContinuationIndentWidth: 3
-IndentWidth: 3
+ContinuationIndentWidth: 4
+IndentWidth: 4
 UseTab: Never
 
 Cpp11BracedListStyle: true
@@ -153,9 +153,6 @@ ForEachMacros:
 
   - nir_foreach_function_impl
 
-  - nir_foreach_entrypoint
-  - nir_foreach_entrypoint_safe
-
   - nir_foreach_block_unstructured
   - nir_foreach_block_unstructured_safe
 
@@ -165,9 +162,6 @@ ForEachMacros:
   - nir_foreach_block_reverse
   - nir_foreach_block_reverse_safe
   - nir_foreach_block_safe
-
-  - nir_precomp_foreach_arg
-  - nir_precomp_foreach_variant_param
 
 # egl
   - egl_relax
@@ -192,8 +186,6 @@ ForEachMacros:
 # asahi
   - foreach_active
   - foreach_submitted
-  - hk_foreach_view
-  - hk_foreach_variant
   - AGX_BATCH_FOREACH_BO_HANDLE
   - agx_pack
   - agx_push
@@ -281,9 +273,61 @@ ForEachMacros:
   - perf_time_ctx
   - foreach_submit
   - foreach_submit_safe
-  - foreach_instr_rpt
-  - foreach_instr_rpt_excl
-  - foreach_instr_rpt_excl_safe
+
+# panfrost
+  - foreach_batch
+  - pan_pack
+  - pan_section_pack
+  - bi_foreach_block
+  - bi_foreach_block_from
+  - bi_foreach_block_from_rev
+  - bi_foreach_block_rev
+  - bi_foreach_clause_in_block
+  - bi_foreach_clause_in_block_from
+  - bi_foreach_clause_in_block_from_rev
+  - bi_foreach_clause_in_block_rev
+  - bi_foreach_clause_in_block_safe
+  - bi_foreach_dest
+  - bi_foreach_instr_and_src_in_tuple
+  - bi_foreach_instr_global
+  - bi_foreach_instr_global_rev
+  - bi_foreach_instr_global_rev_safe
+  - bi_foreach_instr_global_safe
+  - bi_foreach_instr_in_block
+  - bi_foreach_instr_in_block_from
+  - bi_foreach_instr_in_block_from_rev
+  - bi_foreach_instr_in_block_rev
+  - bi_foreach_instr_in_block_safe
+  - bi_foreach_instr_in_block_safe_rev
+  - bi_foreach_instr_in_clause
+  - bi_foreach_instr_in_clause_rev
+  - bi_foreach_instr_in_tuple
+  - bi_foreach_predecessor
+  - bi_foreach_src
+  - bi_foreach_ssa_src
+  - bi_foreach_successor
+  - cs_emit
+  - mir_foreach_block
+  - mir_foreach_block_from
+  - mir_foreach_bundle_in_block
+  - mir_foreach_bundle_in_block_rev
+  - mir_foreach_instr_global
+  - mir_foreach_instr_global_safe
+  - mir_foreach_instr_in_block
+  - mir_foreach_instr_in_block_from
+  - mir_foreach_instr_in_block_from_rev
+  - mir_foreach_instr_in_block_rev
+  - mir_foreach_instr_in_block_safe
+  - mir_foreach_instr_in_block_safe_rev
+  - mir_foreach_instr_in_block_scheduled_rev
+  - mir_foreach_predecessor
+  - mir_foreach_src
+  - nodearray_dense_foreach
+  - nodearray_dense_foreach_64
+  - nodearray_sparse_foreach
+  - pan_foreach_instr_in_block_rev
+  - pan_foreach_predecessor
+  - pan_foreach_successor
 
 # Disable clang formatting by default. Drivers that use clang-format
 # inherit from this .clang-format file and re-enable formatting:

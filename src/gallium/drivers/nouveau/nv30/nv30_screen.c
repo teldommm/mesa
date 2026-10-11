@@ -97,11 +97,12 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TEXCOORD:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
    case PIPE_CAP_CLEAR_SCISSORED:
+   case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
+   case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
+   case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
    case PIPE_CAP_QUERY_MEMORY_INFO:
       return 1;
-   case PIPE_CAP_VERTEX_INPUT_ALIGNMENT:
-      return PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE;
    case PIPE_CAP_TEXTURE_TRANSFER_MODES:
       return PIPE_TEXTURE_TRANSFER_BLIT;
    /* nv35 capabilities */
@@ -200,6 +201,10 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
    case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
+   case PIPE_CAP_PCI_GROUP:
+   case PIPE_CAP_PCI_BUS:
+   case PIPE_CAP_PCI_DEVICE:
+   case PIPE_CAP_PCI_FUNCTION:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
    case PIPE_CAP_CULL_DISTANCE:
@@ -248,23 +253,20 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
       return 0;
 
-   case PIPE_CAP_PCI_GROUP:
-      return dev->info.pci.domain;
-   case PIPE_CAP_PCI_BUS:
-      return dev->info.pci.bus;
-   case PIPE_CAP_PCI_DEVICE:
-      return dev->info.pci.dev;
-   case PIPE_CAP_PCI_FUNCTION:
-      return dev->info.pci.func;
-
    case PIPE_CAP_MAX_GS_INVOCATIONS:
       return 32;
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT:
       return 1 << 27;
    case PIPE_CAP_VENDOR_ID:
       return 0x10de;
-   case PIPE_CAP_DEVICE_ID:
-      return dev->info.device_id;
+   case PIPE_CAP_DEVICE_ID: {
+      uint64_t device_id;
+      if (nouveau_getparam(dev, NOUVEAU_GETPARAM_PCI_DEVICE, &device_id)) {
+         NOUVEAU_ERR("NOUVEAU_GETPARAM_PCI_DEVICE failed.\n");
+         return -1;
+      }
+      return device_id;
+   }
    case PIPE_CAP_ACCELERATED:
       return 1;
    case PIPE_CAP_VIDEO_MEMORY:
@@ -344,6 +346,8 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
          return 0;
       case PIPE_SHADER_CAP_CONT_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
+      case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+      case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       case PIPE_SHADER_CAP_SUBROUTINES:
@@ -391,6 +395,8 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
          return 16;
       case PIPE_SHADER_CAP_CONT_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
+      case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+      case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       case PIPE_SHADER_CAP_SUBROUTINES:
@@ -476,6 +482,8 @@ static const nir_shader_compiler_options nv30_base_compiler_options = {
    .force_indirect_unrolling_sampler = true,
    .max_unroll_iterations = 32,
    .no_integers = true,
+
+   .use_interpolated_input_intrinsics = true,
 };
 
 static const void *
@@ -528,7 +536,7 @@ nv30_screen_destroy(struct pipe_screen *pscreen)
 {
    struct nv30_screen *screen = nv30_screen(pscreen);
 
-   if (!screen->base.initialized)
+   if (!nouveau_drm_screen_unref(&screen->base))
       return;
 
    nouveau_bo_ref(NULL, &screen->notify);

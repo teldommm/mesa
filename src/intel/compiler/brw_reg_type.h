@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef BRW_REG_TYPE_H
+#define BRW_REG_TYPE_H
 
 #include <stdbool.h>
 
@@ -192,4 +193,6 @@ brw_reg_type_to_letters(enum brw_reg_type type);
 
 #ifdef __cplusplus
 }
+#endif
+
 #endif

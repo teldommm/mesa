@@ -78,7 +78,6 @@ enum radeon_micro_mode
 #define RADEON_SURF_NO_STENCIL_ADJUST     (1ull << 35)
 #define RADEON_SURF_PREFER_4K_ALIGNMENT   (1ull << 36)
 #define RADEON_SURF_PREFER_64K_ALIGNMENT  (1ull << 37)
-#define RADEON_SURF_VIDEO_REFERENCE       (1ull << 38)
 
 enum radeon_enc_hevc_surface_alignment
 {
@@ -154,7 +153,7 @@ enum gfx9_resource_type
 
 struct gfx9_surf_meta_flags {
    uint8_t rb_aligned : 1;   /* optimal for RBs */
-   uint8_t pipe_aligned : 1; /* optimal for L2 */
+   uint8_t pipe_aligned : 1; /* optimal for TC */
    uint8_t independent_64B_blocks : 1;
    uint8_t independent_128B_blocks : 1;
    uint8_t max_compressed_block_size : 2;
@@ -455,9 +454,7 @@ int ac_compute_surface(struct ac_addrlib *addrlib, const struct radeon_info *inf
 void ac_surface_zero_dcc_fields(struct radeon_surf *surf);
 unsigned ac_pipe_config_to_num_pipes(unsigned pipe_config);
 
-#define AC_SURF_METADATA_FLAG_EXTRA_MD_BIT         0
-#define AC_SURF_METADATA_FLAG_FAMILY_OVERRIDEN_BIT 1
-void ac_surface_apply_bo_metadata(enum amd_gfx_level gfx_level, struct radeon_surf *surf,
+void ac_surface_apply_bo_metadata(const struct radeon_info *info, struct radeon_surf *surf,
                                   uint64_t tiling_flags, enum radeon_surf_mode *mode);
 void ac_surface_compute_bo_metadata(const struct radeon_info *info, struct radeon_surf *surf,
                                     uint64_t *tiling_flags);

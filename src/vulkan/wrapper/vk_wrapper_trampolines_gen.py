@@ -33,6 +33,7 @@ from mako.template import Template
 # Mesa-local imports must be declared in meson variable
 # '{file_without_suffix}_depend_files'.
 from vk_entrypoints import get_entrypoints_from_xml
+import vk_entrypoints
 
 TEMPLATE_H = Template(COPYRIGHT + """\
 /* This file generated from ${filename}, don't edit directly. */
@@ -41,6 +42,7 @@ TEMPLATE_H = Template(COPYRIGHT + """\
 #define WRAPPER_TRAMPOLINES_H
 
 #include "vk_dispatch_table.h"
+#include "wrapper_checks.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +50,68 @@ extern "C" {
 
 extern struct vk_physical_device_entrypoint_table wrapper_physical_device_trampolines;
 extern struct vk_device_entrypoint_table wrapper_device_trampolines;
+
+struct wrapper_entry_masks {
+    uint64_t f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15;
+};
+
+extern struct wrapper_entry_masks wrapper_printer_masks;
+
+_Atomic extern int __wrapper_commands;
+
+% for e in entrypoints:
+% if e.alias:
+<% continue %>
+% endif
+% if e.guard is not None:
+#ifdef ${e.guard}
+% endif
+#define VK_ID_${e.name} ${e.id}
+#define IS_VK_ID_${e.name}_ON(masks) (((masks).f${e.id // 64} & (1ULL << (${e.id % 64}))) != 0)
+#define SET_VK_ID_${e.name}_ON(masks) (masks).f${e.id // 64} |= (1ULL << (${e.id % 64}))
+#define VK_ID_${e.name}_BIT (1ULL << (${e.id % 64}))
+#define VK_ID_${e.name}_IDX (${e.id // 64})
+
+#define PRINT_${e.name} IS_VK_ID_${e.name}_ON(wrapper_printer_masks)
+#define TRY_${e.name}(TRUE, FALSE) TRUE
+#define has_device_wrapper_${e.name}(...) (wrapper_device_entrypoints.${e.name})
+#define has_physical_device_wrapper_${e.name}(...) (wrapper_physical_device_entrypoints.${e.name})
+#define name_of_wrapper_${e.name}(...) "wrapper_${e.name}"
+
+#define WRAPPED_${e.name} ${"\\n".join([line + " \\\\" for line in e.wrap().split("\\n")])}
+
+#define RETURN_${e.name} VKAPI_ATTR ${e.return_type} VKAPI_CALL
+#define WRAPPER_NAME_${e.name}(...) ${e.name}
+#define WRAPPER_${e.name}(...) \\\\\n
+static RETURN_${e.name} __wrapper_${e.name}(__VA_ARGS__); \\\\\n
+WRAPPED_${e.name} \\\\\n
+static RETURN_${e.name} __wrapper_${e.name}(__VA_ARGS__)
+
+void print_input_params_${e.name}(${e.decl_params()}, int cmd_id);
+void print_output_params_${e.name}(${e.decl_params()},${' VkResult result,' if e.return_type == 'VkResult' else ''} int cmd_id);
+
+% if e.guard is not None:
+#else
+#define TRY_${e.name}(TRUE, FALSE) FALSE
+#endif
+% endif
+% endfor
+
+#define NOOP
+
+#define UNROLL_ENTRY_POINTS(FUNC) \\
+% for e in entrypoints:
+% if e.alias:
+<% continue %>
+% endif
+TRY_${e.name}(FUNC(${e.name}), NOOP); \\
+% endfor
+
+#define VK_ALLOC2(device, type, size) (device ? \
+    ((type *) vk_zalloc(&((struct wrapper_device*) device)->vk.alloc, size, alignof(type), VK_SYSTEM_ALLOCATION_SCOPE_COMMAND)) : \
+    ((type *) malloc(size)) )
+
+#define VK_ALLOC(device, type) VK_ALLOC2(device, type, sizeof(type))
 
 #ifdef __cplusplus
 }
@@ -61,7 +125,23 @@ TEMPLATE_C = Template(COPYRIGHT + """\
 
 #include "wrapper_private.h"
 #include "wrapper_trampolines.h"
+#include "vk_unwrappers.h"
+#include "vk_printers.h"
 
+_Atomic int __wrapper_commands = 0;
+
+#define VK_PRINT_VkAccelerationStructureVersionInfoKHR(...)
+#define VK_PRINT_VkAccelerationStructureBuildGeometryInfoKHR(...)
+#define VK_PRINT_VkCuLaunchInfoNVX(...)
+#define VK_PRINT_VkMicromapBuildInfoEXT(...)
+#define VK_PRINT_VkMicromapVersionInfoEXT(...)
+
+#define VK_LOG_VkAccelerationStructureVersionInfoKHR(...)
+#define VK_LOG_VkAccelerationStructureBuildGeometryInfoKHR(...)
+#define VK_LOG_VkCuLaunchInfoNVX(...)
+#define VK_LOG_VkMicromapBuildInfoEXT(...)
+#define VK_LOG_VkMicromapVersionInfoEXT(...)
+                      
 % for e in entrypoints:
   % if not e.is_physical_device_entrypoint() or e.alias:
     <% continue %>
@@ -69,17 +149,9 @@ TEMPLATE_C = Template(COPYRIGHT + """\
   % if e.guard is not None:
 #ifdef ${e.guard}
   % endif
-static VKAPI_ATTR ${e.return_type} VKAPI_CALL
-${e.prefixed_name('wrapper_tramp')}(${e.decl_params()})
-{
-    <% assert e.params[0].type == 'VkPhysicalDevice' %>
-    VK_FROM_HANDLE(wrapper_physical_device, vk_physical_device, ${e.params[0].name});
-  % if e.return_type == 'void':
-    vk_physical_device->dispatch_table.${e.name}(vk_physical_device->dispatch_handle, ${e.call_params(1)});
-  % else:
-    return vk_physical_device->dispatch_table.${e.name}(vk_physical_device->dispatch_handle, ${e.call_params(1)});
-  % endif
-}
+${e.trampoline()}
+${e.print_input_function()}
+${e.print_output_function()}
   % if e.guard is not None:
 #endif
   % endif
@@ -107,58 +179,9 @@ struct vk_physical_device_entrypoint_table wrapper_physical_device_trampolines =
   % if e.guard is not None:
 #ifdef ${e.guard}
   % endif
-static VKAPI_ATTR ${e.return_type} VKAPI_CALL
-${e.prefixed_name('wrapper_tramp')}(${e.decl_params()})
-{
-  % if e.params[0].type == 'VkDevice':
-    VK_FROM_HANDLE(wrapper_device, vk_device, ${e.params[0].name});
-    % if e.return_type == 'void':
-      % if len(e.params) > 1:
-    vk_device->dispatch_table.${e.name}(vk_device->dispatch_handle, ${e.call_params(1)});
-      % else:
-    vk_device->dispatch_table.${e.name}(vk_device->dispatch_handle);
-      % endif
-    % else:
-      % if len(e.params) > 1:
-    return vk_device->dispatch_table.${e.name}(vk_device->dispatch_handle, ${e.call_params(1)});
-      % else:
-    return vk_device->dispatch_table.${e.name}(vk_device->dispatch_handle);
-      % endif
-    % endif
-  % elif e.params[0].type == 'VkCommandBuffer':
-    VK_FROM_HANDLE(wrapper_command_buffer, wcb, ${e.params[0].name});
-    % if e.return_type == 'void':
-      % if len(e.params) > 1:
-    wcb->device->dispatch_table.${e.name}(wcb->dispatch_handle, ${e.call_params(1)});
-      % else:
-    wcb->device->dispatch_table.${e.name}(wcb->dispatch_handle);
-      % endif
-    % else:
-      % if len(e.params) > 1:
-    return wcb->device->dispatch_table.${e.name}(wcb->dispatch_handle, ${e.call_params(1)});
-      % else:
-    return wcb->device->dispatch_table.${e.name}(wcb->dispatch_handle);
-      % endif
-    % endif
-  % elif e.params[0].type == 'VkQueue':
-    VK_FROM_HANDLE(wrapper_queue, wqueue, ${e.params[0].name});
-    % if e.return_type == 'void':
-      % if len(e.params) > 1:
-    wqueue->device->dispatch_table.${e.name}(wqueue->dispatch_handle, ${e.call_params(1)});
-      % else:
-    wqueue->device->dispatch_table.${e.name}(wqueue->dispatch_handle);
-      % endif
-    % else:
-      % if len(e.params) > 1:
-    return wqueue->device->dispatch_table.${e.name}(wqueue->dispatch_handle, ${e.call_params(1)});
-      % else:
-    return wqueue->device->dispatch_table.${e.name}(wqueue->dispatch_handle);
-      % endif
-    % endif
-  % else:
-    assert(!"Unhandled device child trampoline case: ${e.params[0].type}");
-  % endif
-}
+${e.trampoline()}
+${e.print_input_function()}
+${e.print_output_function()}
   % if e.guard is not None:
 #endif
   % endif
@@ -178,6 +201,10 @@ struct vk_device_entrypoint_table wrapper_device_trampolines = {
   % endif
 % endfor
 };
+
+struct vk_physical_device_dispatch_table wrapper_physical_device_functions = { 0 };
+struct vk_device_dispatch_table wrapper_device_functions = { 0 };
+
 """)
 
 def main():
@@ -203,7 +230,7 @@ def main():
                                           filename=os.path.basename(__file__)))
         if args.out_c:
             with open(args.out_c, 'w', encoding='utf-8') as f:
-                f.write(TEMPLATE_C.render(entrypoints=entrypoints,
+                f.write(TEMPLATE_C.render(entrypoints=entrypoints, 
                                           filename=os.path.basename(__file__)))
     except Exception:
         # In the event there's an error, this imports some helpers from mako

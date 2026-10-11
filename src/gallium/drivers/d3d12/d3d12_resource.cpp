@@ -262,14 +262,6 @@ init_texture(struct d3d12_screen *screen,
        */
    }
 
-   if (templ->bind & PIPE_BIND_VIDEO_DECODE_DPB)
-      desc.Flags |= (D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY |
-                     D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE);
-
-   if (templ->bind & PIPE_BIND_VIDEO_ENCODE_DPB)
-      desc.Flags |= (D3D12_RESOURCE_FLAG_VIDEO_ENCODE_REFERENCE_ONLY |
-                     D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE);
-
    const DXGI_FORMAT *format_cast_list = NULL;
    uint32_t num_castable_formats = 0;
 
@@ -307,7 +299,6 @@ init_texture(struct d3d12_screen *screen,
 
    HRESULT hres = E_FAIL;
    enum d3d12_residency_status init_residency;
-#ifndef _GAMING_XBOX
 
    if (heap && screen->max_feature_level == D3D_FEATURE_LEVEL_1_0_GENERIC) {
       D3D12_FEATURE_DATA_PLACED_RESOURCE_SUPPORT_INFO capData;
@@ -362,9 +353,7 @@ init_texture(struct d3d12_screen *screen,
                                                         format_cast_list,
                                                         IID_PPV_ARGS(&d3d12_res));
       }
-   } else
-#endif
-   {
+   } else {
       if (heap) {
          init_residency = d3d12_permanently_resident;
          hres = screen->dev->CreatePlacedResource(heap,
@@ -689,10 +678,6 @@ d3d12_resource_from_handle(struct pipe_screen *pscreen,
       res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
    if ((incoming_res_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == D3D12_RESOURCE_FLAG_NONE)
       res->base.b.bind |= PIPE_BIND_SAMPLER_VIEW;
-   if (incoming_res_desc.Flags & D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY)
-      res->base.b.bind |= PIPE_BIND_VIDEO_DECODE_DPB;
-   if (incoming_res_desc.Flags & D3D12_RESOURCE_FLAG_VIDEO_ENCODE_REFERENCE_ONLY)
-      res->base.b.bind |= PIPE_BIND_VIDEO_ENCODE_DPB;
 
    if (templ) {
       if (res->base.b.target == PIPE_TEXTURE_2D_ARRAY &&

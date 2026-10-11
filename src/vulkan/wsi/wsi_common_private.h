@@ -40,9 +40,8 @@ struct wsi_swapchain;
 #define WSI_DEBUG_NOSHM       (1ull << 2)
 #define WSI_DEBUG_LINEAR      (1ull << 3)
 #define WSI_DEBUG_DXGI        (1ull << 4)
-#define WSI_DEBUG_NOWLTS      (1ull << 5)
 #define WSI_DEBUG_BLIT        (1ull << 8)
-#define WSI_DEBUG_FORCESYNC   (1ull << 9)
+#define WSI_DEBUG_NOSYNC      (1ull << 9)
 
 extern uint64_t WSI_DEBUG;
 
@@ -50,7 +49,7 @@ enum wsi_image_type {
    WSI_IMAGE_TYPE_CPU,
    WSI_IMAGE_TYPE_DRM,
    WSI_IMAGE_TYPE_DXGI,
-   WSI_IMAGE_TYPE_ANDROID,
+   WSI_IMAGE_TYPE_AHB,
 };
 
 struct wsi_base_image_params {
@@ -127,7 +126,7 @@ enum wsi_explicit_sync_timelines
    WSI_ES_ACQUIRE,
    WSI_ES_RELEASE,
 
-   WSI_ES_COUNT,
+   WSI_ES_COUNT, 
 };
 
 struct wsi_image_explicit_sync_timeline {
@@ -193,7 +192,7 @@ struct wsi_swapchain {
 
    struct wsi_image_info image_info;
    uint32_t image_count;
-
+   
    uint64_t present_serial;
 
    struct {
@@ -253,7 +252,7 @@ wsi_swapchain_init(const struct wsi_device *wsi,
                    const struct wsi_base_image_params *image_params,
                    const VkAllocationCallbacks *pAllocator);
 
-VkPresentModeKHR
+enum VkPresentModeKHR
 wsi_swapchain_get_present_mode(struct wsi_device *wsi,
                                const VkSwapchainCreateInfoKHR *pCreateInfo);
 
@@ -426,11 +425,6 @@ VkResult wsi_win32_init_wsi(struct wsi_device *wsi_device,
                          VkPhysicalDevice physical_device);
 void wsi_win32_finish_wsi(struct wsi_device *wsi_device,
                        const VkAllocationCallbacks *alloc);
-VkResult wsi_metal_init_wsi(struct wsi_device *wsi_device,
-                           const VkAllocationCallbacks *alloc,
-                           VkPhysicalDevice physical_device);
-void wsi_metal_finish_wsi(struct wsi_device *wsi_device,
-                          const VkAllocationCallbacks *alloc);
 
 
 VkResult
@@ -455,17 +449,17 @@ void wsi_headless_finish_wsi(struct wsi_device *wsi_device,
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_swapchain, base, VkSwapchainKHR,
                                VK_OBJECT_TYPE_SWAPCHAIN_KHR)
-
+                               
 enum wsi_swapchain_blit_type
-wsi_get_android_blit_type(const struct wsi_device *wsi,
-                          const struct wsi_base_image_params *params,
-                          VkDevice device);
-
-VkResult wsi_configure_android_image(
+wsi_get_ahardware_buffer_blit_type(const struct wsi_device *wsi,
+                      const struct wsi_base_image_params *params,
+                                   VkDevice device);
+                                   
+VkResult wsi_configure_ahardware_buffer_image(
    const struct wsi_swapchain *chain,
    const VkSwapchainCreateInfoKHR *pCreateInfo,
    const struct wsi_base_image_params *params,
-   struct wsi_image_info *info);
+   struct wsi_image_info *info);                               
 
 #ifdef __cplusplus
 }

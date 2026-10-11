@@ -119,12 +119,12 @@ class FastbootRun:
                 if print_more_lines == -1:
                     print_more_lines = 30
 
-            result = re.search(r"hwci: mesa: (\S*), exit_code: (\d+)", line)
+            result = re.search("hwci: mesa: (\S*)", line)
             if result:
-                status = result.group(1)
-                exit_code = int(result.group(2))
-
-                return exit_code
+                if result.group(1) == "pass":
+                    return 0
+                else:
+                    return 1
 
         self.print_error(
             "Reached the end of the CPU serial log without finding a result, abandoning run.")

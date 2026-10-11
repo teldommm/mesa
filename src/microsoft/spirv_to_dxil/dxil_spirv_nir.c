@@ -36,8 +36,6 @@
 
 static const struct spirv_capabilities
 spirv_caps = {
-   .Shader = true,
-   .Geometry = true,
    .DrawParameters = true,
    .MultiView = true,
    .GroupNonUniform = true,
@@ -74,7 +72,6 @@ spirv_caps = {
    .StorageTexelBufferArrayNonUniformIndexingEXT = true,
    .StorageImageReadWithoutFormat = true,
    .StorageImageWriteWithoutFormat = true,
-   .ImageQuery = true,
    .Int64 = true,
    .Float64 = true,
    .Tessellation = true,

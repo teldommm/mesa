@@ -275,13 +275,10 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return class_3d >= NVA3_3D_CLASS;
 
    case PIPE_CAP_PCI_GROUP:
-      return dev->info.pci.domain;
    case PIPE_CAP_PCI_BUS:
-      return dev->info.pci.bus;
    case PIPE_CAP_PCI_DEVICE:
-      return dev->info.pci.dev;
    case PIPE_CAP_PCI_FUNCTION:
-      return dev->info.pci.func;
+      return 0;
 
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE: /* potentially supported on some hw */
    case PIPE_CAP_INTEGER_MULTIPLY_32X16: /* could be done */
@@ -292,8 +289,14 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_VENDOR_ID:
       return 0x10de;
-   case PIPE_CAP_DEVICE_ID:
-      return dev->info.device_id;
+   case PIPE_CAP_DEVICE_ID: {
+      uint64_t device_id;
+      if (nouveau_getparam(dev, NOUVEAU_GETPARAM_PCI_DEVICE, &device_id)) {
+         NOUVEAU_ERR("NOUVEAU_GETPARAM_PCI_DEVICE failed.\n");
+         return -1;
+      }
+      return device_id;
+   }
    case PIPE_CAP_ACCELERATED:
       return 1;
    case PIPE_CAP_VIDEO_MEMORY:
@@ -339,6 +342,9 @@ nv50_screen_get_shader_param(struct pipe_screen *pscreen,
       return 65536;
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return NV50_MAX_PIPE_CONSTBUFS;
+   case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
+      return shader != PIPE_SHADER_FRAGMENT;
+   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       return 1;
@@ -469,7 +475,7 @@ nv50_screen_destroy(struct pipe_screen *pscreen)
 {
    struct nv50_screen *screen = nv50_screen(pscreen);
 
-   if (!screen->base.initialized)
+   if (!nouveau_drm_screen_unref(&screen->base))
       return;
 
    if (screen->blitter)

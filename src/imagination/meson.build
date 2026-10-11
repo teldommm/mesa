@@ -14,7 +14,6 @@ inc_imagination = include_directories([
 if with_imagination_vk
   subdir('common')
   subdir('csbgen')
-  subdir('pco')
   subdir('rogue')
   subdir('vulkan')
 endif

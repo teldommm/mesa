@@ -7,6 +7,7 @@
 
 #include "nvkmd/nvkmd.h"
 #include "vk_drm_syncobj.h"
+#include "util/simple_mtx.h"
 #include "util/vma.h"
 
 #include "drm-uapi/nouveau_drm.h"

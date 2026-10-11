@@ -6,9 +6,6 @@
 # KERNEL_ROOTFS_TAG
 
 set -e
-
-. .gitlab-ci/setup-test-env.sh
-
 set -o xtrace
 
 ############### Install packages for baremetal testing

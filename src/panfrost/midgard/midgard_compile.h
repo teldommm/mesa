@@ -57,8 +57,6 @@ static const nir_shader_compiler_options midgard_nir_options = {
    .lower_find_lsb = true,
    .lower_ifind_msb = true,
    .lower_fdph = true,
-   .lower_fisnormal = true,
-   .lower_hadd = true,
    .lower_uadd_carry = true,
    .lower_usub_borrow = true,
 
@@ -97,6 +95,7 @@ static const nir_shader_compiler_options midgard_nir_options = {
    .has_fsub = true,
    .has_isub = true,
    .vectorize_io = true,
+   .use_interpolated_input_intrinsics = true,
 
    .vertex_id_zero_based = true,
    .has_cs_global_id = true,
@@ -105,7 +104,6 @@ static const nir_shader_compiler_options midgard_nir_options = {
    .force_indirect_unrolling =
       (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
    .force_indirect_unrolling_sampler = true,
-   .support_indirect_inputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES),
 };
 
 #endif

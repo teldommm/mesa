@@ -62,9 +62,6 @@
 
 #define genX_call(devinfo, func, ...)             \
    switch ((devinfo)->verx10) {                   \
-   case 300:                                      \
-      gfx30_##func(__VA_ARGS__);                  \
-      break;                                      \
    case 200:                                      \
       gfx20_##func(__VA_ARGS__);                  \
       break;                                      \
@@ -114,6 +111,15 @@ iris_get_driver_uuid(struct pipe_screen *pscreen, char *uuid)
    const struct intel_device_info *devinfo = screen->devinfo;
 
    intel_uuid_compute_driver_id((uint8_t *)uuid, devinfo, PIPE_UUID_SIZE);
+}
+
+static bool
+iris_enable_clover()
+{
+   static int enable = -1;
+   if (enable < 0)
+      enable = debug_get_bool_option("IRIS_ENABLE_CLOVER", false);
+   return enable;
 }
 
 static void
@@ -511,6 +517,8 @@ iris_get_shader_param(struct pipe_screen *pscreen,
       return 256; /* GL_MAX_PROGRAM_TEMPORARIES_ARB */
    case PIPE_SHADER_CAP_CONT_SUPPORTED:
       return 0;
+   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+   case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       /* Lie about these to avoid st/mesa's GLSL IR lowering of indirects,
@@ -540,8 +548,12 @@ iris_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
       return 0;
-   case PIPE_SHADER_CAP_SUPPORTED_IRS:
-      return 1 << PIPE_SHADER_IR_NIR;
+   case PIPE_SHADER_CAP_SUPPORTED_IRS: {
+      int irs = 1 << PIPE_SHADER_IR_NIR;
+      if (iris_enable_clover())
+         irs |= 1 << PIPE_SHADER_IR_NIR_SERIALIZED;
+      return irs;
+   }
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
       return 0;

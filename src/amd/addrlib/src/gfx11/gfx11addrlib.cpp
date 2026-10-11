@@ -266,13 +266,7 @@ ADDR_E_RETURNCODE Gfx11Lib::HwlComputeDccInfo(
 {
     ADDR_E_RETURNCODE ret = ADDR_OK;
 
-    if (IsLinear(pIn->swizzleMode))
-    {
-        ret = ADDR_INVALIDPARAMS;
-    }
-    else if (pIn->dccKeyFlags.pipeAligned &&
-             (IsStandardSwizzle(pIn->swizzleMode) ||
-              IsDisplaySwizzle(pIn->swizzleMode)))
+    if (IsLinear(pIn->swizzleMode) || IsBlock256b(pIn->swizzleMode))
     {
         ret = ADDR_INVALIDPARAMS;
     }
@@ -751,8 +745,8 @@ ChipFamily Gfx11Lib::HwlConvertChipFamily(
                 m_settings.isGfx1150 = 1;
             }
             break;
-        case FAMILY_PHX:
-            m_settings.isPhoenix = 1;
+        case FAMILY_GFX1103:
+            m_settings.isGfx1103 = 1;
             break;
         default:
             ADDR_ASSERT(!"Unknown chip family");
@@ -867,7 +861,6 @@ INT_32 Gfx11Lib::GetMetaOverlapLog2(
     GetCompressedBlockSizeLog2(dataType, resourceType, swizzleMode, elemLog2, numSamplesLog2, &compBlock);
     GetBlk256SizeLog2(resourceType, swizzleMode, elemLog2, numSamplesLog2, &microBlock);
 
-    const INT_32 blkSizeLog2    = GetBlockSizeLog2(swizzleMode);
     const INT_32 compSizeLog2   = compBlock.w  + compBlock.h  + compBlock.d;
     const INT_32 blk256SizeLog2 = microBlock.w + microBlock.h + microBlock.d;
     const INT_32 maxSizeLog2    = Max(compSizeLog2, blk256SizeLog2);
@@ -880,11 +873,10 @@ INT_32 Gfx11Lib::GetMetaOverlapLog2(
     }
 
     // In 16Bpp 8xaa, we lose 1 overlap bit because the block size reduction eats into a pipe anchor bit (y4)
-    if ((elemLog2 == 4) && (numSamplesLog2 == 3) && (blkSizeLog2 == 16))
+    if ((elemLog2 == 4) && (numSamplesLog2 == 3))
     {
         overlap--;
     }
-    overlap += 16 - blkSizeLog2;
     overlap = Max(overlap, 0);
     return overlap;
 }
@@ -1751,7 +1743,7 @@ UINT_32 Gfx11Lib::GetValidDisplaySwizzleModes(
         swModeMask = Dcn32SwModeMask;
 
         if (false
-            || (m_settings.isPhoenix)
+            || (m_settings.isGfx1103)
             || (m_settings.isGfx1150)
            )
         {
@@ -2559,19 +2551,6 @@ ADDR_E_RETURNCODE Gfx11Lib::HwlGetPreferredSurfaceSetting(
                 allowedSwModeSet.value &= Gfx11ZSwModeMask;
             }
 
-            if (pIn->flags.requireMetadata)
-            {
-                // Linear images can never be compressed
-                allowedSwModeSet.value &= ~Gfx11LinearSwModeMask;
-                if (pIn->flags.color)
-                {
-                    // 256B formats must not be pipe-aligned (can't use in CB)
-                    allowedSwModeSet.value &= ~(Gfx11Blk256BSwModeMask);
-                    // D/S formats must not be pipe-aligned
-                    allowedSwModeSet.value &= ~(Gfx11DisplaySwModeMask | Gfx11StandardSwModeMask);
-                }
-            }
-
             if (pIn->flags.display)
             {
                 allowedSwModeSet.value &= GetValidDisplaySwizzleModes(bpp);
@@ -3056,19 +3035,6 @@ ADDR_E_RETURNCODE Gfx11Lib::HwlGetPossibleSwizzleModes(
             if (pIn->flags.depth || pIn->flags.stencil)
             {
                 allowedSwModeSet.value &= Gfx11ZSwModeMask;
-            }
-
-            if (pIn->flags.requireMetadata)
-            {
-                // Linear images can never be compressed
-                allowedSwModeSet.value &= ~Gfx11LinearSwModeMask;
-                if (pIn->flags.color)
-                {
-                    // 256B formats must not be pipe-aligned (can't use in CB)
-                    allowedSwModeSet.value &= ~(Gfx11Blk256BSwModeMask);
-                    // D/S formats must not be pipe-aligned
-                    allowedSwModeSet.value &= ~(Gfx11DisplaySwModeMask | Gfx11StandardSwModeMask);
-                }
             }
 
             if (pIn->flags.display)

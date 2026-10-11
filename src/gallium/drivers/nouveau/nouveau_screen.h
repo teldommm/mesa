@@ -32,7 +32,7 @@ struct nouveau_screen {
 
    char chipset_name[8];
 
-   bool initialized;
+   int refcount;
 
    unsigned transfer_pushbuf_threshold;
 
@@ -65,6 +65,7 @@ struct nouveau_screen {
 
    struct disk_cache *disk_shader_cache;
 
+   bool force_enable_cl;
    bool has_svm;
    bool is_uma;
    bool disable_fences;
@@ -135,6 +136,8 @@ nouveau_screen(struct pipe_screen *pscreen)
 {
    return (struct nouveau_screen *)pscreen;
 }
+
+bool nouveau_drm_screen_unref(struct nouveau_screen *screen);
 
 bool
 nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,

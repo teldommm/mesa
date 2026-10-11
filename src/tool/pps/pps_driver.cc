@@ -25,10 +25,6 @@
 #include "panfrost/ds/pan_pps_driver.h"
 #endif // PPS_PANFROST
 
-#ifdef PPS_V3D
-#include "broadcom/ds/v3d_pps_driver.h"
-#endif
-
 #include "pps.h"
 #include "pps_algorithm.h"
 
@@ -50,10 +46,6 @@ std::unordered_map<std::string, std::unique_ptr<Driver>> create_supported_driver
 #ifdef PPS_PANFROST
    map.emplace("panfrost", std::make_unique<PanfrostDriver>());
 #endif // PPS_PANFROST
-
-#ifdef PPS_V3D
-   map.emplace("v3d", std::make_unique<V3DDriver>());
-#endif
 
    return map;
 }

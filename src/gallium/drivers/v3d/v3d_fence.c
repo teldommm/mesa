@@ -36,7 +36,6 @@
 #include <fcntl.h>
 #include <libsync.h>
 
-#include "util/perf/cpu_trace.h"
 #include "util/u_inlines.h"
 #include "util/os_time.h"
 
@@ -83,8 +82,6 @@ v3d_fence_wait(struct v3d_screen *screen,
 {
         int ret;
         unsigned syncobj;
-
-        MESA_TRACE_FUNC();
 
         ret = drmSyncobjCreate(screen->fd, 0, &syncobj);
         if (ret) {
@@ -153,8 +150,6 @@ v3d_fence_server_sync(struct pipe_context *pctx,
         struct v3d_context *v3d = (struct v3d_context*)pctx;
         struct v3d_fence *fence = (struct v3d_fence *)pfence;
 
-        MESA_TRACE_FUNC();
-
         sync_accumulate("v3d", &v3d->in_fence_fd, fence->fd);
 }
 
@@ -162,9 +157,6 @@ static int
 v3d_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *pfence)
 {
         struct v3d_fence *fence = (struct v3d_fence *) pfence;
-
-        MESA_TRACE_FUNC();
-
         return fcntl(fence->fd, F_DUPFD_CLOEXEC, 3);
 }
 

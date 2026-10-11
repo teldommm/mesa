@@ -70,9 +70,7 @@ public:
 class ir_variable_refcount_visitor : public ir_hierarchical_visitor {
 public:
    ir_variable_refcount_visitor(void);
-   ir_variable_refcount_visitor(const ir_variable_refcount_visitor &) = delete;
    ~ir_variable_refcount_visitor(void);
-   ir_variable_refcount_visitor & operator=(const ir_variable_refcount_visitor &) = delete;
 
    virtual ir_visitor_status visit(ir_variable *);
    virtual ir_visitor_status visit(ir_dereference_variable *);

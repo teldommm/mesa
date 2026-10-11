@@ -86,7 +86,7 @@ type_size_xvec4(const struct glsl_type *type, bool as_vec4, bool bindless)
    case GLSL_TYPE_ATOMIC_UINT:
       return 0;
    case GLSL_TYPE_IMAGE:
-      return bindless ? 1 : 0;
+      return bindless ? 1 : DIV_ROUND_UP(ISL_IMAGE_PARAM_SIZE, 4);
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_ERROR:
    case GLSL_TYPE_COOPERATIVE_MATRIX:
@@ -275,7 +275,6 @@ static bool
 is_input(nir_intrinsic_instr *intrin)
 {
    return intrin->intrinsic == nir_intrinsic_load_input ||
-          intrin->intrinsic == nir_intrinsic_load_per_primitive_input ||
           intrin->intrinsic == nir_intrinsic_load_per_vertex_input ||
           intrin->intrinsic == nir_intrinsic_load_interpolated_input;
 }
@@ -285,10 +284,8 @@ is_output(nir_intrinsic_instr *intrin)
 {
    return intrin->intrinsic == nir_intrinsic_load_output ||
           intrin->intrinsic == nir_intrinsic_load_per_vertex_output ||
-          intrin->intrinsic == nir_intrinsic_load_per_view_output ||
           intrin->intrinsic == nir_intrinsic_store_output ||
-          intrin->intrinsic == nir_intrinsic_store_per_vertex_output ||
-          intrin->intrinsic == nir_intrinsic_store_per_view_output;
+          intrin->intrinsic == nir_intrinsic_store_per_vertex_output;
 }
 
 
@@ -342,56 +339,6 @@ remap_patch_urb_offsets(nir_block *block, nir_builder *b,
       }
    }
    return true;
-}
-
-/* Replace store_per_view_output to plain store_output, mapping the view index
- * to IO offset. Because we only use per-view outputs for position, the offset
- * pitch is always 1. */
-static bool
-lower_per_view_outputs(nir_builder *b,
-                       nir_intrinsic_instr *intrin,
-                       UNUSED void *cb_data)
-{
-   if (intrin->intrinsic != nir_intrinsic_store_per_view_output &&
-       intrin->intrinsic != nir_intrinsic_load_per_view_output)
-      return false;
-
-   b->cursor = nir_before_instr(&intrin->instr);
-
-   nir_src *view_index = nir_get_io_arrayed_index_src(intrin);
-   nir_src *offset = nir_get_io_offset_src(intrin);
-
-   nir_def *new_offset = nir_iadd(b, view_index->ssa, offset->ssa);
-
-   nir_intrinsic_instr *new;
-   if (intrin->intrinsic == nir_intrinsic_store_per_view_output)
-      new = nir_store_output(b, intrin->src[0].ssa, new_offset);
-   else {
-      nir_def *new_def = nir_load_output(b, intrin->def.num_components,
-                                         intrin->def.bit_size, new_offset);
-      new = nir_instr_as_intrinsic(new_def->parent_instr);
-   }
-
-   nir_intrinsic_set_base(new, nir_intrinsic_base(intrin));
-   nir_intrinsic_set_range(new, nir_intrinsic_range(intrin));
-   nir_intrinsic_set_write_mask(new, nir_intrinsic_write_mask(intrin));
-   nir_intrinsic_set_component(new, nir_intrinsic_component(intrin));
-   nir_intrinsic_set_src_type(new, nir_intrinsic_src_type(intrin));
-   nir_intrinsic_set_io_semantics(new, nir_intrinsic_io_semantics(intrin));
-
-   if (intrin->intrinsic == nir_intrinsic_load_per_view_output)
-      nir_def_rewrite_uses(&intrin->def, &new->def);
-   nir_instr_remove(&intrin->instr);
-
-   return true;
-}
-
-static bool
-brw_nir_lower_per_view_outputs(nir_shader *nir)
-{
-   return nir_shader_intrinsics_pass(nir, lower_per_view_outputs,
-                                     nir_metadata_control_flow,
-                                     NULL);
 }
 
 void
@@ -659,14 +606,13 @@ brw_nir_lower_fs_inputs(nir_shader *nir,
    }
 
    nir_lower_io(nir, nir_var_shader_in, type_size_vec4,
-                nir_lower_io_lower_64bit_to_32 |
-                nir_lower_io_use_interpolated_input_intrinsics);
+                nir_lower_io_lower_64bit_to_32);
    if (devinfo->ver >= 11)
       nir_lower_interpolation(nir, ~0);
 
-   if (key->multisample_fbo == INTEL_NEVER) {
+   if (key->multisample_fbo == BRW_NEVER) {
       nir_lower_single_sampled(nir);
-   } else if (key->persample_interp == INTEL_ALWAYS) {
+   } else if (key->persample_interp == BRW_ALWAYS) {
       nir_shader_intrinsics_pass(nir, lower_barycentric_per_sample,
                                    nir_metadata_control_flow,
                                    NULL);
@@ -692,7 +638,6 @@ brw_nir_lower_vue_outputs(nir_shader *nir)
 
    nir_lower_io(nir, nir_var_shader_out, type_size_vec4,
                 nir_lower_io_lower_64bit_to_32);
-   brw_nir_lower_per_view_outputs(nir);
 }
 
 void
@@ -729,28 +674,6 @@ brw_nir_lower_fs_outputs(nir_shader *nir)
    }
 
    nir_lower_io(nir, nir_var_shader_out, type_size_dvec4, 0);
-}
-
-static bool
-tag_speculative_access(nir_builder *b,
-                       nir_intrinsic_instr *intrin,
-                       void *unused)
-{
-   if (intrin->intrinsic == nir_intrinsic_load_ubo &&
-       brw_nir_ubo_surface_index_is_pushable(intrin->src[0])) {
-      nir_intrinsic_set_access(intrin, ACCESS_CAN_SPECULATE |
-                               nir_intrinsic_access(intrin));
-      return true;
-   }
-
-   return false;
-}
-
-static bool
-brw_nir_tag_speculative_access(nir_shader *nir)
-{
-   return nir_shader_intrinsics_pass(nir, tag_speculative_access,
-                                     nir_metadata_all, NULL);
 }
 
 #define OPT(pass, ...) ({                                  \
@@ -857,7 +780,6 @@ brw_nir_optimize(nir_shader *nir,
       LOOP_OPT(nir_opt_idiv_const, 32);
       LOOP_OPT_NOT_IDEMPOTENT(nir_opt_algebraic);
 
-      LOOP_OPT(nir_opt_generate_bfi);
       LOOP_OPT(nir_opt_reassociate_bfi);
 
       LOOP_OPT(nir_lower_constant_convert_alu_types);
@@ -1132,12 +1054,6 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
 
    brw_nir_optimize(nir, devinfo);
 
-   struct nir_opt_16bit_tex_image_options options = {
-      .rounding_mode = nir_rounding_mode_undef,
-      .opt_tex_dest_types = nir_type_float | nir_type_int | nir_type_uint,
-   };
-   OPT(nir_opt_16bit_tex_image, &options);
-
    OPT(nir_lower_doubles, opts->softfp64, nir->options->lower_doubles_options);
    if (OPT(nir_lower_int64_float_conversions)) {
       OPT(nir_opt_algebraic);
@@ -1273,7 +1189,7 @@ brw_mesh_compact_io(nir_shader *mesh, nir_shader *frag)
       assert(location < ARRAY_SIZE(mapping));
 
       const struct glsl_type *type = var->type;
-      if (nir_is_arrayed_io(var, MESA_SHADER_MESH)) {
+      if (nir_is_arrayed_io(var, MESA_SHADER_MESH) || var->data.per_view) {
          assert(glsl_type_is_array(type));
          type = glsl_get_array_element(type);
       }
@@ -1465,7 +1381,6 @@ bool
 brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
                              unsigned bit_size,
                              unsigned num_components,
-                             unsigned hole_size,
                              nir_intrinsic_instr *low,
                              nir_intrinsic_instr *high,
                              void *data)
@@ -1477,18 +1392,19 @@ brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
    if (bit_size > 32)
       return false;
 
-   if (low->intrinsic == nir_intrinsic_load_ubo_uniform_block_intel ||
+   if (low->intrinsic == nir_intrinsic_load_global_const_block_intel ||
+       low->intrinsic == nir_intrinsic_load_ubo_uniform_block_intel ||
        low->intrinsic == nir_intrinsic_load_ssbo_uniform_block_intel ||
        low->intrinsic == nir_intrinsic_load_shared_uniform_block_intel ||
        low->intrinsic == nir_intrinsic_load_global_constant_uniform_block_intel) {
       if (num_components > 4) {
+         if (!util_is_power_of_two_nonzero(num_components))
+            return false;
+
          if (bit_size != 32)
             return false;
 
          if (num_components > 32)
-            return false;
-
-         if (hole_size > 4 * (8 - low->num_components))
             return false;
       }
    } else {
@@ -1497,13 +1413,14 @@ brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
        */
       if (num_components > 4)
          return false;
-
-      if (hole_size > 4)
-         return false;
    }
 
 
-   const uint32_t align = nir_combined_align(align_mul, align_offset);
+   uint32_t align;
+   if (align_offset)
+      align = 1 << (ffs(align_offset) - 1);
+   else
+      align = align_mul;
 
    if (align < bit_size / 8)
       return false;
@@ -1551,8 +1468,7 @@ bool combine_all_memory_barriers(nir_intrinsic_instr *a,
 static nir_mem_access_size_align
 get_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
                           uint8_t bit_size, uint32_t align_mul, uint32_t align_offset,
-                          bool offset_is_const, enum gl_access_qualifier access,
-                          const void *cb_data)
+                          bool offset_is_const, const void *cb_data)
 {
    const uint32_t align = nir_combined_align(align_mul, align_offset);
 
@@ -1571,7 +1487,6 @@ get_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
             .bit_size = 32,
             .num_components = comps32,
             .align = 4,
-            .shift = nir_mem_access_shift_method_scalar,
          };
       }
       break;
@@ -1582,7 +1497,6 @@ get_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
             .bit_size = 32,
             .num_components = 1,
             .align = 4,
-            .shift = nir_mem_access_shift_method_scalar,
          };
       }
       break;
@@ -1618,7 +1532,6 @@ get_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
          .bit_size = bytes * 8,
          .num_components = 1,
          .align = 1,
-         .shift = nir_mem_access_shift_method_scalar,
       };
    } else {
       bytes = MIN2(bytes, 16);
@@ -1627,7 +1540,6 @@ get_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
          .num_components = is_scratch ? 1 :
                            is_load ? DIV_ROUND_UP(bytes, 4) : bytes / 4,
          .align = 4,
-         .shift = nir_mem_access_shift_method_scalar,
       };
    }
 }
@@ -1648,11 +1560,14 @@ brw_vectorize_lower_mem_access(nir_shader *nir,
    };
 
    if (robust_flags & BRW_ROBUSTNESS_UBO)
-      options.robust_modes |= nir_var_mem_ubo;
+      options.robust_modes |= nir_var_mem_ubo | nir_var_mem_global;
    if (robust_flags & BRW_ROBUSTNESS_SSBO)
-      options.robust_modes |= nir_var_mem_ssbo;
+      options.robust_modes |= nir_var_mem_ssbo | nir_var_mem_global;
 
    OPT(nir_opt_load_store_vectorize, &options);
+
+   /* Required for nir_divergence_analysis() */
+   OPT(nir_convert_to_lcssa, true, true);
 
    /* When HW supports block loads, using the divergence analysis, try
     * to find uniform SSBO loads and turn them into block loads.
@@ -1667,6 +1582,7 @@ brw_vectorize_lower_mem_access(nir_shader *nir,
    nir_divergence_analysis(nir);
    if (OPT(intel_nir_blockify_uniform_loads, compiler->devinfo))
       OPT(nir_opt_load_store_vectorize, &options);
+   OPT(nir_opt_remove_phis);
 
    nir_lower_mem_access_bit_sizes_options mem_access_options = {
       .modes = nir_var_mem_ssbo |
@@ -1725,6 +1641,8 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    OPT(nir_opt_combine_barriers, combine_all_memory_barriers, NULL);
 
+   OPT(intel_nir_lower_printf);
+
    do {
       progress = false;
       OPT(nir_opt_algebraic_before_ffma);
@@ -1742,8 +1660,6 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    if (gl_shader_stage_can_set_fragment_shading_rate(nir->info.stage))
       NIR_PASS(_, nir, intel_nir_lower_shading_rate_output);
 
-   OPT(brw_nir_tag_speculative_access);
-
    brw_nir_optimize(nir, devinfo);
 
    if (nir_shader_has_local_variables(nir)) {
@@ -1755,11 +1671,6 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    }
 
    brw_vectorize_lower_mem_access(nir, compiler, robust_flags);
-
-   /* Needs to be prior int64 lower because it generates 64bit address
-    * manipulations
-    */
-   OPT(intel_nir_lower_printf);
 
    /* Potentially perform this optimization pass twice because it can create
     * additional opportunities for itself.
@@ -1803,7 +1714,6 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    do {
       progress = false;
 
-      OPT(brw_nir_opt_fsat);
       OPT(nir_opt_algebraic_late);
       OPT(brw_nir_lower_fsign);
 
@@ -1822,6 +1732,8 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       }
    }
 
+   OPT(intel_nir_lower_conversions);
+
    OPT(nir_lower_alu_to_scalar, NULL, NULL);
 
    while (OPT(nir_opt_algebraic_distribute_src_mods)) {
@@ -1837,6 +1749,7 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    OPT(nir_opt_dead_cf);
 
    bool divergence_analysis_dirty = false;
+   NIR_PASS(_, nir, nir_convert_to_lcssa, true, true);
    NIR_PASS_V(nir, nir_divergence_analysis);
 
    static const nir_lower_subgroups_options subgroups_options = {
@@ -1846,7 +1759,7 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       .lower_subgroup_masks = true,
    };
 
-   if (OPT(nir_opt_uniform_atomics, false)) {
+   if (OPT(nir_opt_uniform_atomics)) {
       OPT(nir_lower_subgroups, &subgroups_options);
 
       OPT(nir_opt_algebraic_before_lower_int64);
@@ -1864,33 +1777,24 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       /* Some of the optimizations can generate 64-bit integer multiplication
        * that must be lowered.
        */
-      OPT(nir_lower_int64);
-
-      /* Even if nir_lower_int64 did not make progress, re-run the main
-       * optimization loop. nir_opt_uniform_subgroup may have made some things
-       * that previously appeared divergent be marked as convergent. This
-       * allows the elimination of some loops over, say, a TXF instruction
-       * with a non-uniform texture handle.
-       */
-      brw_nir_optimize(nir, devinfo);
+      if (OPT(nir_lower_int64))
+         brw_nir_optimize(nir, devinfo);
 
       OPT(nir_lower_subgroups, &subgroups_options);
    }
 
-   /* Run intel_nir_lower_conversions only after the last tiem
-    * brw_nir_optimize is called. Various optimizations invoked there can
-    * rematerialize the conversions that the lowering pass eliminates.
-    */
-   OPT(intel_nir_lower_conversions);
-
    /* Do this only after the last opt_gcm. GCM will undo this lowering. */
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       if (divergence_analysis_dirty) {
+         NIR_PASS(_, nir, nir_convert_to_lcssa, true, true);
          NIR_PASS_V(nir, nir_divergence_analysis);
       }
 
       OPT(intel_nir_lower_non_uniform_barycentric_at_sample);
    }
+
+   /* Clean up LCSSA phis */
+   OPT(nir_opt_remove_phis);
 
    OPT(nir_lower_bool_to_int32);
    OPT(nir_copy_prop);
@@ -1975,9 +1879,6 @@ get_subgroup_size(const struct shader_info *info, unsigned max_subgroup_size)
        * size.
        */
       return info->stage == MESA_SHADER_FRAGMENT ? 0 : max_subgroup_size;
-
-   case SUBGROUP_SIZE_REQUIRE_4:
-      unreachable("Unsupported subgroup size type");
 
    case SUBGROUP_SIZE_REQUIRE_8:
    case SUBGROUP_SIZE_REQUIRE_16:
@@ -2092,49 +1993,12 @@ brw_cmod_for_nir_comparison(nir_op op)
 }
 
 enum lsc_opcode
-lsc_op_for_nir_intrinsic(const nir_intrinsic_instr *intrin)
+lsc_aop_for_nir_intrinsic(const nir_intrinsic_instr *atomic)
 {
-   switch (intrin->intrinsic) {
-   case nir_intrinsic_load_ssbo:
-   case nir_intrinsic_load_shared:
-   case nir_intrinsic_load_global:
-   case nir_intrinsic_load_global_block_intel:
-   case nir_intrinsic_load_global_constant:
-   case nir_intrinsic_load_global_constant_uniform_block_intel:
-   case nir_intrinsic_load_shared_block_intel:
-   case nir_intrinsic_load_shared_uniform_block_intel:
-   case nir_intrinsic_load_ssbo_block_intel:
-   case nir_intrinsic_load_ssbo_uniform_block_intel:
-   case nir_intrinsic_load_ubo_uniform_block_intel:
-   case nir_intrinsic_load_scratch:
-      return LSC_OP_LOAD;
-
-   case nir_intrinsic_store_ssbo:
-   case nir_intrinsic_store_shared:
-   case nir_intrinsic_store_global:
-   case nir_intrinsic_store_global_block_intel:
-   case nir_intrinsic_store_shared_block_intel:
-   case nir_intrinsic_store_ssbo_block_intel:
-   case nir_intrinsic_store_scratch:
-      return LSC_OP_STORE;
-
-   case nir_intrinsic_image_load:
-   case nir_intrinsic_bindless_image_load:
-      return LSC_OP_LOAD_CMASK;
-
-   case nir_intrinsic_image_store:
-   case nir_intrinsic_bindless_image_store:
-      return LSC_OP_STORE_CMASK;
-
-   default:
-      assert(nir_intrinsic_has_atomic_op(intrin));
-      break;
-   }
-
-   switch (nir_intrinsic_atomic_op(intrin)) {
+   switch (nir_intrinsic_atomic_op(atomic)) {
    case nir_atomic_op_iadd: {
       unsigned src_idx;
-      switch (intrin->intrinsic) {
+      switch (atomic->intrinsic) {
       case nir_intrinsic_image_atomic:
       case nir_intrinsic_bindless_image_atomic:
          src_idx = 3;
@@ -2150,8 +2014,8 @@ lsc_op_for_nir_intrinsic(const nir_intrinsic_instr *intrin)
          unreachable("Invalid add atomic opcode");
       }
 
-      if (nir_src_is_const(intrin->src[src_idx])) {
-         int64_t add_val = nir_src_as_int(intrin->src[src_idx]);
+      if (nir_src_is_const(atomic->src[src_idx])) {
+         int64_t add_val = nir_src_as_int(atomic->src[src_idx]);
          if (add_val == 1)
             return LSC_OP_ATOMIC_INC;
          else if (add_val == -1)
@@ -2279,11 +2143,8 @@ brw_nir_load_global_const(nir_builder *b, nir_intrinsic_instr *load_uniform,
       nir_def *data[2];
       for (unsigned i = 0; i < 2; i++) {
          nir_def *addr = nir_iadd_imm(b, base_addr, aligned_offset + i * 64);
-
-         data[i] = nir_load_global_constant_uniform_block_intel(
-            b, 16, 32, addr,
-            .access = ACCESS_CAN_REORDER | ACCESS_NON_WRITEABLE,
-            .align_mul = 64);
+         data[i] = nir_load_global_const_block_intel(b, 16, addr,
+                                                     nir_imm_true(b));
       }
 
       sysval = nir_extract_bits(b, data, 2, suboffset * 8,
@@ -2306,32 +2167,11 @@ brw_nir_get_var_type(const struct nir_shader *nir, nir_variable *var)
    const struct glsl_type *type = var->interface_type;
    if (!type) {
       type = var->type;
-      if (nir_is_arrayed_io(var, nir->info.stage)) {
+      if (nir_is_arrayed_io(var, nir->info.stage) || var->data.per_view) {
          assert(glsl_type_is_array(type));
          type = glsl_get_array_element(type);
       }
    }
 
    return type;
-}
-
-bool
-brw_nir_uses_inline_data(nir_shader *shader)
-{
-   nir_foreach_function_impl(impl, shader) {
-      nir_foreach_block(block, impl) {
-         nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-
-            nir_intrinsic_instr *intrin  = nir_instr_as_intrinsic(instr);
-            if (intrin->intrinsic != nir_intrinsic_load_inline_data_intel)
-               continue;
-
-            return true;
-         }
-      }
-   }
-
-   return false;
 }

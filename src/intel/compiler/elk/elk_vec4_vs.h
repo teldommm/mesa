@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_VEC4_VS_VISITOR_H
+#define ELK_VEC4_VS_VISITOR_H
 
 #include "elk_vec4.h"
 
@@ -53,3 +54,5 @@ private:
 };
 
 } /* namespace elk */
+
+#endif /* ELK_VEC4_VS_VISITOR_H */

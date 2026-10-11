@@ -41,10 +41,10 @@ si_fill_aco_options(struct si_screen *screen, gl_shader_stage stage,
                     struct aco_compiler_options *options,
                     struct util_debug_callback *debug)
 {
-   options->dump_ir = si_can_dump_shader(screen, stage, SI_DUMP_ACO_IR);
+   options->dump_shader =
+      si_can_dump_shader(screen, stage, SI_DUMP_ACO_IR) ||
+      si_can_dump_shader(screen, stage, SI_DUMP_ASM);
    options->dump_preoptir = si_can_dump_shader(screen, stage, SI_DUMP_INIT_ACO_IR);
-   options->record_asm = si_can_dump_shader(screen, stage, SI_DUMP_ASM) ||
-                         screen->options.debug_disassembly;
    options->record_ir = screen->record_llvm_ir;
    options->is_opengl = true;
 
@@ -80,7 +80,7 @@ si_fill_aco_shader_info(struct si_shader *shader, struct aco_shader_info *info,
    info->hw_stage = si_select_hw_stage(stage, key, gfx_level);
 
    if (stage <= MESA_SHADER_GEOMETRY && key->ge.as_ngg && !key->ge.as_es) {
-      info->has_ngg_culling = si_shader_culling_enabled(shader);
+      info->has_ngg_culling = key->ge.opt.ngg_culling;
       info->has_ngg_early_prim_export = gfx10_ngg_export_prim_early(shader);
    }
 
@@ -88,15 +88,19 @@ si_fill_aco_shader_info(struct si_shader *shader, struct aco_shader_info *info,
    case MESA_SHADER_TESS_CTRL:
       info->vs.tcs_in_out_eq = key->ge.opt.same_patch_vertices;
       info->vs.tcs_temp_only_input_mask = sel->info.tcs_vgpr_only_inputs;
+      info->has_epilog = !shader->is_monolithic;
+      info->tcs.pass_tessfactors_by_reg = sel->info.tessfactors_are_def_in_all_invocs;
+      info->tcs.patch_stride = si_get_tcs_out_patch_stride(&sel->info);
       info->tcs.tcs_offchip_layout = args->tcs_offchip_layout;
+      info->tcs.tes_offchip_addr = args->tes_offchip_addr;
+      info->tcs.vs_state_bits = args->vs_state_bits;
       break;
    case MESA_SHADER_FRAGMENT:
-      info->ps.num_inputs = si_get_ps_num_interp(shader);
+      info->ps.num_interp = si_get_ps_num_interp(shader);
       info->ps.spi_ps_input_ena = shader->config.spi_ps_input_ena;
       info->ps.spi_ps_input_addr = shader->config.spi_ps_input_addr;
       info->ps.alpha_reference = args->alpha_reference;
-      info->ps.has_prolog = !shader->is_monolithic;
-      info->ps.has_epilog = !shader->is_monolithic;
+      info->has_epilog = !shader->is_monolithic;
       break;
    default:
       break;
@@ -108,8 +112,7 @@ si_aco_build_shader_binary(void **data, const struct ac_shader_config *config,
                            const char *llvm_ir_str, unsigned llvm_ir_size, const char *disasm_str,
                            unsigned disasm_size, uint32_t *statistics, uint32_t stats_size,
                            uint32_t exec_size, const uint32_t *code, uint32_t code_dw,
-                           const struct aco_symbol *symbols, unsigned num_symbols,
-                           const struct ac_shader_debug_info *debug_info, unsigned debug_info_count)
+                           const struct aco_symbol *symbols, unsigned num_symbols)
 {
    struct si_shader *shader = (struct si_shader *)data;
 

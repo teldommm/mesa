@@ -35,7 +35,7 @@ struct Gfx11ChipSettings
     struct
     {
         UINT_32 isGfx1150           :  1;
-        UINT_32 isPhoenix           :  1;
+        UINT_32 isGfx1103           :  1;
         UINT_32 reserved1           : 30;
 
         // Misc configuration bits
@@ -121,11 +121,12 @@ const UINT_32 Gfx11Rsrc2dSwModeMask = Gfx11LinearSwModeMask  |
                                       Gfx11ZSwModeMask       |
                                       Gfx11RenderSwModeMask;
 
-const UINT_32 Gfx11Rsrc3dSwModeMask = Gfx11LinearSwModeMask   |
-                                      Gfx11StandardSwModeMask |
-                                      Gfx11ZSwModeMask        |
-                                      Gfx11RenderSwModeMask   |
-                                      (1u << ADDR_SW_64KB_D_X);
+const UINT_32 Gfx11Rsrc3dSwModeMask = Gfx11LinearSwModeMask    |
+                                      Gfx11StandardSwModeMask  |
+                                      Gfx11ZSwModeMask         |
+                                      Gfx11RenderSwModeMask    |
+                                      (1u << ADDR_SW_64KB_D_X) |
+                                      (1u << ADDR_SW_256KB_D_X);
 
 const UINT_32 Gfx11Rsrc2dPrtSwModeMask =
     (Gfx11Blk4KBSwModeMask | Gfx11Blk64KBSwModeMask) & ~Gfx11XSwModeMask & Gfx11Rsrc2dSwModeMask;

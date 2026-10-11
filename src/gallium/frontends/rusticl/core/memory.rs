@@ -9,13 +9,13 @@ use crate::core::queue::*;
 use crate::core::util::*;
 use crate::impl_cl_type_trait;
 use crate::impl_cl_type_trait_base;
-use crate::perf_warning;
 
 use mesa_rust::pipe::context::*;
 use mesa_rust::pipe::resource::*;
 use mesa_rust::pipe::screen::ResourceType;
 use mesa_rust::pipe::transfer::*;
 use mesa_rust_gen::*;
+use mesa_rust_util::math::*;
 use mesa_rust_util::properties::Properties;
 use mesa_rust_util::ptr::AllocSize;
 use mesa_rust_util::ptr::TrackedPointers;
@@ -204,7 +204,7 @@ pub struct MemBase {
     // it's a bit hacky, but storing the pointer as `usize` gives us `Send` and `Sync`. The
     // application is required to ensure no data races exist on the memory anyway.
     pub host_ptr: usize,
-    pub props: Properties<cl_mem_properties>,
+    pub props: Vec<cl_mem_properties>,
     pub cbs: Mutex<Vec<MemCB>>,
     pub gl_obj: Option<GLObject>,
     res: Option<HashMap<&'static Device, Arc<PipeResource>>>,
@@ -361,10 +361,10 @@ fn sw_copy(
         if src_row_pitch == dst_row_pitch && region[1] * pixel_size == src_row_pitch {
             unsafe {
                 ptr::copy(
-                    src.byte_add(
+                    src.add(
                         (*src_origin + [0, 0, z]) * [pixel_size, src_row_pitch, src_slice_pitch],
                     ),
-                    dst.byte_add(
+                    dst.add(
                         (*dst_origin + [0, 0, z]) * [pixel_size, dst_row_pitch, dst_slice_pitch],
                     ),
                     region[0] * region[1] * pixel_size,
@@ -374,11 +374,11 @@ fn sw_copy(
             for y in 0..region[1] {
                 unsafe {
                     ptr::copy(
-                        src.byte_add(
+                        src.add(
                             (*src_origin + [0, y, z])
                                 * [pixel_size, src_row_pitch, src_slice_pitch],
                         ),
-                        dst.byte_add(
+                        dst.add(
                             (*dst_origin + [0, y, z])
                                 * [pixel_size, dst_row_pitch, dst_slice_pitch],
                         ),
@@ -396,7 +396,7 @@ impl MemBase {
         flags: cl_mem_flags,
         size: usize,
         host_ptr: *mut c_void,
-        props: Properties<cl_mem_properties>,
+        props: Vec<cl_mem_properties>,
     ) -> CLResult<Arc<Buffer>> {
         let res_type = if bit_check(flags, CL_MEM_ALLOC_HOST_PTR) {
             ResourceType::Staging
@@ -445,7 +445,7 @@ impl MemBase {
         let host_ptr = if parent.host_ptr().is_null() {
             0
         } else {
-            unsafe { parent.host_ptr().byte_add(offset) as usize }
+            unsafe { parent.host_ptr().add(offset) as usize }
         };
 
         Arc::new(Buffer {
@@ -457,7 +457,7 @@ impl MemBase {
                 flags: flags,
                 size: size,
                 host_ptr: host_ptr,
-                props: Properties::default(),
+                props: Vec::new(),
                 gl_obj: None,
                 cbs: Mutex::new(Vec::new()),
                 res: None,
@@ -476,7 +476,7 @@ impl MemBase {
         mut image_desc: cl_image_desc,
         image_elem_size: u8,
         host_ptr: *mut c_void,
-        props: Properties<cl_mem_properties>,
+        props: Vec<cl_mem_properties>,
     ) -> CLResult<Arc<Image>> {
         // we have to sanitize the image_desc a little for internal use
         let api_image_desc = image_desc;
@@ -641,7 +641,7 @@ impl MemBase {
             flags: flags,
             size: gl_mem_props.size(),
             host_ptr: 0,
-            props: Properties::default(),
+            props: Vec::new(),
             gl_obj: Some(GLObject {
                 gl_object_target: gl_export_manager.export_in.target,
                 gl_object_type: gl_object_type,
@@ -737,7 +737,7 @@ impl MemBase {
         let host_ptr = self.host_ptr();
         let ptr = unsafe {
             let ptr = if !host_ptr.is_null() {
-                host_ptr.byte_add(offset)
+                host_ptr.add(offset)
             } else {
                 alloc::alloc(layout).cast()
             };
@@ -799,8 +799,6 @@ impl Buffer {
         let (offset, size) =
             CLVec::calc_offset_size(dst_origin, region, [1, dst_row_pitch, dst_slice_pitch]);
         let tx_dst = dst.tx(q, ctx, offset, size, RWFlags::WR)?;
-
-        perf_warning!("clEnqueueCopyBufferRect stalls the GPU");
 
         // TODO check to use hw accelerated paths (e.g. resource_copy_region or blits)
         sw_copy(
@@ -890,8 +888,6 @@ impl Buffer {
         debug_assert!(src_pitch[0] != 0 && src_pitch[1] != 0 && src_pitch[2] != 0);
         debug_assert!(dst_pitch[0] != 0 && dst_pitch[1] != 0 && dst_pitch[2] != 0);
 
-        perf_warning!("clEnqueueCopyBufferToImage stalls the GPU");
-
         sw_copy(
             tx_src.ptr(),
             tx_dst.ptr(),
@@ -955,8 +951,6 @@ impl Buffer {
         let ptr = ptr.as_ptr();
         let tx = self.tx(q, ctx, offset, size, RWFlags::RD)?;
 
-        perf_warning!("clEnqueueReadBuffer and clEnqueueMapBuffer stall the GPU");
-
         unsafe {
             ptr::copy(tx.ptr(), ptr, size);
         }
@@ -981,8 +975,6 @@ impl Buffer {
         let (offset, size) =
             CLVec::calc_offset_size(src_origin, region, [1, src_row_pitch, src_slice_pitch]);
         let tx = self.tx(q, ctx, offset, size, RWFlags::RD)?;
-
-        perf_warning!("clEnqueueReadBufferRect stalls the GPU");
 
         sw_copy(
             tx.ptr(),
@@ -1059,6 +1051,7 @@ impl Buffer {
         .ok_or(CL_OUT_OF_RESOURCES)
     }
 
+    // TODO: only sync on unmap when the memory is not mapped for writing
     pub fn unmap(&self, ptr: MutMemoryPtr) -> CLResult<bool> {
         match self.maps.lock().unwrap().entry(ptr.as_ptr() as usize) {
             Entry::Vacant(_) => Err(CL_INVALID_VALUE),
@@ -1082,9 +1075,6 @@ impl Buffer {
         let ptr = ptr.as_ptr();
         let offset = self.apply_offset(offset)?;
         let r = self.get_res_of_dev(q.device)?;
-
-        perf_warning!("clEnqueueWriteBuffer and clEnqueueUnmapMemObject might stall the GPU");
-
         ctx.buffer_subdata(
             r,
             offset.try_into().map_err(|_| CL_OUT_OF_HOST_MEMORY)?,
@@ -1111,8 +1101,6 @@ impl Buffer {
         let (offset, size) =
             CLVec::calc_offset_size(dst_origin, region, [1, dst_row_pitch, dst_slice_pitch]);
         let tx = self.tx(q, ctx, offset, size, RWFlags::WR)?;
-
-        perf_warning!("clEnqueueWriteBufferRect stalls the GPU");
 
         sw_copy(
             src,
@@ -1174,8 +1162,6 @@ impl Image {
         // Those pitch values cannot have 0 value in its coordinates
         debug_assert!(src_pitch[0] != 0 && src_pitch[1] != 0 && src_pitch[2] != 0);
         debug_assert!(dst_pitch[0] != 0 && dst_pitch[1] != 0 && dst_pitch[2] != 0);
-
-        perf_warning!("clEnqueueCopyImageToBuffer stalls the GPU");
 
         sw_copy(
             tx_src.ptr(),
@@ -1260,10 +1246,6 @@ impl Image {
             debug_assert!(src_pitch[0] != 0 && src_pitch[1] != 0 && src_pitch[2] != 0);
             debug_assert!(dst_pitch[0] != 0 && dst_pitch[1] != 0 && dst_pitch[2] != 0);
 
-            perf_warning!(
-                "clEnqueueCopyImage stalls the GPU when src or dst are created from a buffer"
-            );
-
             sw_copy(
                 tx_src.ptr(),
                 tx_dst.ptr(),
@@ -1293,7 +1275,7 @@ impl Image {
         &self,
         q: &Queue,
         ctx: &PipeContext,
-        pattern: [u32; 4],
+        pattern: &[u32],
         origin: &CLVec<usize>,
         region: &CLVec<usize>,
     ) -> CLResult<()> {
@@ -1301,14 +1283,19 @@ impl Image {
 
         // make sure we allocate multiples of 4 bytes so drivers don't read out of bounds or
         // unaligned.
-        let pixel_size: usize = self.image_format.pixel_size().unwrap().into();
-        let mut new_pattern: Vec<u32> = vec![0; pixel_size.div_ceil(size_of::<u32>())];
+        // TODO: use div_ceil once it's available
+        let pixel_size = self.image_format.pixel_size().unwrap().into();
+        let mut new_pattern: Vec<u32> = vec![0; div_round_up(pixel_size, size_of::<u32>())];
+
+        // we don't support CL_DEPTH for now
+        assert!(pattern.len() == 4);
 
         // SAFETY: pointers have to be valid for read/writes of exactly one pixel of their
         // respective format.
         // `new_pattern` has the correct size due to the `size` above.
         // `pattern` is validated through the CL API and allows undefined behavior if not followed
-        // by CL API rules.
+        // by CL API rules. It's expected to be a 4 component array of 32 bit values, except for
+        // CL_DEPTH where it's just one value.
         unsafe {
             util_format_pack_rgba(
                 self.pipe_format,
@@ -1448,8 +1435,6 @@ impl Image {
             src_slice_pitch = tx.slice_pitch();
         };
 
-        perf_warning!("clEnqueueReadImage and clEnqueueMapImage stall the GPU");
-
         sw_copy(
             tx.ptr(),
             dst,
@@ -1466,6 +1451,7 @@ impl Image {
         Ok(())
     }
 
+    // TODO: only sync on map when the memory is not mapped with discard
     pub fn sync_map(&self, q: &Queue, ctx: &PipeContext, ptr: MutMemoryPtr) -> CLResult<()> {
         // no need to update
         if self.is_pure_user_memory(q.device)? {
@@ -1537,6 +1523,7 @@ impl Image {
         ctx.texture_map(r, bx, rw).ok_or(CL_OUT_OF_RESOURCES)
     }
 
+    // TODO: only sync on unmap when the memory is not mapped for writing
     pub fn unmap(&self, ptr: MutMemoryPtr) -> CLResult<bool> {
         match self.maps.lock().unwrap().entry(ptr.as_ptr() as usize) {
             Entry::Vacant(_) => Err(CL_INVALID_VALUE),
@@ -1562,9 +1549,6 @@ impl Image {
         let src = src.as_ptr();
         let dst_row_pitch = self.image_desc.image_row_pitch;
         let dst_slice_pitch = self.image_desc.image_slice_pitch;
-
-        // texture_subdata most likely maps the resource anyway
-        perf_warning!("clEnqueueWriteImage and clEnqueueUnmapMemObject stall the GPU");
 
         if let Some(Mem::Buffer(buffer)) = &self.parent {
             let pixel_size = self.image_format.pixel_size().unwrap();
@@ -1615,7 +1599,7 @@ pub struct Sampler {
     pub normalized_coords: bool,
     pub addressing_mode: cl_addressing_mode,
     pub filter_mode: cl_filter_mode,
-    pub props: Properties<cl_sampler_properties>,
+    pub props: Option<Properties<cl_sampler_properties>>,
 }
 
 impl_cl_type_trait!(cl_sampler, Sampler, CL_INVALID_SAMPLER);
@@ -1626,7 +1610,7 @@ impl Sampler {
         normalized_coords: bool,
         addressing_mode: cl_addressing_mode,
         filter_mode: cl_filter_mode,
-        props: Properties<cl_sampler_properties>,
+        props: Option<Properties<cl_sampler_properties>>,
     ) -> Arc<Sampler> {
         Arc::new(Self {
             base: CLObjectBase::new(RusticlTypes::Sampler),

@@ -122,7 +122,7 @@ TEST_F(cse_test, add3_invalid)
     * Same
     */
 
-   brw_calculate_cfg(*v);
+   v->calculate_cfg();
    bblock_t *block0 = v->cfg->blocks[0];
 
    EXPECT_EQ(0, block0->start_ip);

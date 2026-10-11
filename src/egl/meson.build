@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 inc_egl = include_directories('.', 'main')
+inc_egl_dri2 = include_directories('drivers/dri2')
 
 c_args_for_egl = [asan_c_args]
 cpp_args_for_egl = []
-link_for_egl = [libpipe_loader_dynamic]
+link_for_egl = []
 if with_dri
   link_for_egl += libgallium_dri
 endif
@@ -84,7 +85,6 @@ if with_dri
   deps_for_egl += idep_xmlconfig
   link_for_egl += libloader
   incs_for_egl += inc_loader
-  incs_for_egl += inc_loader_x11
   incs_for_egl += inc_gallium
   incs_for_egl += inc_gallium_aux
   incs_for_egl += inc_mesa
@@ -97,9 +97,9 @@ if with_dri
 
   if with_platform_x11
     files_egl += files('drivers/dri2/platform_x11.c')
-    if with_dri_platform == 'drm'
+    if with_dri3
       files_egl += files('drivers/dri2/platform_x11_dri3.c')
-      link_for_egl += [libloader_x11]
+      link_for_egl += libloader_dri3_helper
     endif
     deps_for_egl += [dep_x11_xcb, dep_xcb_dri2, dep_xcb_xrandr, dep_xcb_xfixes, dep_xcb_shm]
   endif
@@ -140,9 +140,6 @@ elif with_platform_windows
   files_egl += files('drivers/wgl/egl_wgl.c')
   incs_for_egl += [inc_wgl, inc_gallium, inc_gallium_aux, inc_mesa, inc_mapi]
   link_for_egl += libgallium_wgl
-
-else
-  error('No EGL driver available.')
 endif
 
 if cc.has_function('mincore')

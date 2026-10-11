@@ -11,7 +11,6 @@
 #include "util/u_memory.h"
 #include "util/hex.h"
 #include "util/os_time.h"
-#include "util/xmlconfig.h"
 #include "vl/vl_decoder.h"
 #include "vl/vl_video_buffer.h"
 
@@ -130,7 +129,6 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
         case PIPE_CAP_LEGACY_MATH_RULES:
         case PIPE_CAP_TGSI_TEXCOORD:
-        case PIPE_CAP_CALL_FINALIZE_NIR_IN_LINKER:
             return 1;
 
         case PIPE_CAP_TEXTURE_TRANSFER_MODES:
@@ -178,8 +176,10 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
             return !r300screen->caps.has_tcl;
 
         /* HWTCL-only features / limitations. */
-        case PIPE_CAP_VERTEX_INPUT_ALIGNMENT:
-            return r300screen->caps.has_tcl ? PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE : PIPE_VERTEX_INPUT_ALIGNMENT_NONE;
+        case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
+        case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
+        case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
+            return r300screen->caps.has_tcl;
 
         /* Texturing. */
         case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
@@ -282,6 +282,8 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
            return r300screen->caps.num_tex_units;
         case PIPE_SHADER_CAP_CONT_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
+        case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+        case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
         case PIPE_SHADER_CAP_SUBROUTINES:
@@ -367,6 +369,8 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
         case PIPE_SHADER_CAP_CONT_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
+        case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+        case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
         case PIPE_SHADER_CAP_SUBROUTINES:
         case PIPE_SHADER_CAP_INTEGERS:
@@ -484,7 +488,8 @@ static int r300_get_video_param(struct pipe_screen *screen,
    .lower_insert_word = true,                 \
    .lower_uniforms_to_ubo = true,             \
    .lower_vector_cmp = true,                  \
-   .no_integers = true
+   .no_integers = true,                       \
+   .use_interpolated_input_intrinsics = true
 
 static const nir_shader_compiler_options r500_vs_compiler_options = {
    COMMON_NIR_OPTIONS,
@@ -534,15 +539,6 @@ static const nir_shader_compiler_options r300_fs_compiler_options = {
    .max_unroll_iterations = 64,
 };
 
-static const nir_shader_compiler_options gallivm_compiler_options = {
-   COMMON_NIR_OPTIONS,
-   .has_fused_comp_and_csel = true,
-   .max_unroll_iterations = 32,
-
-   .support_indirect_inputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES),
-   .support_indirect_outputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES),
-};
-
 static const void *
 r300_get_compiler_options(struct pipe_screen *pscreen,
                           enum pipe_shader_ir ir,
@@ -552,9 +548,7 @@ r300_get_compiler_options(struct pipe_screen *pscreen,
 
    assert(ir == PIPE_SHADER_IR_NIR);
 
-   if (shader == PIPE_SHADER_VERTEX && !r300screen->caps.has_tcl) {
-      return &gallivm_compiler_options;
-   } else if (r300screen->caps.is_r500) {
+   if (r300screen->caps.is_r500) {
       if (shader == PIPE_SHADER_VERTEX)
          return &r500_vs_compiler_options;
        else
@@ -831,26 +825,12 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300_init_debug(r300screen);
     r300_parse_chipset(r300screen->info.pci_id, &r300screen->caps);
 
-    driParseConfigFiles(config->options, config->options_info, 0, "r300", NULL,
-                        NULL, NULL, 0, NULL, 0);
-
-#define OPT_BOOL(name, dflt, description)                                                          \
-    r300screen->options.name = driQueryOptionb(config->options, "r300_" #name);
-#include "r300_debug_options.h"
-
-    if (SCREEN_DBG_ON(r300screen, DBG_NO_ZMASK) ||
-        r300screen->options.nozmask)
+    if (SCREEN_DBG_ON(r300screen, DBG_NO_ZMASK))
         r300screen->caps.zmask_ram = 0;
-    if (SCREEN_DBG_ON(r300screen, DBG_NO_HIZ) ||
-        r300screen->options.nohiz)
+    if (SCREEN_DBG_ON(r300screen, DBG_NO_HIZ))
         r300screen->caps.hiz_ram = 0;
     if (SCREEN_DBG_ON(r300screen, DBG_NO_TCL))
         r300screen->caps.has_tcl = false;
-
-    if (SCREEN_DBG_ON(r300screen, DBG_IEEEMATH))
-        r300screen->options.ieeemath = true;
-    if (SCREEN_DBG_ON(r300screen, DBG_FFMATH))
-        r300screen->options.ffmath = true;
 
     r300screen->rws = rws;
     r300screen->screen.destroy = r300_destroy_screen;

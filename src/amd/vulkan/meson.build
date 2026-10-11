@@ -111,8 +111,8 @@ libradv_files = files(
   'radv_device_memory.h',
   'radv_descriptor_set.c',
   'radv_descriptor_set.h',
-  'radv_dgc.c',
-  'radv_dgc.h',
+  'radv_device_generated_commands.c',
+  'radv_device_generated_commands.h',
   'radv_event.c',
   'radv_event.h',
   'radv_formats.c',
@@ -127,8 +127,6 @@ libradv_files = files(
   'radv_physical_device.c',
   'radv_pipeline.c',
   'radv_pipeline.h',
-  'radv_pipeline_binary.c',
-  'radv_pipeline_binary.h',
   'radv_pipeline_cache.c',
   'radv_pipeline_cache.h',
   'radv_pipeline_compute.c',
@@ -176,6 +174,8 @@ if not with_platform_windows
     'winsys/amdgpu/radv_amdgpu_bo.h',
     'winsys/amdgpu/radv_amdgpu_cs.c',
     'winsys/amdgpu/radv_amdgpu_cs.h',
+    'winsys/amdgpu/radv_amdgpu_surface.c',
+    'winsys/amdgpu/radv_amdgpu_surface.h',
     'winsys/amdgpu/radv_amdgpu_winsys.c',
     'winsys/amdgpu/radv_amdgpu_winsys.h',
     'winsys/amdgpu/radv_amdgpu_winsys_public.h',
@@ -190,6 +190,9 @@ if amd_with_llvm
     'radv_nir_to_llvm.h',
   )
 endif
+
+subdir('radix_sort')
+libradv_files += radix_sort_files
 
 subdir('bvh')
 
@@ -269,7 +272,7 @@ endif
 
 icd_command = [
   prog_python, '@INPUT0@',
-  '--api-version', '1.4', '--xml', '@INPUT1@',
+  '--api-version', '1.3', '--xml', '@INPUT1@',
   '--lib-path', join_paths(icd_lib_path, icd_file_name),
   '--out', '@OUTPUT@',
 ]
@@ -295,7 +298,7 @@ _dev_icd = custom_target(
   output : _dev_icdname,
   command : [
     prog_python, '@INPUT0@',
-    '--api-version', '1.4', '--xml', '@INPUT1@',
+    '--api-version', '1.3', '--xml', '@INPUT1@',
     '--lib-path', meson.current_build_dir() / icd_file_name,
     '--out', '@OUTPUT@',
   ],

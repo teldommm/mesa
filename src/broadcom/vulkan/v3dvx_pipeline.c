@@ -625,13 +625,18 @@ get_attr_type(const struct util_format_description *desc)
          attr_type = ATTRIBUTE_BYTE;
          break;
       default:
-         mesa_loge("format %s unsupported\n", desc->name);
+         fprintf(stderr,
+                 "format %s unsupported\n",
+                 desc->name);
+         attr_type = ATTRIBUTE_BYTE;
          abort();
       }
       break;
 
    default:
-      mesa_loge("format %s unsupported\n", desc->name);
+      fprintf(stderr,
+              "format %s unsupported\n",
+              desc->name);
       abort();
    }
 
@@ -764,14 +769,14 @@ v3dX(create_default_attribute_values)(struct v3dv_device *device,
    bo = v3dv_bo_alloc(device, size, "default_vi_attributes", true);
 
    if (!bo) {
-      mesa_loge("failed to allocate memory for the default "
-                "attribute values\n");
+      fprintf(stderr, "failed to allocate memory for the default "
+              "attribute values\n");
       return NULL;
    }
 
    bool ok = v3dv_bo_map(device, bo, size);
    if (!ok) {
-      mesa_loge("failed to map default attribute values buffer\n");
+      fprintf(stderr, "failed to map default attribute values buffer\n");
       return NULL;
    }
 

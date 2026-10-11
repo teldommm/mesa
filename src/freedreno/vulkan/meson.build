@@ -143,7 +143,6 @@ tu_cpp_args += cpp.get_supported_arguments([
   '-Wno-unused-function',
   '-Wno-writable-strings',
   '-Wno-write-strings',
-  '-Wno-vla-cxx-extension',
 ])
 
 # HACK compiler.get_supported_arguments()/has_argument() do not seem
@@ -208,7 +207,7 @@ freedreno_icd = custom_target(
   output : 'freedreno_icd.@0@.json'.format(host_machine.cpu()),
   command : [
     prog_python, '@INPUT0@',
-    '--api-version', '1.4', '--xml', '@INPUT1@',
+    '--api-version', '1.1', '--xml', '@INPUT1@',
     '--lib-path', join_paths(get_option('prefix'), get_option('libdir'),
                              'libvulkan_freedreno.so'),
     '--out', '@OUTPUT@',
@@ -226,7 +225,7 @@ _dev_icd = custom_target(
   output : _dev_icdname,
   command : [
     prog_python, '@INPUT0@',
-    '--api-version', '1.4', '--xml', '@INPUT1@',
+    '--api-version', '1.1', '--xml', '@INPUT1@',
     '--lib-path', meson.current_build_dir() / 'libvulkan_freedreno.so',
     '--out', '@OUTPUT@',
   ],

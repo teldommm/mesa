@@ -39,7 +39,6 @@ get_io_intrinsic(nir_instr *instr, nir_variable_mode modes,
 
    switch (intr->intrinsic) {
    case nir_intrinsic_load_input:
-   case nir_intrinsic_load_per_primitive_input:
    case nir_intrinsic_load_input_vertex:
    case nir_intrinsic_load_interpolated_input:
    case nir_intrinsic_load_per_vertex_input:
@@ -47,10 +46,8 @@ get_io_intrinsic(nir_instr *instr, nir_variable_mode modes,
       return modes & nir_var_shader_in ? intr : NULL;
    case nir_intrinsic_load_output:
    case nir_intrinsic_load_per_vertex_output:
-   case nir_intrinsic_load_per_view_output:
    case nir_intrinsic_store_output:
    case nir_intrinsic_store_per_vertex_output:
-   case nir_intrinsic_store_per_view_output:
       *out_mode = nir_var_shader_out;
       return modes & nir_var_shader_out ? intr : NULL;
    default:
@@ -93,7 +90,7 @@ nir_recompute_io_bases(nir_shader *nir, nir_variable_mode modes)
 
          if (mode == nir_var_shader_in) {
             for (unsigned i = 0; i < num_slots; i++) {
-               if (intr->intrinsic == nir_intrinsic_load_per_primitive_input)
+               if (sem.per_primitive)
                   BITSET_SET(per_prim_inputs, sem.location + i);
                else
                   BITSET_SET(inputs, sem.location + i);
@@ -126,7 +123,7 @@ nir_recompute_io_bases(nir_shader *nir, nir_variable_mode modes)
             num_slots = (num_slots + sem.high_16bits + 1) / 2;
 
          if (mode == nir_var_shader_in) {
-            if (intr->intrinsic == nir_intrinsic_load_per_primitive_input) {
+            if (sem.per_primitive) {
                nir_intrinsic_set_base(intr,
                                       num_normal_inputs +
                                       BITSET_PREFIX_SUM(per_prim_inputs, sem.location));
@@ -586,10 +583,8 @@ nir_lower_mediump_vars(nir_shader *shader, nir_variable_mode modes)
                nir_variable *var = nir_deref_instr_get_variable(deref);
 
                /* If we have atomic derefs that we can't track, then don't lower any mediump.  */
-               if (!var) {
-                  ralloc_free(no_lower_set);
+               if (!var)
                   return false;
-               }
 
                _mesa_set_add(no_lower_set, var);
                break;
@@ -746,15 +741,14 @@ can_opt_16bit_src(nir_def *ssa, nir_alu_type src_type, bool sext_matters)
             can_opt &= (const_is_u16(comp) || const_is_i16(comp));
       } else if (nir_scalar_is_alu(comp)) {
          nir_alu_instr *alu = nir_instr_as_alu(comp.def->parent_instr);
-         bool is_16bit = alu->src[0].src.ssa->bit_size == 16;
+         if (alu->src[0].src.ssa->bit_size != 16)
+            return false;
 
-         if ((alu->op == nir_op_f2f32 && is_16bit) ||
-             alu->op == nir_op_unpack_half_2x16_split_x ||
-             alu->op == nir_op_unpack_half_2x16_split_y)
+         if (alu->op == nir_op_f2f32)
             can_opt &= opt_f16;
-         else if (alu->op == nir_op_i2i32 && is_16bit)
+         else if (alu->op == nir_op_i2i32)
             can_opt &= opt_i16 || opt_i16_u16;
-         else if (alu->op == nir_op_u2u32 && is_16bit)
+         else if (alu->op == nir_op_u2u32)
             can_opt &= opt_u16 || opt_i16_u16;
          else
             return false;
@@ -787,23 +781,6 @@ opt_16bit_src(nir_builder *b, nir_instr *instr, nir_src *src, nir_alu_type src_t
       } else {
          /* conversion instruction */
          new_comps[i] = nir_scalar_chase_alu_src(comp, 0);
-         if (new_comps[i].def->bit_size != 16) {
-            assert(new_comps[i].def->bit_size == 32);
-
-            nir_def *extract = nir_channel(b, new_comps[i].def, new_comps[i].comp);
-            switch (nir_scalar_alu_op(comp)) {
-            case nir_op_unpack_half_2x16_split_x:
-               extract = nir_unpack_32_2x16_split_x(b, extract);
-               break;
-            case nir_op_unpack_half_2x16_split_y:
-               extract = nir_unpack_32_2x16_split_y(b, extract);
-               break;
-            default:
-               unreachable("unsupported alu op");
-            }
-
-            new_comps[i] = nir_get_scalar(extract, 0);
-         }
       }
    }
 

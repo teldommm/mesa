@@ -15,52 +15,52 @@ use rusticl_proc_macros::cl_info_entrypoint;
 use std::ffi::c_char;
 use std::ffi::c_void;
 use std::mem::transmute;
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::slice;
 
 #[cl_info_entrypoint(clGetContextInfo)]
-unsafe impl CLInfo<cl_context_info> for cl_context {
-    fn query(&self, q: cl_context_info, v: CLInfoValue) -> CLResult<CLInfoRes> {
+impl CLInfo<cl_context_info> for cl_context {
+    fn query(&self, q: cl_context_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         let ctx = Context::ref_from_raw(*self)?;
-        match q {
-            CL_CONTEXT_DEVICES => v.write::<Vec<cl_device_id>>(
+        Ok(match q {
+            CL_CONTEXT_DEVICES => cl_prop::<Vec<cl_device_id>>(
                 ctx.devs
                     .iter()
                     .map(|&d| cl_device_id::from_ptr(d))
                     .collect(),
             ),
-            CL_CONTEXT_NUM_DEVICES => v.write::<cl_uint>(ctx.devs.len() as u32),
-            // need to return None if no properties exist
-            CL_CONTEXT_PROPERTIES => v.write::<&Properties<cl_context_properties>>(&ctx.properties),
-            CL_CONTEXT_REFERENCE_COUNT => v.write::<cl_uint>(Context::refcnt(*self)?),
+            CL_CONTEXT_NUM_DEVICES => cl_prop::<cl_uint>(ctx.devs.len() as u32),
+            CL_CONTEXT_PROPERTIES => cl_prop::<&Properties<cl_context_properties>>(&ctx.properties),
+            CL_CONTEXT_REFERENCE_COUNT => cl_prop::<cl_uint>(Context::refcnt(*self)?),
             // CL_INVALID_VALUE if param_name is not one of the supported values
-            _ => Err(CL_INVALID_VALUE),
-        }
+            _ => return Err(CL_INVALID_VALUE),
+        })
     }
 }
 
-unsafe impl CLInfo<cl_gl_context_info> for GLCtxManager {
-    fn query(&self, q: cl_gl_context_info, v: CLInfoValue) -> CLResult<CLInfoRes> {
+impl CLInfo<cl_gl_context_info> for GLCtxManager {
+    fn query(&self, q: cl_gl_context_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         let info = self.interop_dev_info;
 
-        match q {
+        Ok(match q {
             CL_CURRENT_DEVICE_FOR_GL_CONTEXT_KHR => {
                 let ptr = match get_dev_for_uuid(info.device_uuid) {
                     Some(dev) => dev,
                     None => ptr::null(),
                 };
-                v.write::<cl_device_id>(cl_device_id::from_ptr(ptr))
+                cl_prop::<cl_device_id>(cl_device_id::from_ptr(ptr))
             }
             CL_DEVICES_FOR_GL_CONTEXT_KHR => {
                 // TODO: support multiple devices
-                v.write_iter::<cl_device_id>(
-                    get_dev_for_uuid(info.device_uuid)
-                        .iter()
-                        .map(|&d| cl_device_id::from_ptr(d)),
-                )
+                let devs = get_dev_for_uuid(info.device_uuid)
+                    .iter()
+                    .map(|&d| cl_device_id::from_ptr(d))
+                    .collect();
+                cl_prop::<&Vec<cl_device_id>>(&devs)
             }
-            _ => Err(CL_INVALID_VALUE),
-        }
+            _ => return Err(CL_INVALID_VALUE),
+        })
     }
 }
 
@@ -77,22 +77,21 @@ pub fn get_gl_context_info_khr(
     let mut gl_context: *mut c_void = ptr::null_mut();
 
     // CL_INVALID_PROPERTY [...] if the same property name is specified more than once.
-    // SAFETY: properties is a 0 terminated array by spec.
-    let props = unsafe { Properties::new(properties) }.ok_or(CL_INVALID_PROPERTY)?;
-    for (&key, &val) in props.iter() {
-        match key as u32 {
+    let props = Properties::from_ptr(properties).ok_or(CL_INVALID_PROPERTY)?;
+    for p in &props.props {
+        match p.0 as u32 {
             // CL_INVALID_PLATFORM [...] if platform value specified in properties is not a valid platform.
             CL_CONTEXT_PLATFORM => {
-                (val as cl_platform_id).get_ref()?;
+                (p.1 as cl_platform_id).get_ref()?;
             }
             CL_EGL_DISPLAY_KHR => {
-                egl_display = val as *mut _;
+                egl_display = p.1 as *mut _;
             }
             CL_GL_CONTEXT_KHR => {
-                gl_context = val as *mut _;
+                gl_context = p.1 as *mut _;
             }
             CL_GLX_DISPLAY_KHR => {
-                glx_display = val as *mut _;
+                glx_display = p.1 as *mut _;
             }
             // CL_INVALID_PROPERTY if context property name in properties is not a supported property name
             _ => return Err(CL_INVALID_PROPERTY),
@@ -100,16 +99,14 @@ pub fn get_gl_context_info_khr(
     }
 
     let gl_ctx_manager = GLCtxManager::new(gl_context, glx_display, egl_display)?;
-    unsafe {
-        gl_ctx_manager
-            .ok_or(CL_INVALID_GL_SHAREGROUP_REFERENCE_KHR)?
-            .get_info(
-                param_name,
-                param_value_size,
-                param_value,
-                param_value_size_ret,
-            )
-    }
+    gl_ctx_manager
+        .ok_or(CL_INVALID_GL_SHAREGROUP_REFERENCE_KHR)?
+        .get_info(
+            param_name,
+            param_value_size,
+            param_value,
+            param_value_size_ret,
+        )
 }
 
 #[cl_entrypoint(clCreateContext)]
@@ -140,25 +137,24 @@ fn create_context(
     let mut gl_context: *mut c_void = ptr::null_mut();
 
     // CL_INVALID_PROPERTY [...] if the same property name is specified more than once.
-    // SAFETY: properties is a 0 terminated array by spec.
-    let props = unsafe { Properties::new(properties) }.ok_or(CL_INVALID_PROPERTY)?;
-    for (&key, &val) in props.iter() {
-        match key as u32 {
+    let props = Properties::from_ptr(properties).ok_or(CL_INVALID_PROPERTY)?;
+    for p in &props.props {
+        match p.0 as u32 {
             // CL_INVALID_PLATFORM [...] if platform value specified in properties is not a valid platform.
             CL_CONTEXT_PLATFORM => {
-                (val as cl_platform_id).get_ref()?;
+                (p.1 as cl_platform_id).get_ref()?;
             }
             CL_CONTEXT_INTEROP_USER_SYNC => {
-                check_cl_bool(val).ok_or(CL_INVALID_PROPERTY)?;
+                check_cl_bool(p.1).ok_or(CL_INVALID_PROPERTY)?;
             }
             CL_EGL_DISPLAY_KHR => {
-                egl_display = val as *mut _;
+                egl_display = p.1 as *mut _;
             }
             CL_GL_CONTEXT_KHR => {
-                gl_context = val as *mut _;
+                gl_context = p.1 as *mut _;
             }
             CL_GLX_DISPLAY_KHR => {
-                glx_display = val as *mut _;
+                glx_display = p.1 as *mut _;
             }
             // CL_INVALID_PROPERTY if context property name in properties is not a supported property name
             _ => return Err(CL_INVALID_PROPERTY),

@@ -22,7 +22,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_IR_ALLOCATOR_H
+#define ELK_IR_ALLOCATOR_H
 
 #include "util/compiler.h"
 #include "util/glheader.h"
@@ -41,15 +42,11 @@ namespace elk {
       {
       }
 
-      simple_allocator(const simple_allocator &) = delete;
-
       ~simple_allocator()
       {
          free(offsets);
          free(sizes);
       }
-
-      simple_allocator & operator=(const simple_allocator &) = delete;
 
       unsigned
       allocate(unsigned size)
@@ -91,3 +88,5 @@ namespace elk {
       unsigned capacity;
    };
 }
+
+#endif

@@ -56,9 +56,6 @@ public:
       this->data_enter = ir_set;
    }
 
-   ir_validate(const ir_validate &) = delete;
-   ir_validate & operator=(const ir_validate &) = delete;
-
    ~ir_validate()
    {
       _mesa_set_destroy(this->ir_set, NULL);

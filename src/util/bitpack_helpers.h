@@ -24,7 +24,6 @@
 #ifndef UTIL_BITPACK_HELPERS_H
 #define UTIL_BITPACK_HELPERS_H
 
-#ifndef __OPENCL_VERSION__
 #include <math.h>
 #include <stdbool.h>
 
@@ -38,9 +37,6 @@
 #define util_bitpack_validate_value(x) \
    VALGRIND_CHECK_MEM_IS_DEFINED(&(x), sizeof(x))
 #endif
-#endif
-#else
-#include "compiler/libcl/libcl.h"
 #endif
 
 #ifndef util_bitpack_validate_value
@@ -119,7 +115,6 @@ util_bitpack_float_nonzero(float v)
    return util_bitpack_float(v);
 }
 
-#ifndef __OPENCL_VERSION__
 ALWAYS_INLINE static uint64_t
 util_bitpack_sfixed(float v, uint32_t start, uint32_t end,
                     uint32_t fract_bits)
@@ -211,6 +206,5 @@ util_bitpack_ufixed_nonzero(float v, uint32_t start, uint32_t end,
    assert(v != 0.0f);
    return util_bitpack_ufixed(v, start, end, fract_bits);
 }
-#endif
 
 #endif /* UTIL_BITPACK_HELPERS_H */

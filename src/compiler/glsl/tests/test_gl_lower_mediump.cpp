@@ -33,10 +33,9 @@
 #include "nir.h"
 #include "gl_nir.h"
 #include "gl_nir_linker.h"
-#include "glsl_parser_extras.h"
 #include "glsl_to_nir.h"
-#include "linker_util.h"
 #include "nir_builder.h"
+#include "program.h"
 
 /* The printed-GLSL-IR tests use fmemopen so we can do stdio to memory (or you'd
  * need equivalent tempfiles that you manage).  Just disable this test on those
@@ -88,6 +87,14 @@ namespace
          return alu->def.bit_size;
       }
 
+      char *get_fs_ir(void) {
+         char temp[4096];
+         FILE *ftemp = fmemopen(temp, sizeof(temp), "w");
+         _mesa_print_ir(ftemp, whole_program->_LinkedShaders[MESA_SHADER_FRAGMENT]->ir, NULL);
+         fclose(ftemp);
+         return strdup(temp);
+      }
+
       /* Returns the common bit size of all src operands (failing if not matching). */
       uint32_t op_src_bits(nir_op op)
       {
@@ -129,7 +136,10 @@ namespace
          }
       }
 
+      ralloc_free(whole_program->_LinkedShaders[MESA_SHADER_VERTEX]->Program->nir);
       standalone_destroy_shader_program(whole_program);
+
+      ralloc_free(nir);
 
       free(fs_ir);
 
@@ -141,18 +151,7 @@ namespace
    {
       struct gl_shader *shader = standalone_add_shader_source(ctx, whole_program, type, source);
 
-      /* Save off the GLSL IR, since the compile frees it. */
-      char temp[4096];
-      FILE *ftemp = NULL;
-      if (type == GL_FRAGMENT_SHADER)
-         ftemp = fmemopen(temp, sizeof(temp), "w");
-
-      _mesa_glsl_compile_shader(ctx, shader, ftemp, false, false, true);
-
-      if (type == GL_FRAGMENT_SHADER) {
-         fclose(ftemp);
-         fs_ir = strdup(temp);
-      }
+      _mesa_glsl_compile_shader(ctx, shader, false, false, true);
 
       return shader;
    }
@@ -205,13 +204,27 @@ namespace
          ASSERT_EQ(shader->CompileStatus, COMPILE_SUCCESS);
       }
 
-      link_shaders_init(ctx, whole_program);
-      gl_nir_link_glsl(ctx, whole_program);
+      link_shaders(ctx, whole_program);
       if (whole_program->data->LinkStatus != LINKING_SUCCESS)
          fprintf(stderr, "Linker error: %s", whole_program->data->InfoLog);
       EXPECT_EQ(whole_program->data->LinkStatus, LINKING_SUCCESS);
 
-      nir = whole_program->_LinkedShaders[MESA_SHADER_FRAGMENT]->Program->nir;
+      /* Save off the GLSL IR now, since glsl_to_nir() frees it. */
+      fs_ir = get_fs_ir();
+
+      struct gl_linked_shader *sh = whole_program->_LinkedShaders[MESA_SHADER_VERTEX];
+      sh->Program->nir = glsl_to_nir(&ctx->Const, &sh->ir, &sh->Program->info,
+                                     MESA_SHADER_VERTEX, &compiler_options);
+
+      sh = whole_program->_LinkedShaders[MESA_SHADER_FRAGMENT];
+      sh->Program->nir = glsl_to_nir(&ctx->Const, &sh->ir, &sh->Program->info,
+                                     MESA_SHADER_FRAGMENT, &compiler_options);
+      nir = sh->Program->nir;
+
+      gl_nir_link_glsl(ctx, whole_program);
+      if (whole_program->data->LinkStatus != LINKING_SUCCESS)
+         fprintf(stderr, "Linker error: %s", whole_program->data->InfoLog);
+      EXPECT_EQ(whole_program->data->LinkStatus, LINKING_SUCCESS);
 
       /* Store the source for printing from later assertions. */
       this->source = source;

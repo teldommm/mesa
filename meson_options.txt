@@ -12,7 +12,7 @@ option(
   type : 'array',
   value : ['auto'],
   choices : [
-    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos',
+    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows',
   ],
   description : 'window systems to support. If this is set to `auto`, all ' +
                 'platforms applicable will be enabled.'
@@ -52,6 +52,13 @@ option(
 )
 
 option(
+  'dri3',
+  type : 'feature',
+  deprecated: {'true': 'enabled', 'false': 'disabled'},
+  description : 'enable support for dri3'
+)
+
+option(
   'dri-drivers-path',
   type : 'string',
   value : '',
@@ -64,6 +71,14 @@ option(
   value : false,
   description : 'Do not include mesa version in libgallium DSO filename. ' +
                 'Do not enable unless you know what you are doing. Default: false'
+)
+
+option(
+  'dri-search-path',
+  type : 'string',
+  value : '',
+  description : 'Locations to search for dri drivers, passed as colon ' +
+                'separated list. Default: dri-drivers-path.'
 )
 
 option(
@@ -108,6 +123,22 @@ option(
   type : 'string',
   value : '',
   description : 'path to put vdpau libraries. defaults to $libdir/vdpau.'
+)
+
+option(
+  'gallium-omx',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'disabled', 'bellagio', 'tizonia'],
+  description : 'enable gallium omx frontend.',
+)
+
+option(
+  'omx-libs-path',
+  type : 'string',
+  value : '',
+  description : 'path to put omx libraries. defaults to omx-bellagio ' +
+                'pkg-config pluginsdir.'
 )
 
 option(
@@ -161,14 +192,6 @@ option(
 )
 
 option(
-  'gallium-rusticl-enable-drivers',
-  type : 'array',
-  value : ['auto', 'asahi'],
-  description : 'List of gallium drivers for which rusticl will be enabled ' +
-                'by default',
-)
-
-option(
   'gallium-wgl-dll-name',
   type : 'string',
   value : 'libgallium_wgl',
@@ -182,6 +205,14 @@ option(
   value : 'libgallium_d3d10',
   description : 'name of gallium d3d10 target DLL built for Windows. ' +
                 'defaults to libgallium_d3d10.dll to match DRI',
+)
+
+option(
+  'opencl-spirv',
+  type : 'boolean',
+  value : false,
+  description : 'build gallium "clover" OpenCL frontend with SPIR-V ' +
+                'binary support.',
 )
 
 option(
@@ -205,8 +236,7 @@ option(
   value : ['auto'],
   choices : ['auto', 'amd', 'broadcom', 'freedreno', 'intel', 'intel_hasvk',
              'panfrost', 'swrast', 'virtio', 'imagination-experimental',
-             'microsoft-experimental', 'nouveau', 'asahi', 'gfxstream',
-             'wrapper', 'all'],
+             'microsoft-experimental', 'nouveau', 'wrapper', 'all'],
   description : 'List of vulkan drivers to build. If this is set to auto ' +
                 'all drivers applicable to the target OS/architecture ' +
                 'will be built'
@@ -281,7 +311,7 @@ option(
   'vulkan-layers',
   type : 'array',
   value : [],
-  choices : ['device-select', 'intel-nullhw', 'overlay', 'screenshot'],
+  choices : ['device-select', 'intel-nullhw', 'overlay'],
   description : 'List of vulkan layers to build'
 )
 
@@ -489,8 +519,10 @@ option(
 option(
   'selinux',
   type : 'boolean',
-  deprecated : true,
-  description : 'Does nothing, left here for a while to avoid build breakages.',
+  value : false,
+  description : 'Build an SELinux-aware Mesa.  This currently disables ' +
+                'execmem support at runtime unless SELinux is configured ' +
+                'with allow_execmem.'
 )
 
 option(
@@ -658,13 +690,6 @@ option(
 )
 
 option(
-  'intel-bvh-grl',
-  type : 'boolean',
-  value : false,
-  description : 'Build the BVH structure using GRL.'
-)
-
-option(
   'install-intel-clc',
   type : 'boolean',
   value : false,
@@ -732,14 +757,4 @@ option(
   description : 'Build custom xmlconfig (driconf) support. If disabled, ' +
                 'the default driconf file is hardcoded into Mesa. ' +
                 'Requires expat.'
-)
-
-option(
-  'legacy-x11',
-  type : 'array',
-  value : ['none'],
-  description : 'Build legacy X11 support features.',
-  choices : [
-    'none', 'dri2'
-  ],
 )

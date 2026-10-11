@@ -993,8 +993,6 @@ llvmpipe_transfer_map_ms(struct pipe_context *pipe,
 
    if (llvmpipe_resource_is_texture(resource) && (resource->flags & PIPE_RESOURCE_FLAG_SPARSE)) {
       map = llvmpipe_resource_map(resource, 0, 0, tex_usage);
-      if (!map)
-         return NULL;
 
       lpt->block_box = (struct pipe_box) {
          .x = box->x / util_format_get_blockwidth(format),
@@ -1036,8 +1034,7 @@ llvmpipe_transfer_map_ms(struct pipe_context *pipe,
    }
 
    map = llvmpipe_resource_map(resource, level, box->z, tex_usage);
-   if (!map)
-      return NULL;
+
 
    /* May want to do different things here depending on read/write nature
     * of the map:
@@ -1509,7 +1506,6 @@ llvmpipe_import_memory_fd(struct pipe_screen *screen,
       if (!ret) {
          free(alloc);
          *ptr = NULL;
-         return false;
       } else {
          *ptr = (struct pipe_memory_allocation*)alloc;
       }

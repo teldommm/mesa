@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 
-set -u
-
-uncollapsed_section_start wine "Setting up Wine"
-
 export WINEPREFIX="$1"
 export WINEDEBUG="-all"
 
@@ -26,5 +22,3 @@ rm crashdialog.reg
 # it a bit more of time for it to be created solves the problem
 # ...
 while ! test -f  "${WINEPREFIX}/system.reg"; do sleep 1; done
-
-section_end wine

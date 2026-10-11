@@ -43,7 +43,7 @@ struct gbm_dri_bo;
 
 struct gbm_dri_visual {
    uint32_t gbm_format;
-   int pipe_format;
+   int dri_image_format;
 };
 
 struct gbm_dri_device {
@@ -51,30 +51,35 @@ struct gbm_dri_device {
 
    char *driver_name; /* Name of the DRI module, without the _dri suffix */
    bool software; /* A software driver was loaded */
-   bool swrast; /* this is swrast */
-   bool has_dmabuf_import;
-   bool has_dmabuf_export;
-   bool has_compression_modifiers;
 
-   struct dri_screen *screen;
-   struct dri_context *context;
+   __DRIscreen *screen;
+   __DRIcontext *context;
    mtx_t mutex;
 
-   const struct dri_config   **driver_configs;
+   const __DRIcoreExtension   *core;
+   const __DRImesaCoreExtension   *mesa;
+   const __DRIimageExtension  *image;
+   const __DRIimageDriverExtension  *image_driver;
+   const __DRIswrastExtension *swrast;
+   const __DRIkopperExtension *kopper;
+   const __DRI2flushExtension *flush;
+
+   const __DRIconfig   **driver_configs;
    const __DRIextension **loader_extensions;
+   const __DRIextension **driver_extensions;
 
    GLboolean (*validate_image)(void *image, void *data);
-   struct dri_image *(*lookup_image_validated)(void *image, void *data);
+   __DRIimage *(*lookup_image_validated)(void *image, void *data);
    void *lookup_user_data;
 
-   void (*flush_front_buffer)(struct dri_drawable * driDrawable, void *data);
-   int (*image_get_buffers)(struct dri_drawable *driDrawable,
+   void (*flush_front_buffer)(__DRIdrawable * driDrawable, void *data);
+   int (*image_get_buffers)(__DRIdrawable *driDrawable,
                             unsigned int format,
                             uint32_t *stamp,
                             void *loaderPrivate,
                             uint32_t buffer_mask,
                             struct __DRIimageList *buffers);
-   void (*swrast_put_image2)(struct dri_drawable *driDrawable,
+   void (*swrast_put_image2)(__DRIdrawable *driDrawable,
                              int            op,
                              int            x,
                              int            y,
@@ -83,7 +88,7 @@ struct gbm_dri_device {
                              int            stride,
                              char          *data,
                              void          *loaderPrivate);
-   void (*swrast_get_image)(struct dri_drawable *driDrawable,
+   void (*swrast_get_image)(__DRIdrawable *driDrawable,
                             int            x,
                             int            y,
                             int            width,
@@ -100,7 +105,7 @@ struct gbm_dri_device {
 struct gbm_dri_bo {
    struct gbm_bo base;
 
-   struct dri_image *image;
+   __DRIimage *image;
 
    /* Used for cursors and the swrast front BO */
    uint32_t handle, size;

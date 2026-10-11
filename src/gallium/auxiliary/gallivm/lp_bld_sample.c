@@ -332,7 +332,7 @@ lp_build_pmin(struct lp_build_sample_context *bld,
    LLVMValueRef temp = lp_build_mul(coord_bld, pmin2, max_aniso);
 
    LLVMValueRef comp = lp_build_compare(gallivm, coord_bld->type, PIPE_FUNC_GREATER,
-                                        pmax2, temp);
+                                        pmin2, temp);
 
    LLVMValueRef pmin2_alt = lp_build_div(coord_bld, pmax2, max_aniso);
 
@@ -924,14 +924,14 @@ lp_build_lod_selector(struct lp_build_sample_context *bld,
             }
          }
 
-         /* get more accurate results if we just sqaure rho always */
-         if (!rho_squared)
-            rho = lp_build_mul(lodf_bld, rho, rho);
-
-         if (is_lodq)
+         if (0) {
             lod = lp_build_log2(lodf_bld, rho);
-         else
+         } else {
+            /* get more accurate results if we just sqaure rho always */
+            if (!rho_squared)
+               rho = lp_build_mul(lodf_bld, rho, rho);
             lod = lp_build_fast_log2(lodf_bld, rho);
+         }
 
          /* log2(x^2) == 0.5*log2(x) */
          lod = lp_build_mul(lodf_bld, lod,

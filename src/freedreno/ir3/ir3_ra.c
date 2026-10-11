@@ -1,7 +1,25 @@
 /*
- * Copyright © 2021 Valve Corporation
- * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2021 Valve Corporation
+ * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "ir3_ra.h"
@@ -1352,55 +1370,6 @@ find_best_gap(struct ra_ctx *ctx, struct ra_file *file,
    return (physreg_t)~0;
 }
 
-static physreg_t
-try_allocate_src(struct ra_ctx *ctx, struct ra_file *file,
-                 struct ir3_register *reg)
-{
-   unsigned file_size = reg_file_size(file, reg);
-   unsigned size = reg_size(reg);
-   for (unsigned i = 0; i < reg->instr->srcs_count; i++) {
-      struct ir3_register *src = reg->instr->srcs[i];
-      if (!ra_reg_is_src(src))
-         continue;
-      if (ra_get_file(ctx, src) == file && reg_size(src) >= size) {
-         struct ra_interval *src_interval = &ctx->intervals[src->def->name];
-         physreg_t src_physreg = ra_interval_get_physreg(src_interval);
-         if (src_physreg % reg_elem_size(reg) == 0 &&
-             src_physreg + size <= file_size &&
-             get_reg_specified(ctx, file, reg, src_physreg, false))
-            return src_physreg;
-      }
-   }
-
-   return ~0;
-}
-
-static bool
-rpt_has_unique_merge_set(struct ir3_instruction *instr)
-{
-   assert(ir3_instr_is_rpt(instr));
-
-   if (!instr->dsts[0]->merge_set)
-      return false;
-
-   struct ir3_instruction *first = ir3_instr_first_rpt(instr);
-   struct ir3_register *def = first->dsts[0];
-
-   if (def->merge_set != instr->dsts[0]->merge_set ||
-       def->merge_set->regs_count != ir3_instr_rpt_length(first)) {
-      return false;
-   }
-
-   unsigned i = 0;
-
-   foreach_instr_rpt (rpt, first) {
-      if (rpt->dsts[0] != def->merge_set->regs[i++])
-         return false;
-   }
-
-   return true;
-}
-
 /* This is the main entrypoint for picking a register. Pick a free register
  * for "reg", shuffling around sources if necessary. In the normal case where
  * "is_source" is false, this register can overlap with killed sources
@@ -1421,18 +1390,6 @@ get_reg(struct ra_ctx *ctx, struct ra_file *file, struct ir3_register *reg)
           preferred_reg % reg_elem_size(reg) == 0 &&
           get_reg_specified(ctx, file, reg, preferred_reg, false))
          return preferred_reg;
-   }
-
-   /* For repeated instructions whose merge set is unique (i.e., only used for
-    * these repeated instructions), try to first allocate one of their sources
-    * (for the same reason as for ALU/SFU instructions explained below). This
-    * also prevents us from allocating a new register range for this merge set
-    * when the one from a source could be reused.
-    */
-   if (ir3_instr_is_rpt(reg->instr) && rpt_has_unique_merge_set(reg->instr)) {
-      physreg_t src_reg = try_allocate_src(ctx, file, reg);
-      if (src_reg != (physreg_t)~0)
-         return src_reg;
    }
 
    /* If this register is a subset of a merge set which we have not picked a
@@ -1457,9 +1414,19 @@ get_reg(struct ra_ctx *ctx, struct ra_file *file, struct ir3_register *reg)
     * SFU instructions:
     */
    if (is_sfu(reg->instr) || is_alu(reg->instr)) {
-      physreg_t src_reg = try_allocate_src(ctx, file, reg);
-      if (src_reg != (physreg_t)~0)
-         return src_reg;
+      for (unsigned i = 0; i < reg->instr->srcs_count; i++) {
+         struct ir3_register *src = reg->instr->srcs[i];
+         if (!ra_reg_is_src(src))
+            continue;
+         if (ra_get_file(ctx, src) == file && reg_size(src) >= size) {
+            struct ra_interval *src_interval = &ctx->intervals[src->def->name];
+            physreg_t src_physreg = ra_interval_get_physreg(src_interval);
+            if (src_physreg % reg_elem_size(reg) == 0 &&
+                src_physreg + size <= file_size &&
+                get_reg_specified(ctx, file, reg, src_physreg, false))
+               return src_physreg;
+         }
+      }
    }
 
    physreg_t best_reg =
@@ -1635,9 +1602,9 @@ insert_parallel_copy_instr(struct ra_ctx *ctx, struct ir3_instruction *instr)
    if (ctx->parallel_copies_count == 0)
       return;
 
-   struct ir3_instruction *pcopy = ir3_instr_create_at(
-      ir3_before_instr(instr), OPC_META_PARALLEL_COPY,
-      ctx->parallel_copies_count, ctx->parallel_copies_count);
+   struct ir3_instruction *pcopy =
+      ir3_instr_create(instr->block, OPC_META_PARALLEL_COPY,
+                       ctx->parallel_copies_count, ctx->parallel_copies_count);
 
    for (unsigned i = 0; i < ctx->parallel_copies_count; i++) {
       struct ra_parallel_copy *entry = &ctx->parallel_copies[i];
@@ -1661,6 +1628,8 @@ insert_parallel_copy_instr(struct ra_ctx *ctx, struct ir3_instruction *instr)
       assign_reg(pcopy, reg, ra_physreg_to_num(entry->src, reg->flags));
    }
 
+   list_del(&pcopy->node);
+   list_addtail(&pcopy->node, &instr->node);
    ctx->parallel_copies_count = 0;
 }
 
@@ -2111,9 +2080,8 @@ insert_liveout_copy(struct ir3_block *block, physreg_t dst, physreg_t src,
       old_pcopy = last;
 
    unsigned old_pcopy_srcs = old_pcopy ? old_pcopy->srcs_count : 0;
-   struct ir3_instruction *pcopy =
-      ir3_instr_create_at(ir3_before_terminator(block), OPC_META_PARALLEL_COPY,
-                          old_pcopy_srcs + 1, old_pcopy_srcs + 1);
+   struct ir3_instruction *pcopy = ir3_instr_create(
+      block, OPC_META_PARALLEL_COPY, old_pcopy_srcs + 1, old_pcopy_srcs + 1);
 
    for (unsigned i = 0; i < old_pcopy_srcs; i++) {
       old_pcopy->dsts[i]->instr = pcopy;
@@ -2538,16 +2506,10 @@ calc_limit_pressure_for_cs_with_barrier(struct ir3_shader_variant *v,
 {
    const struct ir3_compiler *compiler = v->compiler;
 
-   bool double_threadsize = ir3_should_double_threadsize(v, 0);
    unsigned threads_per_wg;
-
    if (v->local_size_variable) {
-      if (v->type == MESA_SHADER_KERNEL) {
-         threads_per_wg = compiler->threadsize_base * (double_threadsize ? 2 : 1);
-      } else {
-         /* We have to expect the worst case. */
-         threads_per_wg = compiler->max_variable_workgroup_size;
-      }
+      /* We have to expect the worst case. */
+      threads_per_wg = compiler->max_variable_workgroup_size;
    } else {
       threads_per_wg = v->local_size[0] * v->local_size[1] * v->local_size[2];
    }
@@ -2560,6 +2522,7 @@ calc_limit_pressure_for_cs_with_barrier(struct ir3_shader_variant *v,
     * parts each could get.
     */
 
+   bool double_threadsize = ir3_should_double_threadsize(v, 0);
    unsigned waves_per_wg = DIV_ROUND_UP(
       threads_per_wg, compiler->threadsize_base * (double_threadsize ? 2 : 1) *
                          compiler->wave_granularity);

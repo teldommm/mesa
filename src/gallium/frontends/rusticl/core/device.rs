@@ -23,7 +23,7 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::env;
-use std::ffi::CStr;
+use std::ffi::CString;
 use std::mem::transmute;
 use std::os::raw::*;
 use std::sync::Arc;
@@ -40,19 +40,17 @@ pub struct Device {
     pub embedded: bool,
     pub extension_string: String,
     pub extensions: Vec<cl_name_version>,
-    pub spirv_extensions: Vec<&'static CStr>,
+    pub spirv_extensions: Vec<CString>,
     pub clc_features: Vec<cl_name_version>,
     pub formats: HashMap<cl_image_format, HashMap<cl_mem_object_type, cl_mem_flags>>,
     pub lib_clc: NirShader,
     pub caps: DeviceCaps,
     helper_ctx: Mutex<PipeContext>,
-    reusable_ctx: Mutex<Vec<PipeContext>>,
 }
 
 #[derive(Default)]
 pub struct DeviceCaps {
     pub has_3d_image_writes: bool,
-    pub has_depth_images: bool,
     pub has_images: bool,
     pub has_rw_images: bool,
     pub has_timestamp: bool,
@@ -218,7 +216,6 @@ impl Device {
             clc_features: Vec::new(),
             formats: HashMap::new(),
             lib_clc: lib_clc?,
-            reusable_ctx: Mutex::new(Vec::new()),
         };
 
         // check if we are embedded or full profile first
@@ -253,13 +250,6 @@ impl Device {
         for f in FORMATS {
             let mut fs = HashMap::new();
             for t in CL_IMAGE_TYPES {
-                // depth images are only valid for 2D and 2DArray
-                if [CL_DEPTH, CL_DEPTH_STENCIL].contains(&f.cl_image_format.image_channel_order)
-                    && ![CL_MEM_OBJECT_IMAGE2D, CL_MEM_OBJECT_IMAGE2D_ARRAY].contains(&t)
-                {
-                    continue;
-                }
-
                 // the CTS doesn't test them, so let's not advertize them by accident if they are
                 // broken
                 if t == CL_MEM_OBJECT_IMAGE1D_BUFFER
@@ -303,14 +293,6 @@ impl Device {
 
                 fs.insert(t, flags as cl_mem_flags);
             }
-
-            // Restrict supported formats with 1DBuffer images. This is an OpenCL CTS workaround.
-            // See https://github.com/KhronosGroup/OpenCL-CTS/issues/1889
-            let image1d_mask = fs.get(&CL_MEM_OBJECT_IMAGE1D).copied().unwrap_or_default();
-            if let Some(entry) = fs.get_mut(&CL_MEM_OBJECT_IMAGE1D_BUFFER) {
-                *entry &= image1d_mask;
-            }
-
             self.formats.insert(f.cl_image_format, fs);
         }
 
@@ -326,13 +308,6 @@ impl Device {
             })
             .map(|f| self.formats[&f.cl_image_format][&CL_MEM_OBJECT_IMAGE3D])
             .any(|f| f & cl_mem_flags::from(CL_MEM_WRITE_ONLY) == 0);
-
-        self.caps.has_depth_images = self
-            .formats
-            .iter()
-            .filter_map(|(k, v)| (k.image_channel_order == CL_DEPTH).then_some(v.values()))
-            .flatten()
-            .any(|mask| *mask != 0);
 
         // if we can't advertize 3d image write ext, we have to disable them all
         if !self.caps.has_3d_image_writes {
@@ -606,8 +581,8 @@ impl Device {
         let mut add_feat = |major, minor, patch, feat: &str| {
             feats.push(mk_cl_version_ext(major, minor, patch, feat));
         };
-        let mut add_spirv = |ext| {
-            spirv_exts.push(ext);
+        let mut add_spirv = |ext: &str| {
+            spirv_exts.push(CString::new(ext).unwrap());
         };
 
         // add extensions all drivers support for now
@@ -624,10 +599,10 @@ impl Device {
         add_ext(1, 0, 0, "cl_khr_local_int32_base_atomics");
         add_ext(1, 0, 0, "cl_khr_local_int32_extended_atomics");
 
-        add_spirv(c"SPV_KHR_expect_assume");
-        add_spirv(c"SPV_KHR_float_controls");
-        add_spirv(c"SPV_KHR_integer_dot_product");
-        add_spirv(c"SPV_KHR_no_integer_wrap_decoration");
+        add_spirv("SPV_KHR_expect_assume");
+        add_spirv("SPV_KHR_float_controls");
+        add_spirv("SPV_KHR_integer_dot_product");
+        add_spirv("SPV_KHR_no_integer_wrap_decoration");
 
         if self.fp16_supported() {
             add_ext(1, 0, 0, "cl_khr_fp16");
@@ -664,10 +639,6 @@ impl Device {
             if self.caps.has_3d_image_writes {
                 add_ext(1, 0, 0, "cl_khr_3d_image_writes");
                 add_feat(1, 0, 0, "__opencl_c_3d_image_writes");
-            }
-
-            if self.caps.has_depth_images {
-                add_ext(1, 0, 0, "cl_khr_depth_images");
             }
         }
 
@@ -751,7 +722,7 @@ impl Device {
             pipe_loader_device_type::NUM_PIPE_LOADER_DEVICE_TYPES => CL_DEVICE_TYPE_CUSTOM,
         };
 
-        if internal && res == CL_DEVICE_TYPE_GPU && self.screen.driver_name() != c"zink" {
+        if internal && res == CL_DEVICE_TYPE_GPU && self.screen.driver_name() != "zink" {
             res |= CL_DEVICE_TYPE_DEFAULT;
         }
 
@@ -1005,24 +976,8 @@ impl Device {
         })
     }
 
-    fn reusable_ctx(&self) -> MutexGuard<Vec<PipeContext>> {
-        self.reusable_ctx.lock().unwrap()
-    }
-
     pub fn screen(&self) -> &Arc<PipeScreen> {
         &self.screen
-    }
-
-    pub fn create_context(&self) -> Option<PipeContext> {
-        self.reusable_ctx()
-            .pop()
-            .or_else(|| self.screen.create_context())
-    }
-
-    pub fn recycle_context(&self, ctx: PipeContext) {
-        if Platform::dbg().reuse_context {
-            self.reusable_ctx().push(ctx);
-        }
     }
 
     pub fn subgroup_sizes(&self) -> Vec<usize> {
@@ -1099,7 +1054,6 @@ impl Device {
             fp64: self.fp64_supported(),
             int64: self.int64_supported(),
             images: self.caps.has_images,
-            images_depth: self.caps.has_depth_images,
             images_read_write: self.caps.has_rw_images,
             images_write_3d: self.caps.has_3d_image_writes,
             integer_dot_product: true,

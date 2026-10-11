@@ -19,13 +19,6 @@ brw_fs_optimize(fs_visitor &s)
    /* Start by validating the shader we currently have. */
    brw_fs_validate(s);
 
-   /* Track how much non-SSA at this point. */
-   {
-      const brw::def_analysis &defs = s.def_analysis.require();
-      s.shader_stats.non_ssa_registers_after_nir =
-         defs.count() - defs.ssa_count();
-   }
-
    bool progress = false;
    int iteration = 0;
    int pass_num = 0;
@@ -74,56 +67,46 @@ brw_fs_optimize(fs_visitor &s)
          OPT(brw_fs_opt_copy_propagation);
       OPT(brw_fs_opt_cmod_propagation);
       OPT(brw_fs_opt_dead_code_eliminate);
+      OPT(brw_fs_opt_peephole_sel);
+      OPT(brw_fs_opt_dead_control_flow_eliminate);
       OPT(brw_fs_opt_saturate_propagation);
       OPT(brw_fs_opt_register_coalesce);
 
       OPT(brw_fs_opt_compact_virtual_grfs);
    } while (progress);
 
-   brw_shader_phase_update(s, BRW_SHADER_PHASE_AFTER_OPT_LOOP);
-
    progress = false;
    pass_num = 0;
 
-   if (OPT(brw_opt_combine_convergent_txf))
-      OPT(brw_fs_opt_copy_propagation_defs);
+   OPT(brw_fs_opt_predicated_break);
 
    if (OPT(brw_fs_lower_pack)) {
       OPT(brw_fs_opt_register_coalesce);
       OPT(brw_fs_opt_dead_code_eliminate);
    }
 
-   OPT(brw_fs_lower_subgroup_ops);
    OPT(brw_fs_lower_csel);
    OPT(brw_fs_lower_simd_width);
    OPT(brw_fs_lower_barycentrics);
    OPT(brw_fs_lower_logical_sends);
 
-   brw_shader_phase_update(s, BRW_SHADER_PHASE_AFTER_EARLY_LOWERING);
-
    /* After logical SEND lowering. */
 
-   if (!OPT(brw_fs_opt_copy_propagation_defs))
-      OPT(brw_fs_opt_copy_propagation);
+   if (OPT(brw_fs_opt_copy_propagation_defs) || OPT(brw_fs_opt_copy_propagation))
+      OPT(brw_fs_opt_algebraic);
 
    /* Identify trailing zeros LOAD_PAYLOAD of sampler messages.
     * Do this before splitting SENDs.
     */
-   if (OPT(brw_fs_opt_zero_samples)) {
-      if (!OPT(brw_fs_opt_copy_propagation_defs)) {
-         OPT(brw_fs_opt_copy_propagation);
-      }
-   }
+   if (OPT(brw_fs_opt_zero_samples) && (OPT(brw_fs_opt_copy_propagation_defs) || OPT(brw_fs_opt_copy_propagation)))
+      OPT(brw_fs_opt_algebraic);
 
    OPT(brw_fs_opt_split_sends);
    OPT(brw_fs_workaround_nomask_control_flow);
 
    if (progress) {
-      /* Do both forms of copy propagation because it is important to
-       * eliminate as many cases of load_payload-of-load_payload as possible.
-       */
-      OPT(brw_fs_opt_copy_propagation_defs);
-      OPT(brw_fs_opt_copy_propagation);
+      if (OPT(brw_fs_opt_copy_propagation_defs) || OPT(brw_fs_opt_copy_propagation))
+         OPT(brw_fs_opt_algebraic);
 
       /* Run after logical send lowering to give it a chance to CSE the
        * LOAD_PAYLOAD instructions created to construct the payloads of
@@ -133,6 +116,7 @@ brw_fs_optimize(fs_visitor &s)
       OPT(brw_fs_opt_cse_defs);
       OPT(brw_fs_opt_register_coalesce);
       OPT(brw_fs_opt_dead_code_eliminate);
+      OPT(brw_fs_opt_peephole_sel);
    }
 
    OPT(brw_fs_opt_remove_redundant_halts);
@@ -144,8 +128,6 @@ brw_fs_optimize(fs_visitor &s)
       OPT(brw_fs_lower_simd_width);
       OPT(brw_fs_opt_dead_code_eliminate);
    }
-
-   brw_shader_phase_update(s, BRW_SHADER_PHASE_AFTER_MIDDLE_LOWERING);
 
    OPT(brw_fs_lower_alu_restrictions);
 
@@ -162,20 +144,19 @@ brw_fs_optimize(fs_visitor &s)
    progress = false;
    OPT(brw_fs_lower_derivatives);
    OPT(brw_fs_lower_regioning);
-
-   /* Try both copy propagation passes.  The defs one will likely not be
-    * able to handle everything at this point.
-    */
-   const bool cp1 = OPT(brw_fs_opt_copy_propagation_defs);
-   const bool cp2 = OPT(brw_fs_opt_copy_propagation);
-   if (cp1 || cp2)
-      OPT(brw_fs_opt_combine_constants);
-
-   OPT(brw_fs_opt_dead_code_eliminate);
-   OPT(brw_fs_opt_register_coalesce);
-
-   if (progress)
+   if (progress) {
+      /* Try both copy propagation passes.  The defs one will likely not be
+       * able to handle everything at this point.
+       */
+      const bool cp1 = OPT(brw_fs_opt_copy_propagation_defs);
+      const bool cp2 = OPT(brw_fs_opt_copy_propagation);
+      if (cp1 || cp2) {
+         OPT(brw_fs_opt_algebraic);
+         OPT(brw_fs_opt_combine_constants);
+      }
+      OPT(brw_fs_opt_dead_code_eliminate);
       OPT(brw_fs_lower_simd_width);
+   }
 
    OPT(brw_fs_lower_sends_overlapping_payload);
 
@@ -186,8 +167,6 @@ brw_fs_optimize(fs_visitor &s)
    OPT(brw_fs_lower_find_live_channel);
 
    OPT(brw_fs_lower_load_subgroup_invocation);
-
-   brw_shader_phase_update(s, BRW_SHADER_PHASE_AFTER_LATE_LOWERING);
 }
 
 static unsigned
@@ -458,16 +437,8 @@ brw_fs_opt_eliminate_find_live_channel(fs_visitor &s)
          if (depth == 0) {
             inst->opcode = BRW_OPCODE_MOV;
             inst->src[0] = brw_imm_ud(0u);
+            inst->sources = 1;
             inst->force_writemask_all = true;
-
-            /* FIND_LIVE_CHANNEL emitted by emit_uniformize will have
-             * size_written set by hand to a smaller value. In this case,
-             * munge the exec_size to match.
-             */
-            if (inst->size_written == inst->dst.component_size(8 * reg_unit(s.devinfo)))
-               inst->exec_size = 8 * reg_unit(s.devinfo);
-
-            inst->resize_sources(1);
             progress = true;
 
             /* emit_uniformize() frequently emits FIND_LIVE_CHANNEL paired
@@ -486,11 +457,8 @@ brw_fs_opt_eliminate_find_live_channel(fs_visitor &s)
                bcast->opcode = BRW_OPCODE_MOV;
                if (!is_uniform(bcast->src[0]))
                   bcast->src[0] = component(bcast->src[0], 0);
-
+               bcast->sources = 1;
                bcast->force_writemask_all = true;
-               bcast->exec_size = 8 * reg_unit(s.devinfo);
-               assert(bcast->size_written == bcast->dst.component_size(bcast->exec_size));
-               bcast->resize_sources(1);
             }
          }
          break;
@@ -538,7 +506,7 @@ brw_fs_opt_remove_extra_rounding_modes(fs_visitor &s)
 
       foreach_inst_in_block_safe (fs_inst, inst, block) {
          if (inst->opcode == SHADER_OPCODE_RND_MODE) {
-            assert(inst->src[0].file == IMM);
+            assert(inst->src[0].file == BRW_IMMEDIATE_VALUE);
             const brw_rnd_mode mode = (brw_rnd_mode) inst->src[0].d;
             if (mode == prev_mode) {
                inst->remove(block);
@@ -555,3 +523,4 @@ brw_fs_opt_remove_extra_rounding_modes(fs_visitor &s)
 
    return progress;
 }
+

@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef BRW_COMPILER_H
+#define BRW_COMPILER_H
 
 #include <stdio.h>
 #include "c11/threads.h"
@@ -161,14 +162,6 @@ brw_shader_stage_requires_bindless_resources(gl_shader_stage stage)
    return brw_shader_stage_is_bindless(stage) || gl_shader_stage_is_mesh(stage);
 }
 
-static inline bool
-brw_shader_stage_has_inline_data(const struct intel_device_info *devinfo,
-                                 gl_shader_stage stage)
-{
-   return stage == MESA_SHADER_MESH || stage == MESA_SHADER_TASK ||
-          (stage == MESA_SHADER_COMPUTE && devinfo->verx10 >= 125);
-}
-
 /**
  * Program key structures.
  *
@@ -293,6 +286,18 @@ struct brw_mesh_prog_key
    unsigned padding:31;
 };
 
+enum brw_sometimes {
+   BRW_NEVER = 0,
+   BRW_SOMETIMES,
+   BRW_ALWAYS
+};
+
+static inline enum brw_sometimes
+brw_sometimes_invert(enum brw_sometimes x)
+{
+   return (enum brw_sometimes)((int)BRW_ALWAYS - (int)x);
+}
+
 /** The program key for Fragment/Pixel Shaders. */
 struct brw_wm_prog_key {
    struct brw_base_prog_key base;
@@ -304,7 +309,7 @@ struct brw_wm_prog_key {
    bool flat_shade:1;
    unsigned nr_color_regions:5;
    bool alpha_test_replicate_alpha:1;
-   enum intel_sometimes alpha_to_coverage:2;
+   enum brw_sometimes alpha_to_coverage:2;
    bool clamp_fragment_color:1;
 
    bool force_dual_color_blend:1;
@@ -317,13 +322,13 @@ struct brw_wm_prog_key {
     * us to run per-sample.  Even when running per-sample due to gl_SampleID,
     * we may still interpolate unqualified inputs at the pixel center.
     */
-   enum intel_sometimes persample_interp:2;
+   enum brw_sometimes persample_interp:2;
 
    /* Whether or not we are running on a multisampled framebuffer */
-   enum intel_sometimes multisample_fbo:2;
+   enum brw_sometimes multisample_fbo:2;
 
    /* Whether the preceding shader stage is mesh */
-   enum intel_sometimes mesh_input:2;
+   enum brw_sometimes mesh_input:2;
 
    bool coherent_fb_fetch:1;
    bool ignore_sample_mask_out:1;
@@ -582,6 +587,24 @@ brw_stage_prog_data_add_printf(struct brw_stage_prog_data *prog_data,
                                void *mem_ctx,
                                const u_printf_info *print);
 
+enum brw_barycentric_mode {
+   BRW_BARYCENTRIC_PERSPECTIVE_PIXEL       = 0,
+   BRW_BARYCENTRIC_PERSPECTIVE_CENTROID    = 1,
+   BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE      = 2,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_PIXEL    = 3,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_CENTROID = 4,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE   = 5,
+   BRW_BARYCENTRIC_MODE_COUNT              = 6
+};
+#define BRW_BARYCENTRIC_PERSPECTIVE_BITS \
+   ((1 << BRW_BARYCENTRIC_PERSPECTIVE_PIXEL) | \
+    (1 << BRW_BARYCENTRIC_PERSPECTIVE_CENTROID) | \
+    (1 << BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE))
+#define BRW_BARYCENTRIC_NONPERSPECTIVE_BITS \
+   ((1 << BRW_BARYCENTRIC_NONPERSPECTIVE_PIXEL) | \
+    (1 << BRW_BARYCENTRIC_NONPERSPECTIVE_CENTROID) | \
+    (1 << BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE))
+
 enum brw_pixel_shader_computed_depth_mode {
    BRW_PSCDEPTH_OFF   = 0, /* PS does not compute depth */
    BRW_PSCDEPTH_ON    = 1, /* PS computes depth; no guarantee about value */
@@ -660,18 +683,18 @@ struct brw_wm_prog_data {
    float min_sample_shading;
 
    /** Should this shader be dispatched per-sample */
-   enum intel_sometimes persample_dispatch;
+   enum brw_sometimes persample_dispatch;
 
    /**
     * Shader is ran at the coarse pixel shading dispatch rate (3DSTATE_CPS).
     */
-   enum intel_sometimes coarse_pixel_dispatch;
+   enum brw_sometimes coarse_pixel_dispatch;
 
    /**
     * Shader writes the SampleMask and this is AND-ed with the API's
     * SampleMask to generate a new coverage mask.
     */
-   enum intel_sometimes alpha_to_coverage;
+   enum brw_sometimes alpha_to_coverage;
 
    unsigned msaa_flags_param;
 
@@ -828,26 +851,136 @@ static inline bool
 brw_wm_prog_data_is_persample(const struct brw_wm_prog_data *prog_data,
                               enum intel_msaa_flags pushed_msaa_flags)
 {
-   return intel_fs_is_persample(prog_data->persample_dispatch,
-                                prog_data->sample_shading,
-                                pushed_msaa_flags);
+   if (pushed_msaa_flags & INTEL_MSAA_FLAG_ENABLE_DYNAMIC) {
+      if (!(pushed_msaa_flags & INTEL_MSAA_FLAG_MULTISAMPLE_FBO))
+         return false;
+
+      if (prog_data->sample_shading)
+         assert(pushed_msaa_flags & INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH);
+
+      if (pushed_msaa_flags & INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH)
+         assert(prog_data->persample_dispatch != BRW_NEVER);
+      else
+         assert(prog_data->persample_dispatch != BRW_ALWAYS);
+
+      return (pushed_msaa_flags & INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH) != 0;
+   }
+
+   assert(prog_data->persample_dispatch == BRW_ALWAYS ||
+          prog_data->persample_dispatch == BRW_NEVER);
+
+   return prog_data->persample_dispatch;
 }
 
 static inline uint32_t
 wm_prog_data_barycentric_modes(const struct brw_wm_prog_data *prog_data,
                                enum intel_msaa_flags pushed_msaa_flags)
 {
-   return intel_fs_barycentric_modes(prog_data->persample_dispatch,
-                                     prog_data->barycentric_interp_modes,
-                                     pushed_msaa_flags);
+   uint32_t modes = prog_data->barycentric_interp_modes;
+
+   /* In the non dynamic case, we can just return the computed modes from
+    * compilation time.
+    */
+   if (!(pushed_msaa_flags & INTEL_MSAA_FLAG_ENABLE_DYNAMIC))
+      return modes;
+
+   if (pushed_msaa_flags & INTEL_MSAA_FLAG_PERSAMPLE_INTERP) {
+      assert(prog_data->persample_dispatch == BRW_ALWAYS ||
+             (pushed_msaa_flags & INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH));
+
+      /* Making dynamic per-sample interpolation work is a bit tricky.  The
+       * hardware will hang if SAMPLE is requested but per-sample dispatch is
+       * not enabled.  This means we can't preemptively add SAMPLE to the
+       * barycentrics bitfield.  Instead, we have to add it late and only
+       * on-demand.  Annoyingly, changing the number of barycentrics requested
+       * changes the whole PS shader payload so we very much don't want to do
+       * that.  Instead, if the dynamic per-sample interpolation flag is set,
+       * we check to see if SAMPLE was requested and, if not, replace the
+       * highest barycentric bit in the [non]perspective grouping (CENTROID,
+       * if it exists, else PIXEL) with SAMPLE.  The shader will stomp all the
+       * barycentrics in the shader with SAMPLE so it really doesn't matter
+       * which one we replace.  The important thing is that we keep the number
+       * of barycentrics in each [non]perspective grouping the same.
+       */
+      if ((modes & BRW_BARYCENTRIC_PERSPECTIVE_BITS) &&
+          !(modes & BITFIELD_BIT(BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE))) {
+         int sample_mode =
+            util_last_bit(modes & BRW_BARYCENTRIC_PERSPECTIVE_BITS) - 1;
+         assert(modes & BITFIELD_BIT(sample_mode));
+
+         modes &= ~BITFIELD_BIT(sample_mode);
+         modes |= BITFIELD_BIT(BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE);
+      }
+
+      if ((modes & BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) &&
+          !(modes & BITFIELD_BIT(BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE))) {
+         int sample_mode =
+            util_last_bit(modes & BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) - 1;
+         assert(modes & BITFIELD_BIT(sample_mode));
+
+         modes &= ~BITFIELD_BIT(sample_mode);
+         modes |= BITFIELD_BIT(BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE);
+      }
+   } else {
+      /* If we're not using per-sample interpolation, we need to disable the
+       * per-sample bits.
+       *
+       * SKL PRMs, Volume 2a: Command Reference: Instructions,
+       * 3DSTATE_WM:Barycentric Interpolation Mode:
+
+       *    "MSDISPMODE_PERSAMPLE is required in order to select Perspective
+       *     Sample or Non-perspective Sample barycentric coordinates."
+       */
+      uint32_t sample_bits = (BITFIELD_BIT(BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE) |
+                              BITFIELD_BIT(BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE));
+      uint32_t requested_sample = modes & sample_bits;
+      modes &= ~sample_bits;
+      /*
+       * If the shader requested some sample modes and we have to disable
+       * them, make sure we add back the pixel variant back to not mess up the
+       * thread payload.
+       *
+       * Why does this works out? Because of the ordering in the thread payload :
+       *
+       *   R7:10  Perspective Centroid Barycentric
+       *   R11:14 Perspective Sample Barycentric
+       *   R15:18 Linear Pixel Location Barycentric
+       *
+       * In the backend when persample dispatch is dynamic, we always select
+       * the sample barycentric and turn off the pixel location (even if
+       * requested through intrinsics). That way when we dynamically select
+       * pixel or sample dispatch, the barycentric always match, since the
+       * pixel location barycentric register offset will align with the sample
+       * barycentric.
+       */
+      if (requested_sample) {
+         if (requested_sample & BITFIELD_BIT(BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE))
+            modes |= BITFIELD_BIT(BRW_BARYCENTRIC_PERSPECTIVE_PIXEL);
+         if (requested_sample & BITFIELD_BIT(BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE))
+            modes |= BITFIELD_BIT(BRW_BARYCENTRIC_NONPERSPECTIVE_PIXEL);
+      }
+   }
+
+   return modes;
 }
 
 static inline bool
 brw_wm_prog_data_is_coarse(const struct brw_wm_prog_data *prog_data,
                            enum intel_msaa_flags pushed_msaa_flags)
 {
-   return intel_fs_is_coarse(prog_data->coarse_pixel_dispatch,
-                             pushed_msaa_flags);
+   if (pushed_msaa_flags & INTEL_MSAA_FLAG_ENABLE_DYNAMIC) {
+      if (pushed_msaa_flags & INTEL_MSAA_FLAG_COARSE_RT_WRITES)
+         assert(prog_data->coarse_pixel_dispatch != BRW_NEVER);
+      else
+         assert(prog_data->coarse_pixel_dispatch != BRW_ALWAYS);
+
+      return pushed_msaa_flags & INTEL_MSAA_FLAG_COARSE_RT_WRITES;
+   }
+
+   assert(prog_data->coarse_pixel_dispatch == BRW_ALWAYS ||
+          prog_data->coarse_pixel_dispatch == BRW_NEVER);
+
+   return prog_data->coarse_pixel_dispatch;
 }
 
 struct brw_push_const_block {
@@ -881,13 +1014,18 @@ struct brw_cs_prog_data {
    uint8_t generate_local_id;
    enum intel_compute_walk_order walk_order;
 
-   /* True if shader has any sample operation */
-   bool uses_sampler;
-
    struct {
       struct brw_push_const_block cross_thread;
       struct brw_push_const_block per_thread;
    } push;
+
+   struct {
+      /** @{
+       * surface indices the CS-specific surfaces
+       */
+      uint32_t work_groups_start;
+      /** @} */
+   } binding_table;
 };
 
 static inline uint32_t
@@ -1181,7 +1319,6 @@ struct brw_compile_stats {
    uint32_t spills;
    uint32_t fills;
    uint32_t max_live_registers;
-   uint32_t non_ssa_registers_after_nir;
 };
 
 /** @} */
@@ -1466,7 +1603,7 @@ brw_stage_has_packed_dispatch(ASSERTED const struct intel_device_info *devinfo,
     * enabled by setting the macro below to true.
     */
    #define ENABLE_FS_TEST_DISPATCH_PACKING false
-   assert(devinfo->ver <= 30);
+   assert(devinfo->ver <= 20);
 
    switch (stage) {
    case MESA_SHADER_FRAGMENT: {
@@ -1523,10 +1660,8 @@ brw_compute_first_urb_slot_required(uint64_t inputs_read,
    if ((inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | VARYING_BIT_PRIMITIVE_SHADING_RATE)) == 0) {
       for (int i = 0; i < prev_stage_vue_map->num_slots; i++) {
          int varying = prev_stage_vue_map->slot_to_varying[i];
-         if (varying != BRW_VARYING_SLOT_PAD && varying > 0 &&
-             (inputs_read & BITFIELD64_BIT(varying)) != 0) {
+         if (varying > 0 && (inputs_read & BITFIELD64_BIT(varying)) != 0)
             return ROUND_DOWN_TO(i, 2);
-         }
       }
    }
 
@@ -1563,3 +1698,5 @@ enum brw_topology_id
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
+#endif /* BRW_COMPILER_H */

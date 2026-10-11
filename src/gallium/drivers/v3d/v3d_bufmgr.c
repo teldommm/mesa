@@ -28,7 +28,6 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#include "util/perf/cpu_trace.h"
 #include "util/u_hash_table.h"
 #include "util/u_memory.h"
 #include "util/ralloc.h"
@@ -202,13 +201,10 @@ v3d_bo_free(struct v3d_bo *bo)
         struct v3d_screen *screen = bo->screen;
 
         if (bo->map) {
-#if USE_V3D_SIMULATOR
-                if (bo->name &&
+                if (using_v3d_simulator && bo->name &&
                     strcmp(bo->name, "winsys") == 0) {
                         free(bo->map);
-                } else
-#endif
-                {
+                } else {
                         munmap(bo->map, bo->size);
                         VG(VALGRIND_FREELIKE_BLOCK(bo->map, 0));
                 }
@@ -351,7 +347,7 @@ v3d_bo_open_handle(struct v3d_screen *screen,
         bo->name = "winsys";
         bo->private = false;
 
-#if USE_V3D_SIMULATOR
+#ifdef USE_V3D_SIMULATOR
         v3d_simulator_open_from_handle(screen->fd, bo->handle, bo->size);
         bo->map = malloc(bo->size);
 #endif
@@ -484,8 +480,6 @@ bool
 v3d_bo_wait(struct v3d_bo *bo, uint64_t timeout_ns, const char *reason)
 {
         struct v3d_screen *screen = bo->screen;
-
-        MESA_TRACE_FUNC();
 
         if (V3D_DBG(PERF) && timeout_ns && reason) {
                 if (v3d_wait_bo_ioctl(screen->fd, bo->handle, 0) == -ETIME) {

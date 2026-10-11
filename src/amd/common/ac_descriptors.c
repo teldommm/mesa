@@ -228,7 +228,7 @@ ac_build_gfx6_fmask_descriptor(const enum amd_gfx_level gfx_level, const struct 
          const uint64_t cmask_va = state->va + surf->cmask_offset;
 
          desc[6] |= S_008F28_COMPRESSION_EN(1);
-         desc[7] |= (cmask_va >> 8) | surf->fmask_tile_swizzle;
+         desc[7] |= cmask_va >> 8;
       }
    }
 }
@@ -1409,7 +1409,7 @@ ac_set_mutable_cb_surface_fields(const struct radeon_info *info, const struct ac
          cb->cb_dcc_control |= S_028C78_DISABLE_CONSTANT_ENCODE_REG(1) |
                                S_028C78_FDCC_ENABLE(1);
 
-         if (info->family >= CHIP_PHOENIX2) {
+         if (info->family >= CHIP_GFX1103_R2) {
             cb->cb_dcc_control |= S_028C78_ENABLE_MAX_COMP_FRAG_OVERRIDE(1) |
                                   S_028C78_MAX_COMP_FRAGS(state->num_samples >= 4);
          }
@@ -1484,7 +1484,6 @@ ac_set_mutable_cb_surface_fields(const struct radeon_info *info, const struct ac
              * the texture block to read it.
              */
             cb->cb_color_info |= S_028C70_CMASK_ADDR_TYPE(2);
-            cb->cb_color_cmask |= surf->fmask_tile_swizzle;
          }
       }
    } else {

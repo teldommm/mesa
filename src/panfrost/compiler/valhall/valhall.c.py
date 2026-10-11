@@ -21,12 +21,9 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-import sys
-from valhall import valhall_parse_isa
+from valhall import immediates, instructions, typesize
 from mako.template import Template
 from mako import exceptions
-
-(instructions, immediates, enums, typesize, safe_name) = valhall_parse_isa()
 
 SKIP = set([
         # Extra conversions
@@ -121,6 +118,8 @@ valhall_opcodes[BI_NUM_OPCODES] = {
     name = op.name
     if name == 'BRANCHZ':
         name = 'BRANCHZ.i16'
+    elif name == 'CUBEFACE2':
+        name = 'CUBEFACE2_V9'
 
     sr_control = 0
 

@@ -121,37 +121,18 @@ brw_assemble(void *mem_ctx, const struct intel_device_info *devinfo,
       goto end;
    }
 
-   /* Add "inst groups" so validation errors can be recorded. */
-   for (int i = 0; i <= p->next_insn_offset; i += 16)
-      disasm_new_inst_group(disasm_info, i);
-
    if (!brw_validate_instructions(p->isa, p->store, 0,
                                   p->next_insn_offset, disasm_info)) {
-      dump_assembly(p->store, 0, p->next_insn_offset, disasm_info, NULL);
       ralloc_free(disasm_info);
-      fprintf(stderr, "Invalid instructions.\n");
+      fprintf(stderr, "Invalid instructions\n");
       goto end;
    }
 
    result.bin = p->store;
-   result.bin_size = p->next_insn_offset;
    result.inst_count = p->next_insn_offset / 16;
 
-   if ((flags & BRW_ASSEMBLE_COMPACT) != 0) {
+   if ((flags & BRW_ASSEMBLE_COMPACT) != 0)
       brw_compact_instructions(p, 0, disasm_info);
-
-      /* Adjust bin size to account for compacted instructions. */
-      int compacted = 0;
-      for (int i = 0; i < result.inst_count; i++) {
-         const brw_inst *inst = result.bin + i;
-         if (brw_inst_cmpt_control(devinfo, inst))
-            compacted++;
-      }
-      result.bin_size -= compacted * 8;
-   }
-
-   if ((flags & BRW_ASSEMBLE_DUMP) != 0)
-      dump_assembly(p->store, 0, p->next_insn_offset, disasm_info, NULL);
 
    ralloc_free(disasm_info);
 

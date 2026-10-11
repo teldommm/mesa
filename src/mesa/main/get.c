@@ -591,7 +591,6 @@ EXTRA_EXT(AMD_framebuffer_multisample_advanced);
 EXTRA_EXT(ARB_spirv_extensions);
 EXTRA_EXT(NV_viewport_swizzle);
 EXTRA_EXT(ARB_sparse_texture);
-EXTRA_EXT(KHR_shader_subgroup);
 
 static const int extra_ARB_gl_spirv_or_es2_compat[] = {
    EXT(ARB_gl_spirv),
@@ -2414,7 +2413,7 @@ _mesa_GetUnsignedBytevEXT(GLenum pname, GLubyte *data)
 
    GET_CURRENT_CONTEXT(ctx);
 
-   if (!_mesa_has_EXT_memory_object(ctx)) {
+   if (!ctx->Extensions.EXT_memory_object) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(unsupported)", func);
       return;
    }
@@ -2909,19 +2908,19 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
 
    /* GL_EXT_external_objects */
    case GL_NUM_DEVICE_UUIDS_EXT:
-      if (!_mesa_has_EXT_memory_object(ctx) && !_mesa_has_EXT_semaphore(ctx))
+      if (!ctx->Extensions.EXT_memory_object && !ctx->Extensions.EXT_semaphore)
          goto invalid_enum;
       v->value_int = 1;
       return TYPE_INT;
    case GL_DRIVER_UUID_EXT:
-      if (!_mesa_has_EXT_memory_object(ctx) && !_mesa_has_EXT_semaphore(ctx))
+      if (!ctx->Extensions.EXT_memory_object && !ctx->Extensions.EXT_semaphore)
          goto invalid_enum;
       if (index >= 1)
          goto invalid_value;
       _mesa_get_driver_uuid(ctx, v->value_int_4);
       return TYPE_INT_4;
    case GL_DEVICE_UUID_EXT:
-      if (!_mesa_has_EXT_memory_object(ctx) && !_mesa_has_EXT_semaphore(ctx))
+      if (!ctx->Extensions.EXT_memory_object && !ctx->Extensions.EXT_semaphore)
          goto invalid_enum;
       if (index >= 1)
          goto invalid_value;
@@ -2929,7 +2928,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT_4;
    /* GL_EXT_memory_object_win32 */
    case GL_DEVICE_LUID_EXT:
-      if (!_mesa_has_EXT_memory_object_win32(ctx) && !_mesa_has_EXT_semaphore_win32(ctx))
+      if (!ctx->Extensions.EXT_memory_object_win32 && !ctx->Extensions.EXT_semaphore_win32)
          goto invalid_enum;
       if (index >= 1)
          goto invalid_value;
@@ -3351,7 +3350,7 @@ _mesa_GetUnsignedBytei_vEXT(GLenum target, GLuint index, GLubyte *data)
 
    GET_CURRENT_CONTEXT(ctx);
 
-   if (!_mesa_has_EXT_memory_object(ctx)) {
+   if (!ctx->Extensions.EXT_memory_object) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(unsupported)", func);
       return;
    }

@@ -38,7 +38,6 @@
 #include "platform_x11_dri3.h"
 
 #include "loader.h"
-#include "loader_x11.h"
 #include "loader_dri3_helper.h"
 
 static struct dri3_egl_surface *
@@ -67,7 +66,7 @@ egl_dri3_in_current_context(struct loader_dri3_drawable *draw)
    return ctx->Resource.Display == dri3_surf->surf.base.Resource.Display;
 }
 
-static struct dri_context *
+static __DRIcontext *
 egl_dri3_get_dri_context(struct loader_dri3_drawable *draw)
 {
    _EGLContext *ctx = _eglGetCurrentContext();
@@ -78,7 +77,7 @@ egl_dri3_get_dri_context(struct loader_dri3_drawable *draw)
    return dri2_ctx->dri_context;
 }
 
-static struct dri_screen *
+static __DRIscreen *
 egl_dri3_get_dri_screen(void)
 {
    _EGLContext *ctx = _eglGetCurrentContext();
@@ -158,7 +157,7 @@ dri3_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
    struct dri3_egl_surface *dri3_surf;
-   const struct dri_config *dri_config;
+   const __DRIconfig *dri_config;
    xcb_drawable_t drawable;
 
    dri3_surf = calloc(1, sizeof *dri3_surf);
@@ -194,7 +193,7 @@ dri3_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
           dri2_dpy->conn, drawable, egl_to_loader_dri3_drawable_type(type),
           dri2_dpy->dri_screen_render_gpu, dri2_dpy->dri_screen_display_gpu,
           dri2_dpy->multibuffers_available, true, dri_config,
-          &egl_dri3_vtable,
+          &dri2_dpy->loader_dri3_ext, &egl_dri3_vtable,
           &dri3_surf->loader_drawable)) {
       _eglError(EGL_BAD_ALLOC, "dri3_surface_create");
       goto cleanup_pixmap;
@@ -226,7 +225,7 @@ dri3_authenticate(_EGLDisplay *disp, uint32_t id)
 #ifdef HAVE_WAYLAND_PLATFORM
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
-   if (!dri2_dpy->swrast) {
+   if (dri2_dpy->device_name) {
       _eglLog(_EGL_WARNING,
               "Wayland client render node authentication is unnecessary");
       return 0;
@@ -324,14 +323,14 @@ dri3_create_image_khr_pixmap(_EGLDisplay *disp, _EGLContext *ctx,
 
    dri2_img->dri_image = loader_dri3_create_image(
       dri2_dpy->conn, bp_reply, fourcc, dri2_dpy->dri_screen_render_gpu,
-      dri2_img);
+      dri2_dpy->image, dri2_img);
 
    free(bp_reply);
 
    return &dri2_img->base;
 }
 
-#ifdef HAVE_X11_DRM
+#ifdef HAVE_DRI3_MODIFIERS
 static _EGLImage *
 dri3_create_image_khr_pixmap_from_buffers(_EGLDisplay *disp, _EGLContext *ctx,
                                           EGLClientBuffer buffer,
@@ -373,7 +372,7 @@ dri3_create_image_khr_pixmap_from_buffers(_EGLDisplay *disp, _EGLContext *ctx,
 
    dri2_img->dri_image = loader_dri3_create_image_from_buffers(
       dri2_dpy->conn, bp_reply, fourcc, dri2_dpy->dri_screen_render_gpu,
-      dri2_img);
+      dri2_dpy->image, dri2_img);
    free(bp_reply);
 
    if (!dri2_img->dri_image) {
@@ -390,13 +389,13 @@ static _EGLImage *
 dri3_create_image_khr(_EGLDisplay *disp, _EGLContext *ctx, EGLenum target,
                       EGLClientBuffer buffer, const EGLint *attr_list)
 {
-#ifdef HAVE_X11_DRM
+#ifdef HAVE_DRI3_MODIFIERS
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 #endif
 
    switch (target) {
    case EGL_NATIVE_PIXMAP_KHR:
-#ifdef HAVE_X11_DRM
+#ifdef HAVE_DRI3_MODIFIERS
       if (dri2_dpy->multibuffers_available)
          return dri3_create_image_khr_pixmap_from_buffers(disp, ctx, buffer,
                                                           attr_list);
@@ -412,7 +411,7 @@ dri3_create_image_khr(_EGLDisplay *disp, _EGLContext *ctx, EGLenum target,
  * contents of its fake front buffer.
  */
 static void
-dri3_flush_front_buffer(struct dri_drawable *driDrawable, void *loaderPrivate)
+dri3_flush_front_buffer(__DRIdrawable *driDrawable, void *loaderPrivate)
 {
    struct loader_dri3_drawable *draw = loaderPrivate;
    (void)driDrawable;
@@ -492,7 +491,7 @@ dri3_query_surface(_EGLDisplay *disp, _EGLSurface *surf, EGLint attribute,
    return _eglQuerySurface(disp, surf, attribute, value);
 }
 
-static struct dri_drawable *
+static __DRIdrawable *
 dri3_get_dri_drawable(_EGLSurface *surf)
 {
    struct dri3_egl_surface *dri3_surf = dri3_egl_surface(surf);
@@ -531,11 +530,11 @@ enum dri2_egl_driver_fail
 dri3_x11_connect(struct dri2_egl_display *dri2_dpy, bool zink, bool swrast)
 {
    dri2_dpy->fd_render_gpu =
-      x11_dri3_open(dri2_dpy->conn, dri2_dpy->screen->root, 0);
+      loader_dri3_open(dri2_dpy->conn, dri2_dpy->screen->root, 0);
    if (dri2_dpy->fd_render_gpu < 0) {
       int conn_error = xcb_connection_has_error(dri2_dpy->conn);
       if (!swrast) {
-         _eglLog(_EGL_INFO, "DRI3: Could not get DRI3 device");
+         _eglLog(_EGL_WARNING, "DRI3: Screen seems not DRI3 capable");
 
          if (conn_error)
             _eglLog(_EGL_WARNING, "DRI3: Failed to initialize");

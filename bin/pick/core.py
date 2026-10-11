@@ -71,10 +71,10 @@ class PickUIException(Exception):
 @enum.unique
 class NominationType(enum.Enum):
 
-    NONE = 0
-    CC = 1
-    FIXES = 2
-    REVERT = 3
+    CC = 0
+    FIXES = 1
+    REVERT = 2
+    NONE = 3
     BACKPORT = 4
 
 

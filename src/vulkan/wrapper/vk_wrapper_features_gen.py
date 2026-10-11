@@ -112,38 +112,6 @@ KNOWN_ALIASES = [
     (['Vulkan13Features', 'DynamicRenderingFeatures'], ['dynamicRendering']),
     (['Vulkan13Features', 'ShaderIntegerDotProductFeatures'], ['shaderIntegerDotProduct']),
     (['Vulkan13Features', 'Maintenance4Features'], ['maintenance4']),
-    (['Vulkan14Features', 'GlobalPriorityQueryFeatures'], ['globalPriorityQuery']),
-    (
-        ['Vulkan14Features', 'ShaderSubgroupRotateFeatures'],
-        ['shaderSubgroupRotate', 'shaderSubgroupRotateClustered'],
-    ),
-    (['Vulkan14Features', 'ShaderFloatControls2Features'], ['shaderFloatControls2']),
-    (['Vulkan14Features', 'ShaderExpectAssumeFeatures'], ['shaderExpectAssume']),
-    (
-        ['Vulkan14Features', 'LineRasterizationFeatures'],
-        [
-            'rectangularLines',
-            'bresenhamLines',
-            'smoothLines',
-            'stippledRectangularLines',
-            'stippledBresenhamLines',
-            'stippledSmoothLines',
-        ],
-    ),
-    (
-        ['Vulkan14Features', 'VertexAttributeDivisorFeatures'],
-        [
-            'vertexAttributeInstanceRateDivisor',
-            'vertexAttributeInstanceRateZeroDivisor',
-        ],
-    ),
-    (['Vulkan14Features', 'IndexTypeUint8Features'], ['indexTypeUint8']),
-    (['Vulkan14Features', 'DynamicRenderingLocalReadFeatures'], ['dynamicRenderingLocalRead']),
-    (['Vulkan14Features', 'Maintenance5Features'], ['maintenance5']),
-    (['Vulkan14Features', 'Maintenance6Features'], ['maintenance6']),
-    (['Vulkan14Features', 'PipelineProtectedAccessFeatures'], ['pipelineProtectedAccess']),
-    (['Vulkan14Features', 'PipelineRobustnessFeatures'], ['pipelineRobustness']),
-    (['Vulkan14Features', 'HostImageCopyFeatures'], ['hostImageCopy']),
 ]
 
 for (feature_structs, features) in KNOWN_ALIASES:
@@ -169,6 +137,7 @@ TEMPLATE_C = Template(COPYRIGHT + """
 #include "wrapper_private.h"
 #include "vk_physical_device_features.h"
 #include "vk_util.h"
+#include "vk_printers.h"
 
 void
 wrapper_setup_device_features(struct wrapper_physical_device *physical_device)
@@ -190,6 +159,13 @@ wrapper_setup_device_features(struct wrapper_physical_device *physical_device)
 
    physical_device->dispatch_table.GetPhysicalDeviceFeatures2(
       vk_physical_device, &supported_features2);
+   
+    static bool has_already_logged_properties = false;
+    if (!has_already_logged_properties) {
+        has_already_logged_properties = true;
+        WLOG("GetPhysicalDeviceFeatures2");
+        LOG_STRUCT(VkPhysicalDeviceFeatures2, &supported_features2);
+    }
 
    vk_set_physical_device_features(&physical_device->vk.supported_features,
                                    &supported_features2);

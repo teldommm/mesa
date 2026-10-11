@@ -675,10 +675,23 @@ st_framebuffer_create(struct st_context *st,
 }
 
 
+static uint32_t
+drawable_hash(const void *key)
+{
+   return (uintptr_t)key;
+}
+
+
+static bool
+drawable_equal(const void *a, const void *b)
+{
+   return (struct pipe_frontend_drawable *)a == (struct pipe_frontend_drawable *)b;
+}
+
+
 static bool
 drawable_lookup(struct pipe_frontend_screen *fscreen,
-                const struct pipe_frontend_drawable *drawable,
-                uint32_t drawable_ID)
+                const struct pipe_frontend_drawable *drawable)
 {
    struct st_screen *screen =
       (struct st_screen *)fscreen->st_screen;
@@ -688,7 +701,7 @@ drawable_lookup(struct pipe_frontend_screen *fscreen,
    assert(screen->drawable_ht);
 
    simple_mtx_lock(&screen->st_mutex);
-   entry = _mesa_hash_table_search_pre_hashed(screen->drawable_ht, drawable_ID, drawable);
+   entry = _mesa_hash_table_search(screen->drawable_ht, drawable);
    simple_mtx_unlock(&screen->st_mutex);
 
    return entry != NULL;
@@ -707,7 +720,7 @@ drawable_insert(struct pipe_frontend_screen *fscreen,
    assert(screen->drawable_ht);
 
    simple_mtx_lock(&screen->st_mutex);
-   entry = _mesa_hash_table_insert_pre_hashed(screen->drawable_ht, drawable->ID, drawable, drawable);
+   entry = _mesa_hash_table_insert(screen->drawable_ht, drawable, drawable);
    simple_mtx_unlock(&screen->st_mutex);
 
    return entry != NULL;
@@ -726,7 +739,7 @@ drawable_remove(struct pipe_frontend_screen *fscreen,
       return;
 
    simple_mtx_lock(&screen->st_mutex);
-   entry = _mesa_hash_table_search_pre_hashed(screen->drawable_ht, drawable->ID, drawable);
+   entry = _mesa_hash_table_search(screen->drawable_ht, drawable);
    if (!entry)
       goto unlock;
 
@@ -774,7 +787,7 @@ st_framebuffers_purge(struct st_context *st)
        * and unreference the framebuffer object, so its resources can be
        * deleted.
        */
-      if (!drawable_lookup(fscreen, drawable, stfb->drawable_ID)) {
+      if (!drawable_lookup(fscreen, drawable)) {
          list_del(&stfb->head);
          _mesa_reference_framebuffer(&stfb, NULL);
       }
@@ -955,15 +968,9 @@ st_api_create_context(struct pipe_frontend_screen *fscreen,
 
       screen = CALLOC_STRUCT(st_screen);
       simple_mtx_init(&screen->st_mutex, mtx_plain);
-
-      /* We'll use drawable->ID as prehashed value to prevent the hash function
-       * to get an existing drawable with a deleted drawable hash value when
-       * doing lookups from st_framebuffers_purge and not dereference framebuffer
-       * in time.
-       */
       screen->drawable_ht = _mesa_hash_table_create(NULL,
-                                                    NULL,
-                                                    _mesa_key_pointer_equal);
+                                                 drawable_hash,
+                                                 drawable_equal);
       fscreen->st_screen = screen;
    }
 

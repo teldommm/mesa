@@ -95,7 +95,7 @@ static void dump_op( struct sh_op op, const char *mnemonic )
       case SVGA3DOPCOMP_LT:
          _debug_printf("_lt");
          break;
-      case SVGA3DOPCOMP_NE:
+      case SVGA3DOPCOMPC_NE:
          _debug_printf("_ne");
          break;
       case SVGA3DOPCOMP_LE:

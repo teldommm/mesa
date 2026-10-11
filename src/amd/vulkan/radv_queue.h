@@ -67,7 +67,6 @@ struct radv_queue_state {
    struct radeon_cmdbuf *continue_preamble_cs;
    struct radeon_cmdbuf *gang_wait_preamble_cs;
    struct radeon_cmdbuf *gang_wait_postamble_cs;
-   struct radeon_cmdbuf *flush_postamble_cs; /* GFX6 only */
 
    /* the uses_shadow_regs here will be set only for general queue */
    bool uses_shadow_regs;
@@ -102,11 +101,11 @@ radv_queue_device(const struct radv_queue *queue)
 
 int radv_queue_init(struct radv_device *device, struct radv_queue *queue, int idx,
                     const VkDeviceQueueCreateInfo *create_info,
-                    const VkDeviceQueueGlobalPriorityCreateInfo *global_priority);
+                    const VkDeviceQueueGlobalPriorityCreateInfoKHR *global_priority);
 
 void radv_queue_finish(struct radv_queue *queue);
 
-enum radeon_ctx_priority radv_get_queue_global_priority(const VkDeviceQueueGlobalPriorityCreateInfo *pObj);
+enum radeon_ctx_priority radv_get_queue_global_priority(const VkDeviceQueueGlobalPriorityCreateInfoKHR *pObj);
 
 void radv_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs);
 

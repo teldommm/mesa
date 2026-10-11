@@ -70,10 +70,8 @@ int device_select_find_xcb_pci_default(struct device_pci_info *devices, uint32_t
   drmDevicePtr xdev = NULL;
 
   conn = xcb_connect(NULL, &scrn);
-  if (xcb_connection_has_error(conn)) {
-    xcb_disconnect(conn);
+  if (!conn)
     return -1;
-  }
 
   xcb_query_extension_cookie_t dri3_cookie;
   xcb_query_extension_reply_t *dri3_reply = NULL;

@@ -24,9 +24,7 @@
 import argparse
 import sys
 import struct
-from valhall import valhall_parse_isa
-
-(instructions, immediates, enums, typesize, safe_name) = valhall_parse_isa()
+from valhall import instructions, enums, immediates, typesize
 
 LINE = ''
 

@@ -27,7 +27,8 @@
  * The vec4-mode tessellation control shader compiler backend.
  */
 
-#pragma once
+#ifndef ELK_VEC4_TCS_H
+#define ELK_VEC4_TCS_H
 
 #include "elk_compiler.h"
 #include "elk_eu.h"
@@ -78,3 +79,5 @@ protected:
 
 } /* namespace elk */
 #endif /* __cplusplus */
+
+#endif /* ELK_VEC4_TCS_H */

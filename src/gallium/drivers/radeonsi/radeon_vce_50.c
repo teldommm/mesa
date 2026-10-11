@@ -18,20 +18,6 @@
 
 static void rate_control(struct rvce_encoder *enc)
 {
-   uint32_t target_bits_picture =
-      enc->pic.rate_ctrl[0].target_bitrate *
-      ((float)enc->pic.rate_ctrl[0].frame_rate_den /
-      enc->pic.rate_ctrl[0].frame_rate_num);
-   uint32_t peak_bits_picture_integer =
-      enc->pic.rate_ctrl[0].peak_bitrate *
-      ((float)enc->pic.rate_ctrl[0].frame_rate_den /
-      enc->pic.rate_ctrl[0].frame_rate_num);
-   uint32_t peak_bits_picture_fraction =
-      (((enc->pic.rate_ctrl[0].peak_bitrate *
-      (uint64_t)enc->pic.rate_ctrl[0].frame_rate_den) %
-      enc->pic.rate_ctrl[0].frame_rate_num) << 32) /
-      enc->pic.rate_ctrl[0].frame_rate_num;
-
    RVCE_BEGIN(0x04000005);                                 // rate control
    RVCE_CS(enc->pic.rate_ctrl[0].rate_ctrl_method);           // encRateControlMethod
    RVCE_CS(enc->pic.rate_ctrl[0].target_bitrate);             // encRateControlTargetBitRate
@@ -46,9 +32,9 @@ static void rate_control(struct rvce_encoder *enc)
    RVCE_CS(0x00000000);                                    // encVBVBufferLevel
    RVCE_CS(0x00000000);                                    // encMaxAUSize
    RVCE_CS(0x00000000);                                    // encQPInitialMode
-   RVCE_CS(target_bits_picture);                           // encTargetBitsPerPicture
-   RVCE_CS(peak_bits_picture_integer);                     // encPeakBitsPerPictureInteger
-   RVCE_CS(peak_bits_picture_fraction);                    // encPeakBitsPerPictureFractional
+   RVCE_CS(enc->pic.rate_ctrl[0].target_bits_picture);        // encTargetBitsPerPicture
+   RVCE_CS(enc->pic.rate_ctrl[0].peak_bits_picture_integer);  // encPeakBitsPerPictureInteger
+   RVCE_CS(enc->pic.rate_ctrl[0].peak_bits_picture_fraction); // encPeakBitsPerPictureFractional
    RVCE_CS(0x00000000);                                    // encMinQP
    RVCE_CS(0x00000033);                                    // encMaxQP
    RVCE_CS(0x00000000);                                    // encSkipFrameEnable
@@ -65,10 +51,20 @@ static void rate_control(struct rvce_encoder *enc)
 static void encode(struct rvce_encoder *enc)
 {
    signed luma_offset, chroma_offset, bs_offset;
-   unsigned bs_idx = enc->bs_idx++;
+   unsigned dep, bs_idx = enc->bs_idx++;
    int i;
 
-   enc->task_info(enc, 0x00000003, 0, 0, bs_idx);
+   if (enc->dual_inst) {
+      if (bs_idx == 0)
+         dep = 1;
+      else if (enc->pic.picture_type == PIPE_H2645_ENC_PICTURE_TYPE_IDR)
+         dep = 0;
+      else
+         dep = 2;
+   } else
+      dep = 0;
+
+   enc->task_info(enc, 0x00000003, dep, 0, bs_idx);
 
    RVCE_BEGIN(0x05000001);                                      // context buffer
    RVCE_READWRITE(enc->cpb.res->buf, enc->cpb.res->domains, 0); // encodeContextAddressHi/Lo

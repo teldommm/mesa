@@ -372,12 +372,6 @@ draw_set_clip_state(struct draw_context *draw,
    memcpy(&draw->plane[6], clip->ucp, sizeof(clip->ucp));
 }
 
-void
-draw_set_viewmask(struct draw_context *draw, uint8_t viewmask)
-{
-   draw->viewmask = viewmask;
-}
-
 
 /**
  * Set the draw module's viewport state.
@@ -1271,10 +1265,7 @@ draw_stats_clipper_primitives(struct draw_context *draw,
 bool
 draw_will_inject_frontface(const struct draw_context *draw)
 {
-   /* The geometry shader can change the primitive type. */
-   enum mesa_prim prim = draw->gs.geometry_shader ?
-      draw->gs.geometry_shader->output_primitive : draw->pt.prim;
-   enum mesa_prim reduced_prim = u_reduced_prim(prim);
+   unsigned reduced_prim = u_reduced_prim(draw->pt.prim);
    const struct pipe_rasterizer_state *rast = draw->rasterizer;
 
    if (reduced_prim != MESA_PRIM_TRIANGLES) {

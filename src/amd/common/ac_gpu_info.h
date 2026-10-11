@@ -234,9 +234,7 @@ struct radeon_info {
    /* Whether SR-IOV is enabled or amdgpu.mcbp=1 was set on the kernel command line. */
    bool register_shadowing_required;
    bool has_tmz_support;
-   bool has_trap_handler_support;
    bool kernel_has_modifiers;
-   bool use_userq;
 
    /* If the kernel driver uses CU reservation for high priority compute on gfx10+, it programs
     * a global CU mask in the hw that is AND'ed with CU_EN register fields set by userspace.
@@ -388,8 +386,6 @@ void ac_get_task_info(const struct radeon_info *info,
                       struct ac_task_info *task_info);
 
 uint32_t ac_memory_ops_per_clock(uint32_t vram_type);
-
-uint32_t ac_gfx103_get_cu_mask_ps(const struct radeon_info *info);
 
 #ifdef __cplusplus
 }

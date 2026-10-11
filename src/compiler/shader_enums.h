@@ -31,7 +31,8 @@
 #include "util/macros.h"
 #include "util/u_debug.h"
 #else
-#include "libcl/libcl.h"
+#define ENUM_PACKED
+#define BITFIELD_BIT(b) (1u << (b))
 #define debug_printf(x, ...)
 #endif
 
@@ -780,7 +781,6 @@ typedef enum
     */
    /*@{*/
    SYSTEM_VALUE_FRAG_COORD,
-   SYSTEM_VALUE_PIXEL_COORD,
    SYSTEM_VALUE_POINT_COORD,
    SYSTEM_VALUE_LINE_COORD, /**< Coord along axis perpendicular to line */
    SYSTEM_VALUE_FRONT_FACE,
@@ -1145,24 +1145,6 @@ enum gl_access_qualifier
     * on AGX, used for some internal shaders.
     */
    ACCESS_IN_BOUNDS_AGX = (1 << 14),
-
-   /**
-    * Disallow vectorization.
-    *
-    * On some hw (AMD), sparse buffer loads return 0 for all components if
-    * a sparse load starts on a non-resident page, crosses the page boundary,
-    * and ends on a resident page. Sometimes we want it to return 0 only for
-    * the portion of the load that's non-resident, and load values for
-    * the portion that's resident. The workaround is to scalarize such loads
-    * and disallow vectorization. This is used by an internal copy_buffer
-    * shader where the API wants to copy all bytes that are resident.
-    */
-   ACCESS_KEEP_SCALAR = (1 << 15),
-
-   /**
-    * Indicates that this load will use SMEM.
-    */
-   ACCESS_SMEM_AMD = (1 << 16),
 };
 
 /**
@@ -1388,18 +1370,6 @@ u_reduced_prim(enum mesa_prim prim)
    }
 }
 
-static inline bool
-mesa_prim_has_adjacency(enum mesa_prim prim)
-{
-   static_assert(MESA_PRIM_LINE_STRIP_ADJACENCY == MESA_PRIM_LINES_ADJACENCY + 1, "");
-   static_assert(MESA_PRIM_TRIANGLES_ADJACENCY == MESA_PRIM_LINES_ADJACENCY + 2, "");
-   static_assert(MESA_PRIM_TRIANGLE_STRIP_ADJACENCY == MESA_PRIM_LINES_ADJACENCY + 3, "");
-
-   /* Adjacency primitives are together so we can do a simple comparison */
-   return prim >= MESA_PRIM_LINES_ADJACENCY &&
-          prim <= MESA_PRIM_TRIANGLE_STRIP_ADJACENCY;
-}
-
 /**
  * A compare function enum for use in compiler lowering passes.  This is in
  * the same order as GL's compare functions (shifted down by GL_NEVER), and is
@@ -1603,7 +1573,6 @@ enum ENUM_PACKED gl_subgroup_size
     * also the subgroup size.  If any new values are added, they must respect
     * this invariant.
     */
-   SUBGROUP_SIZE_REQUIRE_4   = 4,   /**< VK_EXT_subgroup_size_control */
    SUBGROUP_SIZE_REQUIRE_8   = 8,   /**< VK_EXT_subgroup_size_control */
    SUBGROUP_SIZE_REQUIRE_16  = 16,  /**< VK_EXT_subgroup_size_control */
    SUBGROUP_SIZE_REQUIRE_32  = 32,  /**< VK_EXT_subgroup_size_control */
@@ -1623,20 +1592,6 @@ typedef enum {
 } mesa_scope;
 
 const char *mesa_scope_name(mesa_scope scope);
-
-/* This is defined here to be available to OpenCL */
-enum glsl_sampler_dim {
-   GLSL_SAMPLER_DIM_1D = 0,
-   GLSL_SAMPLER_DIM_2D,
-   GLSL_SAMPLER_DIM_3D,
-   GLSL_SAMPLER_DIM_CUBE,
-   GLSL_SAMPLER_DIM_RECT,
-   GLSL_SAMPLER_DIM_BUF,
-   GLSL_SAMPLER_DIM_EXTERNAL,
-   GLSL_SAMPLER_DIM_MS,
-   GLSL_SAMPLER_DIM_SUBPASS, /* for vulkan input attachments */
-   GLSL_SAMPLER_DIM_SUBPASS_MS, /* for multisampled vulkan input attachments */
-};
 
 #ifdef __cplusplus
 } /* extern "C" */

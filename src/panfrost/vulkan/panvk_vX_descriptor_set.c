@@ -242,7 +242,7 @@ panvk_per_arch(CreateDescriptorPool)(
 
    if (!vk_object_multizalloc(&device->vk, &ma, pAllocator,
                               VK_OBJECT_TYPE_DESCRIPTOR_POOL))
-      return panvk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    uint32_t desc_count = 0;
    for (unsigned i = 0; i < pCreateInfo->poolSizeCount; ++i) {
@@ -262,12 +262,11 @@ panvk_per_arch(CreateDescriptorPool)(
       desc_count += pool->max_sets;
 
       uint64_t pool_size = desc_count * PANVK_DESCRIPTOR_SIZE;
-      VkResult result = panvk_priv_bo_create(device, pool_size, 0,
-                                             VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
-                                             &pool->desc_bo);
-      if (result != VK_SUCCESS) {
+      pool->desc_bo = panvk_priv_bo_create(device, pool_size, 0,
+                                           VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!pool->desc_bo) {
          panvk_destroy_descriptor_pool(device, pAllocator, pool);
-         return result;
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       }
       uint64_t bo_size = pool->desc_bo->bo->size;
       assert(pool_size <= bo_size);
@@ -342,14 +341,14 @@ panvk_desc_pool_allocate_set(struct panvk_descriptor_pool *pool,
    uint32_t first_free_set =
       __bitset_ffs(pool->free_sets, BITSET_WORDS(pool->max_sets));
    if (first_free_set == 0 || pool->desc_heap.free_size < descs_size)
-      return panvk_error(pool, VK_ERROR_OUT_OF_POOL_MEMORY);
+      return VK_ERROR_OUT_OF_POOL_MEMORY;
 
    uint64_t descs_dev_addr = 0;
    if (num_descs) {
       descs_dev_addr = util_vma_heap_alloc(&pool->desc_heap, descs_size,
                                            PANVK_DESCRIPTOR_SIZE);
       if (!descs_dev_addr)
-         return panvk_error(pool, VK_ERROR_FRAGMENTED_POOL);
+         return VK_ERROR_FRAGMENTED_POOL;
    }
    struct panvk_descriptor_set *set = &pool->sets[first_free_set - 1];
 

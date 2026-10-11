@@ -27,7 +27,8 @@
  * Geometry-shader-specific code derived from the vec4_visitor class.
  */
 
-#pragma once
+#ifndef ELK_VEC4_GS_VISITOR_H
+#define ELK_VEC4_GS_VISITOR_H
 
 #include "elk_vec4.h"
 
@@ -70,3 +71,5 @@ protected:
 
 } /* namespace elk */
 #endif /* __cplusplus */
+
+#endif /* ELK_VEC4_GS_VISITOR_H */

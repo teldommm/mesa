@@ -97,8 +97,7 @@ store_general(struct v3d_job *job,
                 surf = v3d_surface(psurf);
         }
 
-        if (stores_pending)
-                *stores_pending &= ~pipe_bit;
+        *stores_pending &= ~pipe_bit;
 
         struct v3d_resource *rsc = v3d_resource(psurf->texture);
 
@@ -132,18 +131,13 @@ store_general(struct v3d_job *job,
                         store.height_in_ub_or_stride = slice->stride;
                 }
 
-                if (psurf->texture->nr_samples > 1) {
+                assert(!resolve_4x || job->bbuf);
+                if (psurf->texture->nr_samples > 1)
                         store.decimate_mode = V3D_DECIMATE_MODE_ALL_SAMPLES;
-                } else if (resolve_4x) {
-                        /* We are resolving from a MSAA blit buffer or we are
-                         * resolving directly from TLB to a resolve buffer
-                         */
-                        assert((job->bbuf && job->bbuf->texture->nr_samples > 1) ||
-                               (job->dbuf && job->dbuf->texture->nr_samples <= 1));
+                else if (resolve_4x && job->bbuf->texture->nr_samples > 1)
                         store.decimate_mode = V3D_DECIMATE_MODE_4X;
-                } else {
+                else
                         store.decimate_mode = V3D_DECIMATE_MODE_SAMPLE_0;
-                }
         }
 }
 
@@ -229,31 +223,18 @@ v3d_rcl_emit_stores(struct v3d_job *job, struct v3d_cl *cl, int layer)
          * perspective.  Non-MSAA surfaces will use
          * STORE_MULTI_SAMPLE_RESOLVED_TILE_COLOR_BUFFER_EXTENDED.
          */
-        assert((!job->bbuf && !job->dbuf) || job->nr_cbufs <= 1);
+        assert(!job->bbuf || job->nr_cbufs <= 1);
         for (int i = 0; i < job->nr_cbufs; i++) {
+                uint32_t bit = PIPE_CLEAR_COLOR0 << i;
+                if (!(job->store & bit))
+                        continue;
+
                 struct pipe_surface *psurf = job->cbufs[i];
                 if (!psurf)
                         continue;
 
-                uint32_t bit = PIPE_CLEAR_COLOR0 << i;
-                if (job->blit_tlb & bit) {
-                        assert(job->dbuf);
-                        bool blit_resolve =
-                                job->dbuf->texture->nr_samples <= 1 &&
-                                psurf->texture->nr_samples > 1;
-                        store_general(job, cl, job->dbuf, layer,
-                                      RENDER_TARGET_0 + i, bit, NULL,
-                                      false, blit_resolve);
-                }
-
-                if (!(job->store & bit))
-                        continue;
-
-                bool blit_resolve =
-                        job->bbuf && job->bbuf->texture->nr_samples > 1 &&
-                        psurf->texture->nr_samples <= 1;
                 store_general(job, cl, psurf, layer, RENDER_TARGET_0 + i, bit,
-                              &stores_pending, general_color_clear, blit_resolve);
+                              &stores_pending, general_color_clear, job->bbuf);
         }
 
         if (job->store & PIPE_CLEAR_DEPTHSTENCIL && job->zsbuf) {
@@ -493,7 +474,7 @@ do_double_initial_tile_clear(const struct v3d_job *job)
          * clear for double buffer mode is required.
          */
         return job->double_buffer &&
-               (job->tile_desc.draw_x > 1 || job->tile_desc.draw_y > 1);
+               (job->draw_tiles_x > 1 || job->draw_tiles_y > 1);
 }
 
 static void
@@ -505,7 +486,7 @@ emit_render_layer(struct v3d_job *job, uint32_t layer)
          * core's tile list here.
          */
         uint32_t tile_alloc_offset =
-                layer * job->tile_desc.draw_x * job->tile_desc.draw_y * 64;
+                layer * job->draw_tiles_x * job->draw_tiles_y * 64;
         cl_emit(&job->rcl, MULTICORE_RENDERING_TILE_LIST_SET_BASE, list) {
                 list.address = cl_address(job->tile_alloc, tile_alloc_offset);
         }
@@ -516,9 +497,9 @@ emit_render_layer(struct v3d_job *job, uint32_t layer)
 
                 /* Size up our supertiles until we get under the limit. */
                 for (;;) {
-                        frame_w_in_supertiles = DIV_ROUND_UP(job->tile_desc.draw_x,
+                        frame_w_in_supertiles = DIV_ROUND_UP(job->draw_tiles_x,
                                                              supertile_w);
-                        frame_h_in_supertiles = DIV_ROUND_UP(job->tile_desc.draw_y,
+                        frame_h_in_supertiles = DIV_ROUND_UP(job->draw_tiles_y,
                                                              supertile_h);
                         if (frame_w_in_supertiles *
                                 frame_h_in_supertiles < max_supertiles) {
@@ -532,8 +513,8 @@ emit_render_layer(struct v3d_job *job, uint32_t layer)
                 }
 
                 config.number_of_bin_tile_lists = 1;
-                config.total_frame_width_in_tiles = job->tile_desc.draw_x;
-                config.total_frame_height_in_tiles = job->tile_desc.draw_y;
+                config.total_frame_width_in_tiles = job->draw_tiles_x;
+                config.total_frame_height_in_tiles = job->draw_tiles_y;
 
                 config.supertile_width_in_tiles = supertile_w;
                 config.supertile_height_in_tiles = supertile_h;
@@ -589,8 +570,8 @@ emit_render_layer(struct v3d_job *job, uint32_t layer)
          * improve X11 performance, but we should use Morton order
          * otherwise to improve cache locality.
          */
-        uint32_t supertile_w_in_pixels = job->tile_desc.width * supertile_w;
-        uint32_t supertile_h_in_pixels = job->tile_desc.height * supertile_h;
+        uint32_t supertile_w_in_pixels = job->tile_width * supertile_w;
+        uint32_t supertile_h_in_pixels = job->tile_height * supertile_h;
         uint32_t min_x_supertile = job->draw_min_x / supertile_w_in_pixels;
         uint32_t min_y_supertile = job->draw_min_y / supertile_h_in_pixels;
 
@@ -679,8 +660,8 @@ v3dX(emit_rcl)(struct v3d_job *job)
                 config.maximum_bpp_of_all_render_targets = job->internal_bpp;
 #endif
 #if V3D_VERSION >= 71
-                config.log2_tile_width = log2_tile_size(job->tile_desc.width);
-                config.log2_tile_height = log2_tile_size(job->tile_desc.height);
+                config.log2_tile_width = log2_tile_size(job->tile_width);
+                config.log2_tile_height = log2_tile_size(job->tile_height);
 
                 /* FIXME: ideallly we would like next assert on the packet header (as is
                  * general, so also applies to GL). We would need to expand
@@ -774,12 +755,12 @@ v3dX(emit_rcl)(struct v3d_job *job)
                         v3d_setup_render_target(job, i, &rt.internal_bpp,
                                                 &rt.internal_type_and_clamping);
                         rt.stride =
-                                v3d_compute_rt_row_row_stride_128_bits(job->tile_desc.width,
+                                v3d_compute_rt_row_row_stride_128_bits(job->tile_width,
                                                                        v3d_internal_bpp_words(rt.internal_bpp));
                         rt.base_address = base_addr;
                         rt.render_target_number = i;
 
-                        base_addr += (job->tile_desc.height * rt.stride) / 8;
+                        base_addr += (job->tile_height * rt.stride) / 8;
                 }
 
                 if (surf->internal_bpp >= V3D_INTERNAL_BPP_64) {

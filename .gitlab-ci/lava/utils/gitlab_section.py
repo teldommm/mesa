@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, UTC
-from math import floor
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
 from lava.utils.console_format import CONSOLE_LOG
@@ -19,11 +18,8 @@ class GitlabSection:
     header: str
     type: LogSectionType
     start_collapsed: bool = False
-    suppress_end: bool = False
-    suppress_start: bool = False
-    timestamp_relative_to: Optional[datetime] = None
     escape: str = "\x1b[0K"
-    colour: str = f"{CONSOLE_LOG['FG_CYAN']}"
+    colour: str = f"{CONSOLE_LOG['BOLD']}{CONSOLE_LOG['FG_GREEN']}"
     __start_time: Optional[datetime] = field(default=None, init=False)
     __end_time: Optional[datetime] = field(default=None, init=False)
 
@@ -62,12 +58,7 @@ class GitlabSection:
 
         timestamp = self.get_timestamp(time)
         before_header = ":".join([preamble, timestamp, section_id])
-        if self.timestamp_relative_to:
-            delta = self.start_time - self.timestamp_relative_to
-            reltime = f"[{floor(delta.seconds / 60):02}:{(delta.seconds % 60):02}] "
-        else:
-            reltime = ""
-        colored_header = f"{self.colour}{reltime}{header}\x1b[0m" if header else ""
+        colored_header = f"{self.colour}{header}\x1b[0m" if header else ""
         header_wrapper = "\r" + f"{self.escape}{colored_header}"
 
         return f"{before_header}{header_wrapper}"
@@ -91,25 +82,15 @@ class GitlabSection:
 
     def start(self) -> str:
         assert not self.has_finished, "Starting an already finished section"
-        self.__start_time = datetime.now(tz=UTC)
-        return self.print_start_section()
-
-    def print_start_section(self) -> str:
-        if self.suppress_start:
-            return ""
+        self.__start_time = datetime.now()
         return self.section(marker="start", header=self.header, time=self.__start_time)
 
     def end(self) -> str:
         assert self.has_started, "Ending an uninitialized section"
-        self.__end_time = datetime.now(tz=UTC)
+        self.__end_time = datetime.now()
         assert (
             self.__end_time >= self.__start_time
         ), "Section execution time will be negative"
-        return self.print_end_section()
-
-    def print_end_section(self) -> str:
-        if self.suppress_end:
-            return ""
         return self.section(marker="end", header="", time=self.__end_time)
 
     def delta_time(self) -> Optional[timedelta]:
@@ -117,6 +98,6 @@ class GitlabSection:
             return self.__end_time - self.__start_time
 
         if self.has_started:
-            return datetime.now(tz=UTC) - self.__start_time
+            return datetime.now() - self.__start_time
 
         return None

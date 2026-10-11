@@ -5,16 +5,17 @@
 
 set -ex
 
-uncollapsed_section_start rust "Building Rust toolchain"
-
 # cargo (and rustup) wants to store stuff in $HOME/.cargo, and binaries in
 # $HOME/.cargo/bin.  Make bin a link to a public bin directory so the commands
 # are just available to all build jobs.
 mkdir -p "$HOME"/.cargo
 ln -s /usr/local/bin "$HOME"/.cargo/bin
 
-# Pick a specific snapshot from rustup so the compiler doesn't drift on us.
-RUST_VERSION=1.78.0-2024-05-02
+# Rusticl requires at least Rust 1.66.0 and NAK requires 1.73.0
+#
+# Also, pick a specific snapshot from rustup so the compiler doesn't drift on
+# us.
+RUST_VERSION=1.73.0-2023-10-05
 
 # For rust in Mesa, we use rustup to install.  This lets us pick an arbitrary
 # version of the compiler, rather than whatever the container's Debian comes
@@ -36,5 +37,3 @@ linker = "arm-linux-gnueabihf-gcc"
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 EOF
-
-section_end rust

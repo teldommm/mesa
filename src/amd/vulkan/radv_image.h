@@ -27,7 +27,6 @@ static const VkImageUsageFlags RADV_IMAGE_USAGE_WRITE_BITS =
 struct radv_image_plane {
    VkFormat format;
    struct radeon_surf surface;
-   uint32_t first_mip_pipe_misaligned; /* GFX10-GFX11.5 */
 };
 
 struct radv_image_binding {
@@ -47,6 +46,7 @@ struct radv_image {
    unsigned queue_family_mask;
    bool exclusive;
    bool shareable;
+   bool l2_coherent;
    bool dcc_sign_reinterpret;
    bool support_comp_to_single;
 
@@ -375,8 +375,5 @@ unsigned radv_image_queue_family_mask(const struct radv_image *image, enum radv_
                                       enum radv_queue_family queue_family);
 
 bool radv_image_is_renderable(const struct radv_device *device, const struct radv_image *image);
-
-bool radv_image_is_l2_coherent(const struct radv_device *device, const struct radv_image *image,
-                               const VkImageSubresourceRange *range);
 
 #endif /* RADV_IMAGE_H */

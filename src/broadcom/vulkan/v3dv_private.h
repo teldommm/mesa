@@ -92,7 +92,6 @@
 #include "drm-uapi/v3d_drm.h"
 
 #include "vk_alloc.h"
-#include "perfcntrs/v3d_perfcntrs.h"
 #include "simulator/v3d_simulator.h"
 
 #include "v3dv_cl.h"
@@ -103,7 +102,7 @@
 #if MESA_DEBUG
 #define v3dv_assert(x) ({ \
    if (unlikely(!(x))) \
-      mesa_loge("%s:%d ASSERT: %s", __FILE__, __LINE__, #x); \
+      fprintf(stderr, "%s:%d ASSERT: %s", __FILE__, __LINE__, #x); \
 })
 #else
 #define v3dv_assert(x)
@@ -111,10 +110,16 @@
 
 #define perf_debug(...) do {                       \
    if (V3D_DBG(PERF))                            \
-      mesa_logi(__VA_ARGS__);                \
+      fprintf(stderr, __VA_ARGS__);                \
 } while (0)
 
 struct v3dv_instance;
+
+#ifdef USE_V3D_SIMULATOR
+#define using_v3d_simulator true
+#else
+#define using_v3d_simulator false
+#endif
 
 struct v3d_simulator_file;
 
@@ -140,6 +145,10 @@ struct v3dv_physical_device {
    dev_t primary_devid;
    dev_t render_devid;
 
+#if using_v3d_simulator
+   uint32_t device_id;
+#endif
+
    uint8_t driver_build_sha1[20];
    uint8_t pipeline_cache_uuid[VK_UUID_SIZE];
    uint8_t device_uuid[VK_UUID_SIZE];
@@ -158,11 +167,8 @@ struct v3dv_physical_device {
    VkPhysicalDeviceMemoryProperties memory;
 
    struct v3d_device_info devinfo;
-   struct v3d_perfcntrs *perfcntr;
 
-#if USE_V3D_SIMULATOR
    struct v3d_simulator_file *sim_file;
-#endif
 
    const struct v3d_compiler *compiler;
    uint32_t next_program_id;
@@ -1192,7 +1198,12 @@ struct v3dv_job {
    /* This structure keeps track of various scores to inform a heuristic
     * for double-buffer mode.
     */
-   struct v3d_double_buffer_score double_buffer_score;
+   struct {
+      /* Cost of geometry shading */
+      uint32_t geom;
+      /* Cost of shader rendering */
+      uint32_t render;
+   } double_buffer_score;
 
    /* We only need to allocate tile state for all layers if the binner
     * writes primitives to layers other than the first. This can only be
@@ -2554,6 +2565,15 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_render_pass, base, VkRenderPass,
 VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_sampler, base, VkSampler,
                                VK_OBJECT_TYPE_SAMPLER)
 
+static inline int
+v3dv_ioctl(int fd, unsigned long request, void *arg)
+{
+   if (using_v3d_simulator)
+      return v3d_simulator_ioctl(fd, request, arg);
+   else
+      return drmIoctl(fd, request, arg);
+}
+
 /* Flags OOM conditions in command buffer state.
  *
  * Note: notice that no-op jobs don't have a command buffer reference.
@@ -2590,6 +2610,22 @@ u64_compare(const void *key1, const void *key2)
 {
    return memcmp(key1, key2, sizeof(uint64_t)) == 0;
 }
+
+/* Helper to call hw ver specific functions */
+#define v3dv_X(device, thing) ({                      \
+   __typeof(&v3d42_##thing) v3d_X_thing;              \
+   switch (device->devinfo.ver) {                     \
+   case 42:                                           \
+      v3d_X_thing = &v3d42_##thing;                   \
+      break;                                          \
+   case 71:                                           \
+      v3d_X_thing = &v3d71_##thing;                   \
+      break;                                          \
+   default:                                           \
+      unreachable("Unsupported hardware generation"); \
+   }                                                  \
+   v3d_X_thing;                                       \
+})
 
 /* v3d_macros from common requires v3dX and V3DX definitions. Below we need to
  * define v3dX for each version supported, because when we compile code that

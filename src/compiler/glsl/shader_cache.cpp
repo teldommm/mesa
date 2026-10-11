@@ -52,7 +52,10 @@
 #include "ir.h"
 #include "ir_optimization.h"
 #include "ir_rvalue_visitor.h"
+#include "ir_uniform.h"
+#include "linker.h"
 #include "nir.h"
+#include "program.h"
 #include "serialize.h"
 #include "shader_cache.h"
 #include "util/mesa-sha1.h"
@@ -68,8 +71,7 @@ extern "C" {
 static void
 compile_shaders(struct gl_context *ctx, struct gl_shader_program *prog) {
    for (unsigned i = 0; i < prog->NumShaders; i++) {
-      _mesa_glsl_compile_shader(ctx, prog->Shaders[i], NULL,
-                                false, false, true);
+      _mesa_glsl_compile_shader(ctx, prog->Shaders[i], false, false, true);
    }
 }
 

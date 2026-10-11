@@ -6,9 +6,6 @@
 # DEBIAN_BUILD_TAG
 
 set -e
-
-. .gitlab-ci/setup-test-env.sh
-
 set -o xtrace
 
 export DEBIAN_FRONTEND=noninteractive
@@ -50,6 +47,7 @@ DEPS=(
     libflatbuffers-dev
     libgtk-3-dev
     "libllvm${LLVM_VERSION}"
+    libomxil-bellagio-dev
     libpciaccess-dev
     libunwind-dev
     libva-dev
@@ -65,7 +63,6 @@ DEPS=(
     libxtensor-dev
     libxxf86vm-dev
     libwayland-egl-backend-dev
-    "llvm-${LLVM_VERSION}-dev"
     make
     ninja-build
     openssh-server

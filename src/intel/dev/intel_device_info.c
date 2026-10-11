@@ -31,7 +31,6 @@
 #include "util/libdrm.h"
 
 #include "intel_device_info.h"
-#include "intel_hwconfig.h"
 #include "intel_wa.h"
 #include "i915/intel_device_info.h"
 #include "xe/intel_device_info.h"
@@ -77,7 +76,6 @@ static const struct {
    { "arl", 0x7d67 },
    { "lnl", 0x64a0 },
    { "bmg", 0xe202 },
-   { "ptl", 0xb080 },
 };
 
 /**
@@ -1262,17 +1260,6 @@ static const struct intel_device_info intel_device_info_lnl = {
    .has_local_mem = false,
 };
 
-#define XE3_FEATURES                                            \
-   XE2_FEATURES,                                                \
-   .ver = 30,                                                   \
-   .verx10 = 300
-
-static const struct intel_device_info intel_device_info_ptl = {
-   XE3_FEATURES,
-   .platform = INTEL_PLATFORM_PTL,
-   .has_local_mem = false,
-};
-
 void
 intel_device_info_topology_reset_masks(struct intel_device_info *devinfo)
 {
@@ -1554,7 +1541,6 @@ intel_device_info_init_common(int pci_id, bool building,
       force_on = true;
    else
       scan_for_force_probe(pci_id, &force_on, &force_off);
-   devinfo->probe_forced = force_on;
    if (force_off) {
       mesa_logw("%s (0x%x) disabled with INTEL_FORCE_PROBE", devinfo->name,
                 pci_id);
@@ -1598,7 +1584,6 @@ intel_device_info_init_common(int pci_id, bool building,
    case 11:
    case 12:
    case 20:
-   case 30:
       devinfo->max_wm_threads = 128 /* threads-per-PSD */
                               * devinfo->num_slices
                               * 8; /* subslices per slice */
@@ -1630,20 +1615,6 @@ intel_device_info_init_common(int pci_id, bool building,
             devinfo->max_constant_urb_size_kb / 2;
    }
 
-   /*
-    * Gfx 12.5 moved scratch to a surface and SURFTYPE_SCRATCH has this pitch
-    * restriction:
-    *
-    * BSpec 43862 (r52666)
-    * RENDER_SURFACE_STATE::Surface Pitch
-    *    For surfaces of type SURFTYPE_SCRATCH, valid range of pitch is:
-    *    [63,262143] -> [64B, 256KB]
-    *
-    * The pitch of the surface is the scratch size per thread and the surface
-    * should be large enough to accommodate every physical thread.
-    */
-   devinfo->max_scratch_size_per_thread = devinfo->verx10 >= 125 ?
-                                          (256 * 1024) : (2 * 1024 * 1024);
    intel_device_info_update_cs_workgroup_threads(devinfo);
 
    return true;
@@ -1654,9 +1625,6 @@ intel_device_info_apply_workarounds(struct intel_device_info *devinfo)
 {
    if (intel_needs_workaround(devinfo, 18012660806))
       devinfo->urb.max_entries[MESA_SHADER_GEOMETRY] = 1536;
-
-   if (intel_needs_workaround(devinfo, 18040209780))
-      devinfo->max_gs_threads = 312;
 
    /* Fixes issues with:
     * dEQP-GLES31.functional.geometry_shading.layered.render_with_default_layer_cubemap
@@ -1969,8 +1937,6 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo, int min
 
    intel_device_info_init_was(devinfo);
    intel_device_info_apply_workarounds(devinfo);
-
-   intel_check_hwconfig_items(fd, devinfo);
 
    return true;
 }

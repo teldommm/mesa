@@ -71,7 +71,6 @@ amd_common_files = files(
   'ac_descriptors.h',
   'ac_formats.c',
   'ac_formats.h',
-  'ac_linux_drm.h',
   'ac_shadowed_regs.c',
   'ac_shadowed_regs.h',
   'ac_spm.c',
@@ -99,9 +98,7 @@ amd_common_files = files(
   'ac_nir_lower_ps.c',
   'ac_nir_meta.h',
   'ac_nir_meta_cs_blit.c',
-  'ac_nir_meta_cs_clear_copy_buffer.c',
   'ac_nir_meta_ps_resolve.c',
-  'ac_nir_opt_shared_append.c',
   'amd_family.c',
   'ac_parse_ib.c',
   'ac_perfcounter.c',
@@ -110,14 +107,7 @@ amd_common_files = files(
   'ac_pm4.h',
   'ac_vcn_av1_default.h',
   'ac_vcn_dec.c',
-  'ac_vcn_enc.c',
 )
-
-if not with_platform_windows
-  amd_common_files += files(
-    'ac_linux_drm.c',
-  )
-endif
 
 if dep_elf.found()
   amd_common_files += files(
@@ -133,7 +123,7 @@ libamd_common = static_library(
   include_directories : [
     inc_include, inc_src, inc_amd,
   ],
-  dependencies : [dep_llvm.partial_dependency(compile_args: true, includes: true)] + [
+  dependencies : [
     dep_thread, dep_elf, dep_libdrm_amdgpu, dep_valgrind,
     idep_mesautil, idep_nir_headers, idep_nir
   ],

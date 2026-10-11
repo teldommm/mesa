@@ -5,11 +5,7 @@
 # .gitlab-ci/image-tags.yml tags:
 # DEBIAN_BUILD_TAG
 
-set -e
-
-. .gitlab-ci/setup-test-env.sh
-
-set -x
+set -ex
 
 EPHEMERAL=(
     autoconf

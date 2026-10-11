@@ -21,7 +21,7 @@
  */
 
 /**
- * @file
+ * @file brw_debug_recompiles.c
  */
 
 #include <stdio.h>

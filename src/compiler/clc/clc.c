@@ -91,10 +91,9 @@ clc_print_kernels_info(const struct clc_parsed_spirv *obj)
 bool
 clc_compile_c_to_spir(const struct clc_compile_args *args,
                       const struct clc_logger *logger,
-                      struct clc_binary *out_spir,
-                      struct set *dependencies)
+                      struct clc_binary *out_spir)
 {
-   return clc_c_to_spir(args, logger, out_spir, dependencies) >= 0;
+   return clc_c_to_spir(args, logger, out_spir) >= 0;
 }
 
 void
@@ -126,10 +125,9 @@ clc_free_spirv(struct clc_binary *spirv)
 bool
 clc_compile_c_to_spirv(const struct clc_compile_args *args,
                        const struct clc_logger *logger,
-                       struct clc_binary *out_spirv,
-                       struct set *dependencies)
+                       struct clc_binary *out_spirv)
 {
-   if (clc_c_to_spirv(args, logger, out_spirv, dependencies) < 0)
+   if (clc_c_to_spirv(args, logger, out_spirv) < 0)
       return false;
 
    if (debug_get_option_debug_clc() & CLC_DEBUG_DUMP_SPIRV)

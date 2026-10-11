@@ -21,7 +21,6 @@
  * IN THE SOFTWARE.
  */
 
-#include "util/perf/cpu_trace.h"
 #include "util/u_blitter.h"
 #include "util/u_draw.h"
 #include "util/u_prim.h"
@@ -54,6 +53,37 @@ v3dX(start_binning)(struct v3d_context *v3d, struct v3d_job *job)
         job->submit.bcl_start = job->bcl.bo->offset;
         v3d_job_add_bo(job, job->bcl.bo);
 
+        /* The PTB will request the tile alloc initial size per tile at start
+         * of tile binning.
+         */
+        uint32_t tile_alloc_size =
+                MAX2(job->num_layers, 1) * job->draw_tiles_x * job->draw_tiles_y * 64;
+
+        /* The PTB allocates in aligned 4k chunks after the initial setup. */
+        tile_alloc_size = align(tile_alloc_size, 4096);
+
+        /* Include the first two chunk allocations that the PTB does so that
+         * we definitely clear the OOM condition before triggering one (the HW
+         * won't trigger OOM during the first allocations).
+         */
+        tile_alloc_size += 8192;
+
+        /* For performance, allocate some extra initial memory after the PTB's
+         * minimal allocations, so that we hopefully don't have to block the
+         * GPU on the kernel handling an OOM signal.
+         */
+        tile_alloc_size += 512 * 1024;
+
+        job->tile_alloc = v3d_bo_alloc(v3d->screen, tile_alloc_size,
+                                       "tile_alloc");
+        uint32_t tsda_per_tile_size = 256;
+        job->tile_state = v3d_bo_alloc(v3d->screen,
+                                       MAX2(job->num_layers, 1) *
+                                       job->draw_tiles_y *
+                                       job->draw_tiles_x *
+                                       tsda_per_tile_size,
+                                       "TSDA");
+
         /* This must go before the binning mode configuration. It is
          * required for layered framebuffers to work.
          */
@@ -64,15 +94,13 @@ v3dX(start_binning)(struct v3d_context *v3d, struct v3d_job *job)
         }
 
         assert(!job->msaa || !job->double_buffer);
-        job->bcl_tile_binning_mode_ptr = cl_start(&job->bcl);
-
 #if V3D_VERSION >= 71
         cl_emit(&job->bcl, TILE_BINNING_MODE_CFG, config) {
                 config.width_in_pixels = job->draw_width;
                 config.height_in_pixels = job->draw_height;
 
-                config.log2_tile_width = log2_tile_size(job->tile_desc.width);
-                config.log2_tile_height = log2_tile_size(job->tile_desc.height);
+                config.log2_tile_width = log2_tile_size(job->tile_width);
+                config.log2_tile_height = log2_tile_size(job->tile_height);
 
                 /* FIXME: ideallly we would like next assert on the packet header (as is
                  * general, so also applies to GL). We would need to expand
@@ -81,6 +109,7 @@ v3dX(start_binning)(struct v3d_context *v3d, struct v3d_job *job)
                 assert(config.log2_tile_width == config.log2_tile_height ||
                        config.log2_tile_width == config.log2_tile_height + 1);
         }
+
 #endif
 
 #if V3D_VERSION == 42
@@ -1035,79 +1064,6 @@ v3d_check_compiled_shaders(struct v3d_context *v3d)
 }
 
 static void
-update_double_buffer_score(struct v3d_job *job, uint32_t vertex_count)
-{
-        if (!job->can_use_double_buffer)
-                return;
-
-        if (job->v3d->prog.gs) {
-                job->can_use_double_buffer = false;
-                return;
-        }
-
-        struct v3d_compiled_shader *vs = job->v3d->prog.vs;
-        struct v3d_compiled_shader *fs = job->v3d->prog.fs;
-        v3d_update_double_buffer_score(vertex_count,
-                                       vs->qpu_size, fs->qpu_size,
-                                       vs->prog_data.base, fs->prog_data.base,
-                                       &job->double_buffer_score);
-}
-
-static void
-v3d_update_job_tlb_load_store(struct v3d_job *job) {
-        struct v3d_context *v3d = job->v3d;
-
-        if (v3d->rasterizer->base.rasterizer_discard)
-               return;
-
-        uint32_t no_load_mask =
-                job->clear_tlb | job->clear_draw | job->invalidated_load;
-
-        if (v3d->zsa && job->zsbuf && v3d->zsa->base.depth_enabled) {
-                struct v3d_resource *rsc = v3d_resource(job->zsbuf->texture);
-                v3d_job_add_bo(job, rsc->bo);
-                job->load |= PIPE_CLEAR_DEPTH & ~no_load_mask;
-                if (v3d->zsa->base.depth_writemask)
-                        job->store |= PIPE_CLEAR_DEPTH;
-                rsc->initialized_buffers |= PIPE_CLEAR_DEPTH;
-        }
-
-        if (v3d->zsa && job->zsbuf && v3d->zsa->base.stencil[0].enabled) {
-                struct v3d_resource *rsc = v3d_resource(job->zsbuf->texture);
-                if (rsc->separate_stencil)
-                        rsc = rsc->separate_stencil;
-
-                v3d_job_add_bo(job, rsc->bo);
-
-                job->load |= PIPE_CLEAR_STENCIL & ~no_load_mask;
-                if (v3d->zsa->base.stencil[0].writemask ||
-                    v3d->zsa->base.stencil[1].writemask) {
-                        job->store |= PIPE_CLEAR_STENCIL;
-                }
-                rsc->initialized_buffers |= PIPE_CLEAR_STENCIL;
-        }
-
-        for (int i = 0; i < job->nr_cbufs; i++) {
-                uint32_t bit = PIPE_CLEAR_COLOR0 << i;
-                int blend_rt = v3d->blend->base.independent_blend_enable ? i : 0;
-
-                if (job->store & bit || !job->cbufs[i])
-                        continue;
-                struct v3d_resource *rsc = v3d_resource(job->cbufs[i]->texture);
-
-                if (rsc->invalidated) {
-                        job->invalidated_load |= bit;
-                        rsc->invalidated = false;
-                } else {
-                        job->load |= bit & ~no_load_mask;
-                }
-                if (v3d->blend->base.rt[blend_rt].colormask)
-                        job->store |= bit;
-                v3d_job_add_bo(job, rsc->bo);
-        }
-}
-
-static void
 v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
              unsigned drawid_offset,
              const struct pipe_draw_indirect_info *indirect,
@@ -1401,26 +1357,44 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
                                 u_stream_outputs_for_vertices(info->mode, draws[0].count);
         }
 
-        if (v3d->zsa && job->zsbuf) {
+        uint32_t clear_mask = job->clear_tlb | job->clear_draw;
+        if (v3d->zsa && job->zsbuf && v3d->zsa->base.depth_enabled) {
                 struct v3d_resource *rsc = v3d_resource(job->zsbuf->texture);
-                if (rsc->invalidated) {
-                        /* Currently gallium only applies invalidates if it
-                         * affects both depth and stencil together.
-                         */
-                        job->invalidated_load |=
-                                PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL;
-                        rsc->invalidated = false;
-                        if (rsc->separate_stencil)
-                                rsc->separate_stencil->invalidated = false;
-                }
+                v3d_job_add_bo(job, rsc->bo);
+                job->load |= PIPE_CLEAR_DEPTH & ~clear_mask;
+                if (v3d->zsa->base.depth_writemask)
+                        job->store |= PIPE_CLEAR_DEPTH;
+                rsc->initialized_buffers = PIPE_CLEAR_DEPTH;
         }
 
-        v3d_update_job_tlb_load_store(job);
+        if (v3d->zsa && job->zsbuf && v3d->zsa->base.stencil[0].enabled) {
+                struct v3d_resource *rsc = v3d_resource(job->zsbuf->texture);
+                if (rsc->separate_stencil)
+                        rsc = rsc->separate_stencil;
 
-        if (indirect && indirect->buffer)
-                job->can_use_double_buffer = false;
-        else
-                update_double_buffer_score(job, draws[0].count * info->instance_count);
+                v3d_job_add_bo(job, rsc->bo);
+
+                job->load |= PIPE_CLEAR_STENCIL & ~clear_mask;
+                if (v3d->zsa->base.stencil[0].writemask ||
+                    v3d->zsa->base.stencil[1].writemask) {
+                        job->store |= PIPE_CLEAR_STENCIL;
+                }
+                rsc->initialized_buffers |= PIPE_CLEAR_STENCIL;
+        }
+
+        for (int i = 0; i < job->nr_cbufs; i++) {
+                uint32_t bit = PIPE_CLEAR_COLOR0 << i;
+                int blend_rt = v3d->blend->base.independent_blend_enable ? i : 0;
+
+                if (job->store & bit || !job->cbufs[i])
+                        continue;
+                struct v3d_resource *rsc = v3d_resource(job->cbufs[i]->texture);
+
+                job->load |= bit & ~clear_mask;
+                if (v3d->blend->base.rt[blend_rt].colormask)
+                        job->store |= bit;
+                v3d_job_add_bo(job, rsc->bo);
+        }
 
         if (job->referenced_size > 768 * 1024 * 1024) {
                 perf_debug("Flushing job with %dkb to try to free up memory\n",
@@ -1438,8 +1412,6 @@ v3d_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_screen *screen = v3d->screen;
         unsigned i;
-
-        MESA_TRACE_FUNC();
 
         v3d_predraw_check_stage_inputs(pctx, PIPE_SHADER_COMPUTE);
 
@@ -1605,10 +1577,6 @@ v3d_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
                 } else if (!ret) {
                         if (v3d->active_perfmon)
                                 v3d->active_perfmon->job_submitted = true;
-                        if (V3D_DBG(SYNC)) {
-                                drmSyncobjWait(v3d->fd, &v3d->out_sync, 1, INT64_MAX,
-                                               DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, NULL);
-                        }
                 }
         }
 
@@ -1663,7 +1631,7 @@ v3d_draw_clear(struct v3d_context *v3d,
          */
         job->clear_draw |= buffers;
 
-        v3d_blitter_save(v3d, V3D_CLEAR_COND);
+        v3d_blitter_save(v3d, false, true);
         util_blitter_clear(v3d->blitter,
                            v3d->framebuffer.width,
                            v3d->framebuffer.height,
@@ -1824,8 +1792,7 @@ v3d_clear_render_target(struct pipe_context *pctx, struct pipe_surface *ps,
         if (render_condition_enabled && !v3d_render_condition_check(v3d))
                 return;
 
-        v3d_blitter_save(v3d, render_condition_enabled ?
-                         V3D_CLEAR_SURFACE_COND : V3D_CLEAR_SURFACE);
+        v3d_blitter_save(v3d, false, render_condition_enabled);
         util_blitter_clear_render_target(v3d->blitter, ps, color, x, y, w, h);
 }
 
@@ -1840,8 +1807,7 @@ v3d_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *ps,
         if (render_condition_enabled && !v3d_render_condition_check(v3d))
                 return;
 
-        v3d_blitter_save(v3d, render_condition_enabled ?
-                         V3D_CLEAR_SURFACE_COND : V3D_CLEAR_SURFACE);
+        v3d_blitter_save(v3d, false, render_condition_enabled);
         util_blitter_clear_depth_stencil(v3d->blitter, ps, buffers, depth,
                                          stencil, x, y, w, h);
 }

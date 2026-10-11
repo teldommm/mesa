@@ -23,7 +23,6 @@
 
 #include "nir/pipe_nir.h"
 #include "util/format/u_format.h"
-#include "util/perf/cpu_trace.h"
 #include "util/u_surface.h"
 #include "util/u_blitter.h"
 #include "compiler/nir/nir_builder.h"
@@ -39,7 +38,7 @@
  */
 
 void
-v3d_blitter_save(struct v3d_context *v3d, enum v3d_blitter_op op)
+v3d_blitter_save(struct v3d_context *v3d, bool op_blit, bool render_cond)
 {
         util_blitter_save_fragment_constant_buffer_slot(v3d->blitter,
                                                         v3d->constbuf[PIPE_SHADER_FRAGMENT].cb);
@@ -58,11 +57,9 @@ v3d_blitter_save(struct v3d_context *v3d, enum v3d_blitter_op op)
         util_blitter_save_sample_mask(v3d->blitter, v3d->sample_mask, 0);
         util_blitter_save_so_targets(v3d->blitter, v3d->streamout.num_targets,
                                      v3d->streamout.targets);
+        util_blitter_save_framebuffer(v3d->blitter, &v3d->framebuffer);
 
-        if (op & V3D_SAVE_FRAMEBUFFER)
-                util_blitter_save_framebuffer(v3d->blitter, &v3d->framebuffer);
-
-        if (op & V3D_SAVE_TEXTURES) {
+        if (op_blit) {
                 util_blitter_save_scissor(v3d->blitter, &v3d->scissor);
                 util_blitter_save_fragment_sampler_states(v3d->blitter,
                                                           v3d->tex[PIPE_SHADER_FRAGMENT].num_samplers,
@@ -72,7 +69,7 @@ v3d_blitter_save(struct v3d_context *v3d, enum v3d_blitter_op op)
                                                          v3d->tex[PIPE_SHADER_FRAGMENT].textures);
         }
 
-        if (!(op & V3D_DISABLE_RENDER_COND)) {
+        if (!render_cond) {
                 util_blitter_save_render_condition(v3d->blitter, v3d->cond_query,
                                                    v3d->cond_cond, v3d->cond_mode);
         }
@@ -129,10 +126,7 @@ v3d_render_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
                 return;
         }
 
-        MESA_TRACE_FUNC();
-
-        v3d_blitter_save(v3d, info->render_condition_enable ?
-                         V3D_BLIT_COND : V3D_BLIT);
+        v3d_blitter_save(v3d, true, info->render_condition_enable);
         util_blitter_blit(v3d->blitter, info, NULL);
 
         pipe_resource_reference(&tiled, NULL);
@@ -152,8 +146,6 @@ v3d_stencil_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
 
         if ((info->mask & PIPE_MASK_S) == 0)
                 return;
-
-        MESA_TRACE_FUNC();
 
         if (src->separate_stencil) {
                 src = src->separate_stencil;
@@ -204,8 +196,7 @@ v3d_stencil_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
         struct pipe_sampler_view *src_view =
                 ctx->create_sampler_view(ctx, &src->base, &src_tmpl);
 
-        v3d_blitter_save(v3d, info->render_condition_enable ?
-                         V3D_BLIT_COND : V3D_BLIT);
+        v3d_blitter_save(v3d, true, info->render_condition_enable);
         util_blitter_blit_generic(v3d->blitter, dst_surf, &info->dst.box,
                                   src_view, &info->src.box,
                                   src->base.width0, src->base.height0,
@@ -260,7 +251,6 @@ v3d_tfu_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                 return;
 
         if (info->scissor_enable ||
-            info->swizzle_enable ||
             info->dst.box.x != 0 ||
             info->dst.box.y != 0 ||
             info->dst.box.width != dst_width ||
@@ -313,11 +303,15 @@ is_tile_unaligned(unsigned size, unsigned tile_size)
         return size & (tile_size - 1);
 }
 
-static bool
-check_tlb_blit_ok(struct v3d_device_info *devinfo, struct pipe_blit_info *info)
+static void
+v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
 {
+        struct v3d_context *v3d = v3d_context(pctx);
+        struct v3d_screen *screen = v3d->screen;
+        struct v3d_device_info *devinfo = &screen->devinfo;
+
         if (!info->mask)
-                return false;
+                return;
 
         bool is_color_blit = info->mask & PIPE_MASK_RGBA;
         bool is_depth_blit = info->mask & PIPE_MASK_Z;
@@ -329,160 +323,38 @@ check_tlb_blit_ok(struct v3d_device_info *devinfo, struct pipe_blit_info *info)
         assert ((is_color_blit && !is_depth_blit && !is_stencil_blit) ||
                 (!is_color_blit && (is_depth_blit || is_stencil_blit)));
 
-        if (info->scissor_enable || info->swizzle_enable)
-                return false;
+        if (info->scissor_enable)
+                return;
 
         if (info->src.box.x != info->dst.box.x ||
             info->src.box.y != info->dst.box.y ||
             info->src.box.width != info->dst.box.width ||
             info->src.box.height != info->dst.box.height)
-                return false;
+                return;
 
         if (is_color_blit &&
             util_format_is_depth_or_stencil(info->dst.format))
-                return false;
+                return;
 
         if ((is_depth_blit || is_stencil_blit) &&
             !util_format_is_depth_or_stencil(info->dst.format))
-                return false;
+                return;
 
         if (!v3d_rt_format_supported(devinfo, info->src.format))
-                return false;
+                return;
 
         if (v3d_get_rt_format(devinfo, info->src.format) !=
             v3d_get_rt_format(devinfo, info->dst.format))
-                return false;
+                return;
 
+        bool msaa = (info->src.resource->nr_samples > 1 ||
+                     info->dst.resource->nr_samples > 1);
         bool is_msaa_resolve = (info->src.resource->nr_samples > 1 &&
                                 info->dst.resource->nr_samples < 2);
 
         if (is_msaa_resolve &&
             !v3d_format_supports_tlb_msaa_resolve(devinfo, info->src.format))
-                return false;
-
-        return true;
-}
-
-/* This checks if we can implement the blit straight from a job that we have
- * not yet flushed, including MSAA resolves.
- */
-static void
-v3d_tlb_blit_fast(struct pipe_context *pctx, struct pipe_blit_info *info)
-{
-        struct v3d_context *v3d = v3d_context(pctx);
-        struct v3d_screen *screen = v3d->screen;
-        struct v3d_device_info *devinfo = &screen->devinfo;
-
-        if (!check_tlb_blit_ok(devinfo, info))
                 return;
-
-        /* FIXME: support depth/stencil */
-        if (!(info->mask & PIPE_MASK_RGBA))
-                return;
-
-        /* Can't blit from 1x to 4x since the render target configuration
-         * for the job would not be compatible.
-         */
-        if (info->src.resource->nr_samples < info->dst.resource->nr_samples)
-                return;
-
-        /* Can't blit form RGBX to RGBA since we can't force A=1 on tile
-         * stores.
-         */
-        if (util_format_has_alpha1(info->src.format) &&
-            !util_format_has_alpha1(info->dst.format))
-            return;
-
-        /* Find the job that writes the blit source */
-        struct hash_entry *entry = _mesa_hash_table_search(v3d->write_jobs,
-                                                           info->src.resource);
-        if (!entry)
-                return;
-
-        struct v3d_job *job = entry->data;
-        assert(job);
-
-        /* The TLB store will involve the same area and tiles as the job
-         * writing to the resource, so only do this if we are blitting the
-         * full resource and the job is writing the full resource.
-         */
-        int dst_width = u_minify(info->dst.resource->width0, info->dst.level);
-        int dst_height = u_minify(info->dst.resource->height0, info->dst.level);
-        if (info->dst.box.x != 0 || info->dst.box.width != dst_width ||
-            info->dst.box.y != 0 || info->dst.box.height != dst_height ||
-            job->draw_min_x != 0 || job->draw_min_y != 0 ||
-            job->draw_max_x != dst_width || job->draw_max_y != dst_height) {
-                return;
-        }
-
-        /* Blits are specified for single-layered FBOs, if the job that
-         * produces the blit source is multilayered we would attempt to
-         * blit all layers and write out of bounds on the destination.
-         */
-        if (job->num_layers > 1)
-                return;
-
-        /* Find which color attachment in the job is the blit source  */
-        int idx = -1;
-        for (int i = 0; i < job->nr_cbufs; i++) {
-                if (!job->cbufs[i] ||
-                    job->cbufs[i]->texture != info->src.resource) {
-                        continue;
-                }
-                idx = i;
-                break;
-        }
-
-        if (idx < 0)
-                return;
-
-        struct pipe_surface *dbuf =
-                v3d_get_blit_surface(pctx, info->dst.resource,
-                                     info->dst.format, info->dst.level,
-                                     info->dst.box.z);
-
-        /* The job's RT setup must be compatible with the blit buffer. */
-        struct v3d_surface *ssurf = v3d_surface(job->cbufs[idx]);
-        struct v3d_surface *rsurf = v3d_surface(dbuf);
-        if (ssurf->internal_bpp < rsurf->internal_bpp)
-                return;
-        if (ssurf->internal_type != rsurf->internal_type)
-                return;
-
-        MESA_TRACE_FUNC();
-
-        /* If we had any other jobs writing to the blit dst we should submit
-         * them now before we blit.
-         *
-         * FIXME: We could just drop these jobs completely if they are
-         * rendering a subset of the resource being blit here.
-         */
-        v3d_flush_jobs_writing_resource(v3d, info->dst.resource,
-                                        V3D_FLUSH_DEFAULT, false);
-
-        /* Program the job to blit from the TLB into the destination buffer */
-        info->mask &= ~PIPE_MASK_RGBA;
-        job->blit_tlb |= PIPE_CLEAR_COLOR0 << idx;
-        job->dbuf = dbuf;
-        v3d_job_add_write_resource(job, info->dst.resource);
-
-        /* Submit the job immediately, since otherwise we could accumulate
-         * draw calls happening after the blit.
-         */
-        v3d_job_submit(v3d, job);
-}
-
-static void
-v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
-{
-        struct v3d_context *v3d = v3d_context(pctx);
-        struct v3d_screen *screen = v3d->screen;
-        struct v3d_device_info *devinfo = &screen->devinfo;
-
-        if (!check_tlb_blit_ok(devinfo, info))
-                return;
-
-        MESA_TRACE_FUNC();
 
         v3d_flush_jobs_writing_resource(v3d, info->src.resource, V3D_FLUSH_DEFAULT, false);
 
@@ -491,18 +363,11 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
         struct pipe_surface *src_surf =
            v3d_get_blit_surface(pctx, info->src.resource, info->src.format, info->src.level, info->src.box.z);
 
-        bool is_color_blit = info->mask & PIPE_MASK_RGBA;
-        bool is_depth_blit = info->mask & PIPE_MASK_Z;
-        bool is_stencil_blit = info->mask & PIPE_MASK_S;
-
         struct pipe_surface *surfaces[V3D_MAX_DRAW_BUFFERS] = { 0 };
         if (is_color_blit)
                 surfaces[0] = dst_surf;
 
-        bool msaa = (info->src.resource->nr_samples > 1 ||
-                     info->dst.resource->nr_samples > 1);
-
-        bool double_buffer = false;
+        bool double_buffer = V3D_DBG(DOUBLE_BUFFER) && !msaa;
 
         uint32_t tile_width, tile_height, max_bpp;
         v3d_get_tile_buffer_size(devinfo, msaa, double_buffer,
@@ -531,7 +396,8 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                                           src_surf);
         job->msaa = msaa;
         job->double_buffer = double_buffer;
-        job->can_use_double_buffer = !job->msaa && V3D_DBG(DOUBLE_BUFFER);
+        job->tile_width = tile_width;
+        job->tile_height = tile_height;
         job->internal_bpp = max_bpp;
         job->draw_min_x = info->dst.box.x;
         job->draw_min_y = info->dst.box.y;
@@ -547,13 +413,10 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
          */
         job->draw_width = MIN2(dst_surf->width, src_surf->width);
         job->draw_height = MIN2(dst_surf->height, src_surf->height);
-
-        job->tile_desc.width = tile_width;
-        job->tile_desc.height = tile_height;
-        job->tile_desc.draw_x = DIV_ROUND_UP(job->draw_width,
-                                             job->tile_desc.width);
-        job->tile_desc.draw_y = DIV_ROUND_UP(job->draw_height,
-                                             job->tile_desc.height);
+        job->draw_tiles_x = DIV_ROUND_UP(job->draw_width,
+                                         job->tile_width);
+        job->draw_tiles_y = DIV_ROUND_UP(job->draw_height,
+                                         job->tile_height);
 
         job->needs_flush = true;
         job->num_layers = info->dst.box.depth;
@@ -791,10 +654,7 @@ v3d_sand8_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
         assert(info->src.box.width == info->dst.box.width);
         assert(info->src.box.height == info->dst.box.height);
 
-        MESA_TRACE_FUNC();
-
-        v3d_blitter_save(v3d, info->render_condition_enable ?
-                         V3D_BLIT_COND : V3D_BLIT);
+        v3d_blitter_save(v3d, true, info->render_condition_enable);
 
         struct pipe_surface dst_tmpl;
         util_blitter_default_dst_texture(&dst_tmpl, info->dst.resource,
@@ -1102,8 +962,7 @@ v3d_sand30_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                 return;
         if (!(info->mask & PIPE_MASK_RGBA))
                 return;
-        if (info->swizzle_enable)
-                return;
+
         assert(dst->base.format == src->base.format);
         assert(dst->tiled);
 
@@ -1112,10 +971,7 @@ v3d_sand30_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
         assert(info->src.box.width == info->dst.box.width);
         assert(info->src.box.height == info->dst.box.height);
 
-        MESA_TRACE_FUNC();
-
-        v3d_blitter_save(v3d, info->render_condition_enable ?
-                         V3D_BLIT_COND : V3D_BLIT);
+        v3d_blitter_save(v3d, true, info->render_condition_enable);
 
         struct pipe_surface dst_tmpl;
         util_blitter_default_dst_texture(&dst_tmpl, info->dst.resource,
@@ -1198,13 +1054,9 @@ v3d_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
         if (info.render_condition_enable && !v3d_render_condition_check(v3d))
                 return;
 
-        MESA_TRACE_FUNC();
-
         v3d_sand30_blit(pctx, &info);
 
         v3d_sand8_blit(pctx, &info);
-
-        v3d_tlb_blit_fast(pctx, &info);
 
         v3d_tfu_blit(pctx, &info);
 

@@ -52,8 +52,14 @@ struct nouveau_device {
    uint64_t vram_limit;
    uint64_t gart_limit;
 
-   /* only pci info, class ids and and device type are set */
+   /* only pci info and device type are set */
    struct nv_device_info info;
+
+   /* classes for common push buf dumping */
+   uint32_t cls_eng3d;
+   uint32_t cls_compute;
+   uint32_t cls_m2mf;
+   uint32_t cls_copy;
 };
 
 struct nouveau_client {

@@ -21,7 +21,7 @@
  * IN THE SOFTWARE.
  */
 
-/** @file
+/** @file brw_fs_generator.cpp
  *
  * This file supports generating code from the FS LIR to the actual
  * native instructions.
@@ -174,7 +174,7 @@ fs_generator::generate_send(fs_inst *inst,
    uint32_t ex_desc_imm = inst->ex_desc |
       brw_message_ex_desc(devinfo, inst->ex_mlen);
 
-   if (ex_desc.file != IMM || ex_desc.ud || ex_desc_imm ||
+   if (ex_desc.file != BRW_IMMEDIATE_VALUE || ex_desc.ud || ex_desc_imm ||
        inst->send_ex_desc_scratch) {
       /* If we have any sort of extended descriptor, then we need SENDS.  This
        * also covers the dual-payload case because ex_mlen goes in ex_desc.
@@ -201,7 +201,7 @@ fs_generator::generate_mov_indirect(fs_inst *inst,
                                     struct brw_reg indirect_byte_offset)
 {
    assert(indirect_byte_offset.type == BRW_TYPE_UD);
-   assert(indirect_byte_offset.file == FIXED_GRF);
+   assert(indirect_byte_offset.file == BRW_GENERAL_REGISTER_FILE);
    assert(!reg.abs && !reg.negate);
 
    /* Gen12.5 adds the following region restriction:
@@ -218,7 +218,7 @@ fs_generator::generate_mov_indirect(fs_inst *inst,
 
    unsigned imm_byte_offset = reg.nr * REG_SIZE + reg.subnr;
 
-   if (indirect_byte_offset.file == IMM) {
+   if (indirect_byte_offset.file == BRW_IMMEDIATE_VALUE) {
       imm_byte_offset += indirect_byte_offset.ud;
 
       reg.nr = imm_byte_offset / REG_SIZE;
@@ -331,7 +331,7 @@ fs_generator::generate_shuffle(fs_inst *inst,
                                struct brw_reg src,
                                struct brw_reg idx)
 {
-   assert(src.file == FIXED_GRF);
+   assert(src.file == BRW_GENERAL_REGISTER_FILE);
    assert(!src.abs && !src.negate);
 
    /* Ivy bridge has some strange behavior that makes this a real pain to
@@ -367,12 +367,12 @@ fs_generator::generate_shuffle(fs_inst *inst,
       brw_set_default_group(p, group);
 
       if ((src.vstride == 0 && src.hstride == 0) ||
-          idx.file == IMM) {
+          idx.file == BRW_IMMEDIATE_VALUE) {
          /* Trivial, the source is already uniform or the index is a constant.
           * We will typically not get here if the optimizer is doing its job,
           * but asserting would be mean.
           */
-         const unsigned i = idx.file == IMM ? idx.ud : 0;
+         const unsigned i = idx.file == BRW_IMMEDIATE_VALUE ? idx.ud : 0;
          struct brw_reg group_src = stride(suboffset(src, i), 0, 1, 0);
          struct brw_reg group_dst = suboffset(dst, group << (dst.hstride - 1));
          brw_MOV(p, group_dst, group_src);
@@ -463,7 +463,7 @@ fs_generator::generate_quad_swizzle(const fs_inst *inst,
    /* Requires a quad. */
    assert(inst->exec_size >= 4);
 
-   if (src.file == IMM ||
+   if (src.file == BRW_IMMEDIATE_VALUE ||
        has_scalar_region(src)) {
       /* The value is uniform across all channels */
       brw_MOV(p, dst, src);
@@ -701,14 +701,10 @@ fs_generator::generate_halt(fs_inst *)
  * information required by either set of opcodes.
  */
 void
-fs_generator::generate_scratch_header(fs_inst *inst,
-                                      struct brw_reg dst,
-                                      struct brw_reg src)
+fs_generator::generate_scratch_header(fs_inst *inst, struct brw_reg dst)
 {
    assert(inst->exec_size == 8 && inst->force_writemask_all);
-   assert(dst.file == FIXED_GRF);
-   assert(src.file == FIXED_GRF);
-   assert(src.type == BRW_TYPE_UD);
+   assert(dst.file == BRW_GENERAL_REGISTER_FILE);
 
    dst.type = BRW_TYPE_UD;
 
@@ -720,7 +716,8 @@ fs_generator::generate_scratch_header(fs_inst *inst,
 
    /* Copy the per-thread scratch space size from g0.3[3:0] */
    brw_set_default_exec_size(p, BRW_EXECUTE_1);
-   insn = brw_AND(p, suboffset(dst, 3), component(src, 3),
+   insn = brw_AND(p, suboffset(dst, 3),
+                     retype(brw_vec1_grf(0, 3), BRW_TYPE_UD),
                      brw_imm_ud(INTEL_MASK(3, 0)));
    if (devinfo->ver < 12) {
       brw_inst_set_no_dd_clear(p->devinfo, insn, true);
@@ -728,7 +725,8 @@ fs_generator::generate_scratch_header(fs_inst *inst,
    }
 
    /* Copy the scratch base address from g0.5[31:10] */
-   insn = brw_AND(p, suboffset(dst, 5), component(src, 5),
+   insn = brw_AND(p, suboffset(dst, 5),
+                     retype(brw_vec1_grf(0, 5), BRW_TYPE_UD),
                      brw_imm_ud(INTEL_MASK(31, 10)));
    if (devinfo->ver < 12)
       brw_inst_set_no_dd_check(p->devinfo, insn, true);
@@ -756,7 +754,7 @@ translate_systolic_depth(unsigned d)
 
 int
 fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
-                            struct brw_shader_stats shader_stats,
+                            struct shader_stats shader_stats,
                             const brw::performance &perf,
                             struct brw_compile_stats *stats,
                             unsigned max_polygons)
@@ -773,7 +771,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
    struct disasm_info *disasm_info = disasm_initialize(p->isa, cfg);
 
-   enum opcode prev_opcode = BRW_OPCODE_ILLEGAL;
    foreach_block_and_inst (block, fs_inst, inst, cfg) {
       if (inst->opcode == SHADER_OPCODE_UNDEF)
          continue;
@@ -908,7 +905,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          brw_NOP(p);
          break;
       case BRW_OPCODE_SYNC:
-         assert(src[0].file == IMM);
+         assert(src[0].file == BRW_IMMEDIATE_VALUE);
          brw_SYNC(p, tgl_sync_function(src[0].ud));
 
          if (tgl_sync_function(src[0].ud) == TGL_SYNC_NOP)
@@ -1085,16 +1082,9 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 	 break;
 
       case BRW_OPCODE_WHILE:
-         /* On LNL and newer, if we don't put a NOP in between two consecutive
-          * WHILE instructions we may end up with misrendering or GPU hangs.
-          * See HSD 22020521218.
-          */
-         if (devinfo->ver >= 20 && unlikely(prev_opcode == BRW_OPCODE_WHILE))
-            brw_NOP(p);
-
-         brw_WHILE(p);
+	 brw_WHILE(p);
          loop_count++;
-         break;
+	 break;
 
       case SHADER_OPCODE_RCP:
       case SHADER_OPCODE_RSQ:
@@ -1132,7 +1122,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          assert(src[0].type == BRW_TYPE_UW);
          assert(src[1].type == BRW_TYPE_UW);
          src[0].subnr = 0 * brw_type_size_bytes(src[0].type);
-         if (src[1].file == IMM) {
+         if (src[1].file == BRW_IMMEDIATE_VALUE) {
             assert(src[1].ud == 0);
             brw_MOV(p, dst, stride(src[0], 8, 4, 1));
          } else {
@@ -1144,7 +1134,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          assert(src[0].type == BRW_TYPE_UW);
          assert(src[1].type == BRW_TYPE_UW);
          src[0].subnr = 4 * brw_type_size_bytes(src[0].type);
-         if (src[1].file == IMM) {
+         if (src[1].file == BRW_IMMEDIATE_VALUE) {
             assert(src[1].ud == 0);
             brw_MOV(p, dst, stride(src[0], 8, 4, 1));
          } else {
@@ -1169,7 +1159,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 	 break;
 
       case SHADER_OPCODE_SCRATCH_HEADER:
-         generate_scratch_header(inst, dst, src[0]);
+         generate_scratch_header(inst, dst);
          break;
 
       case SHADER_OPCODE_MOV_INDIRECT:
@@ -1177,8 +1167,8 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          break;
 
       case SHADER_OPCODE_MOV_RELOC_IMM:
-         assert(src[0].file == IMM);
-         assert(src[1].file == IMM);
+         assert(src[0].file == BRW_IMMEDIATE_VALUE);
+         assert(src[1].file == BRW_IMMEDIATE_VALUE);
          brw_MOV_reloc_imm(p, dst, dst.type, src[0].ud, src[1].ud);
          break;
 
@@ -1188,8 +1178,8 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
       case SHADER_OPCODE_INTERLOCK:
       case SHADER_OPCODE_MEMORY_FENCE: {
-         assert(src[1].file == IMM);
-         assert(src[2].file == IMM);
+         assert(src[1].file == BRW_IMMEDIATE_VALUE);
+         assert(src[2].file == BRW_IMMEDIATE_VALUE);
 
          const enum opcode send_op = inst->opcode == SHADER_OPCODE_INTERLOCK ?
             BRW_OPCODE_SENDC : BRW_OPCODE_SEND;
@@ -1267,7 +1257,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          break;
 
       case SHADER_OPCODE_QUAD_SWIZZLE:
-         assert(src[1].file == IMM);
+         assert(src[1].file == BRW_IMMEDIATE_VALUE);
          assert(src[1].type == BRW_TYPE_UD);
          generate_quad_swizzle(inst, dst, src[0], src[1].ud);
          break;
@@ -1276,9 +1266,9 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          assert((!intel_device_info_is_9lp(devinfo) &&
                  devinfo->has_64bit_float) || brw_type_size_bytes(src[0].type) <= 4);
          assert(!src[0].negate && !src[0].abs);
-         assert(src[1].file == IMM);
+         assert(src[1].file == BRW_IMMEDIATE_VALUE);
          assert(src[1].type == BRW_TYPE_UD);
-         assert(src[2].file == IMM);
+         assert(src[2].file == BRW_IMMEDIATE_VALUE);
          assert(src[2].type == BRW_TYPE_UD);
          const unsigned component = src[1].ud;
          const unsigned cluster_size = src[2].ud;
@@ -1322,7 +1312,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 	 break;
 
       case SHADER_OPCODE_RND_MODE: {
-         assert(src[0].file == IMM);
+         assert(src[0].file == BRW_IMMEDIATE_VALUE);
          /*
           * Changes the floating point rounding mode updating the control
           * register field defined at cr0.0[5-6] bits.
@@ -1334,8 +1324,8 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          break;
 
       case SHADER_OPCODE_FLOAT_CONTROL_MODE:
-         assert(src[0].file == IMM);
-         assert(src[1].file == IMM);
+         assert(src[0].file == BRW_IMMEDIATE_VALUE);
+         assert(src[1].file == BRW_IMMEDIATE_VALUE);
          brw_float_controls_mode(p, src[0].d, src[1].d);
          break;
 
@@ -1362,7 +1352,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
       case SHADER_OPCODE_LOAD_PAYLOAD:
          unreachable("Should be lowered by lower_load_payload()");
       }
-      prev_opcode = inst->opcode;
 
       if (multiple_instructions_emitted)
          continue;
@@ -1439,7 +1428,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
               "%d:%d spills:fills, %u sends, "
               "scheduled with mode %s. "
               "Promoted %u constants. "
-              "Non-SSA regs (after NIR): %u. "
               "Compacted %d to %d bytes (%.0f%%)\n",
               shader_name, params->source_hash, sha1buf,
               dispatch_width,
@@ -1450,7 +1438,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
               send_count,
               shader_stats.scheduler_mode,
               shader_stats.promoted_constants,
-              shader_stats.non_ssa_registers_after_nir,
               before_size, after_size,
               100.0f * (before_size - after_size) / before_size);
 
@@ -1498,7 +1485,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
       stats->spills = shader_stats.spill_count;
       stats->fills = shader_stats.fill_count;
       stats->max_live_registers = shader_stats.max_register_pressure;
-      stats->non_ssa_registers_after_nir = shader_stats.non_ssa_registers_after_nir;
    }
 
    return start_offset;

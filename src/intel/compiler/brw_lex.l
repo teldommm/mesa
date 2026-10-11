@@ -281,9 +281,6 @@ nomask      	{ return MASK_DISABLE; }
 atomic       	{ return ATOMIC; }
 switch       	{ return SWITCH; }
 
- /* Branch control */
-BranchCtrl	{ return BRANCH_CTRL; }
-
  /* Quarter Control */
 1[HNQ]       	{ }
 "2Q"	        { return QTR_2Q; }
@@ -328,9 +325,6 @@ BranchCtrl	{ return BRANCH_CTRL; }
 
  /* flag registers */
 "f"[0|1] 	{ BEGIN(CHANNEL); yylval.integer = atoi(yytext + 1); return FLAGREG; }
-
- /* scalar register */
-"s0"		{ return SCALARREG; }
 
  /* state register */
 sr[0-9]+ 	{ yylval.integer = atoi(yytext + 2); return STATEREG; }
@@ -418,8 +412,6 @@ sr[0-9]+ 	{ yylval.integer = atoi(yytext + 2); return STATEREG; }
 "I@"[1-7]	{ yylval.integer = atoi(yytext + 2); return REG_DIST_INT; }
 "L@"[1-7]	{ yylval.integer = atoi(yytext + 2); return REG_DIST_LONG; }
 "A@"[1-7]	{ yylval.integer = atoi(yytext + 2); return REG_DIST_ALL; }
-"M@"[1-7]	{ yylval.integer = atoi(yytext + 2); return REG_DIST_MATH; }
-"S@"[1-7]	{ yylval.integer = atoi(yytext + 2); return REG_DIST_SCALAR; }
 
 "$"[0-9]*	{ yylval.integer = atoi(yytext + 1); return SBID_ALLOC; }
 "$"[0-9]*".src"	{ yylval.integer = atoi(yytext + 1); return SBID_WAIT_SRC; }

@@ -21,7 +21,7 @@
  * IN THE SOFTWARE.
  */
 
-/** @file
+/** @file brw_fs_combine_constants.cpp
  *
  * This file contains the opt_combine_constants() pass that runs after the
  * regular optimization loop. It passes over the instruction list and promotes
@@ -989,61 +989,26 @@ representable_as_uw(unsigned ud, uint16_t *uw)
 }
 
 static bool
-supports_src_as_imm(const struct intel_device_info *devinfo, const fs_inst *inst,
-                    unsigned src_idx)
+supports_src_as_imm(const struct intel_device_info *devinfo, const fs_inst *inst)
 {
+   if (devinfo->ver < 12)
+      return false;
+
    switch (inst->opcode) {
    case BRW_OPCODE_ADD3:
-      /* ADD3 can use src0 or src2 in Gfx12.5. */
-      return src_idx != 1;
-
-   case BRW_OPCODE_BFE:
-      /* BFE can use src0 or src2 in Gfx12+. */
-      return devinfo->ver >= 12 && src_idx != 1;
+      /* ADD3 only exists on Gfx12.5+. */
+      return true;
 
    case BRW_OPCODE_CSEL:
       /* While MAD can mix F and HF sources on some platforms, CSEL cannot. */
-      return devinfo->ver >= 12 && inst->src[0].type != BRW_TYPE_F;
+      return inst->src[0].type != BRW_TYPE_F;
 
    case BRW_OPCODE_MAD:
-      switch (devinfo->verx10) {
-      case 90:
-         return false;
-
-      case 110:
-         /* For Gfx11, experiments seem to show that HF mixed with F is not
-          * allowed in src0 or src2. It is possible that src1 is allowed, but
-          * that cannot have an immediate value. Experiments seem to show that
-          * HF immediate can only ever be src0.
-          *
-          * W (or UW) immediate mixed with other integer sizes can occur in
-          * either src0 or src2.
-          */
-         return (src_idx == 0 && inst->src[src_idx].type != BRW_TYPE_F) ||
-                (src_idx == 2 && brw_type_is_int(inst->src[src_idx].type));
-
-      case 120:
-         /* For Gfx12, experiments seem to show that HF immediate mixed with F
-          * can only occur in src0. W (or UW) immediate mixed with other
-          * integer sizes can occur in either src0 or src2.
-          */
-         return src_idx == 0 ||
-                (src_idx == 2 && brw_type_is_int(inst->src[src_idx].type));
-
-      default:
-         /* For Gfx12.5, HF mixed with F is not allowed at all (per the
-          * Bspec).  W (or UW) immediate mixed with other integer sizes can
-          * occur in either src0 or src2.
-          *
-          * FINISHME: It's possible (probable?) that src2 can also be HF when
-          * the other sources are HF. This has not been tested, so it is
-          * currently not allowed.
-          */
-         assert(devinfo->verx10 >= 125);
-         return (src_idx == 0 && inst->src[src_idx].type != BRW_TYPE_F) ||
-                (src_idx == 2 && brw_type_is_int(inst->src[src_idx].type));
-      }
-      break;
+      /* Integer types can always mix sizes. Floating point types can mix
+       * sizes on Gfx12. On Gfx12.5, floating point sources must all be HF or
+       * all be F.
+       */
+      return devinfo->verx10 < 125 || inst->src[0].type != BRW_TYPE_F;
 
    default:
       return false;
@@ -1056,9 +1021,20 @@ can_promote_src_as_imm(const struct intel_device_info *devinfo, fs_inst *inst,
 {
    bool can_promote = false;
 
-   if (!supports_src_as_imm(devinfo, inst, src_idx))
+   /* Experiment shows that we can only support src0 as immediate for MAD on
+    * Gfx12. ADD3 can use src0 or src2 in Gfx12.5, but constant propagation
+    * only propagates into src0. It's possible that src2 works for W or UW MAD
+    * on Gfx12.5.
+    */
+   if (src_idx != 0)
       return false;
 
+   if (!supports_src_as_imm(devinfo, inst))
+      return false;
+
+   /* TODO - Fix the codepath below to use a bfloat16 immediate on XeHP,
+    *        since HF/F mixed mode has been removed from the hardware.
+    */
    switch (inst->src[src_idx].type) {
    case BRW_TYPE_F: {
       uint16_t hf;
@@ -1068,29 +1044,19 @@ can_promote_src_as_imm(const struct intel_device_info *devinfo, fs_inst *inst,
       }
       break;
    }
-   case BRW_TYPE_D:
-   case BRW_TYPE_UD: {
-      /* ADD3, CSEL, and MAD can mix signed and unsiged types. Only BFE
-       * cannot.
-       */
-      if (inst->src[src_idx].type == BRW_TYPE_D ||
-          inst->opcode != BRW_OPCODE_BFE) {
-         int16_t w;
-         if (representable_as_w(inst->src[src_idx].d, &w)) {
-            inst->src[src_idx] = brw_imm_w(w);
-            can_promote = true;
-            break;
-         }
+   case BRW_TYPE_D: {
+      int16_t w;
+      if (representable_as_w(inst->src[src_idx].d, &w)) {
+         inst->src[src_idx] = brw_imm_w(w);
+         can_promote = true;
       }
-
-      if (inst->src[src_idx].type == BRW_TYPE_UD ||
-          inst->opcode != BRW_OPCODE_BFE) {
-         uint16_t uw;
-         if (representable_as_uw(inst->src[src_idx].ud, &uw)) {
-            inst->src[src_idx] = brw_imm_uw(uw);
-            can_promote = true;
-            break;
-         }
+      break;
+   }
+   case BRW_TYPE_UD: {
+      uint16_t uw;
+      if (representable_as_uw(inst->src[src_idx].ud, &uw)) {
+         inst->src[src_idx] = brw_imm_uw(uw);
+         can_promote = true;
       }
       break;
    }
@@ -1336,37 +1302,24 @@ brw_fs_opt_combine_constants(fs_visitor &s)
        * 16-bits, it would be better to add both sources with
        * allow_one_constant=true as is done for SEL.
        */
-      case BRW_OPCODE_BFE:
       case BRW_OPCODE_ADD3:
       case BRW_OPCODE_CSEL:
       case BRW_OPCODE_MAD: {
-         if (inst->opcode == BRW_OPCODE_MAD &&
-             devinfo->ver == 11 &&
-             can_promote_src_as_imm(devinfo, inst, 0) &&
-             can_promote_src_as_imm(devinfo, inst, 2)) {
-            /* MAD can have either src0 or src2 be immediate. Add both as
-             * candidates, but mark them "allow one constant."
-             */
-            add_candidate_immediate(&table, inst, ip, 0, true, block,
-                                    devinfo, const_ctx);
-            add_candidate_immediate(&table, inst, ip, 2, true, block,
-                                    devinfo, const_ctx);
-         } else {
-            for (int i = 0; i < inst->sources; i++) {
-               if (inst->src[i].file != IMM)
-                  continue;
+         for (int i = 0; i < inst->sources; i++) {
+            if (inst->src[i].file != IMM)
+               continue;
 
-               if (can_promote_src_as_imm(devinfo, inst, i))
-                  continue;
+            if (can_promote_src_as_imm(devinfo, inst, i))
+               continue;
 
-               add_candidate_immediate(&table, inst, ip, i, false, block,
-                                       devinfo, const_ctx);
-            }
+            add_candidate_immediate(&table, inst, ip, i, false, block,
+                                    devinfo, const_ctx);
          }
 
          break;
       }
 
+      case BRW_OPCODE_BFE:
       case BRW_OPCODE_BFI2:
       case BRW_OPCODE_LRP:
          for (int i = 0; i < inst->sources; i++) {
@@ -1789,7 +1742,7 @@ brw_fs_opt_combine_constants(fs_visitor &s)
 
       delete s.cfg;
       s.cfg = NULL;
-      brw_calculate_cfg(s);
+      s.calculate_cfg();
    }
 
    ralloc_free(const_ctx);

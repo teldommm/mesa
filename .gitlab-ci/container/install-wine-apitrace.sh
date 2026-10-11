@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -ue
-
 APITRACE_VERSION="11.1"
 APITRACE_VERSION_DATE=""
 

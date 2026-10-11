@@ -22,7 +22,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef BRW_IR_PERFORMANCE_H
+#define BRW_IR_PERFORMANCE_H
 
 #include "brw_ir_analysis.h"
 
@@ -80,3 +81,5 @@ namespace brw {
       operator=(performance u);
    };
 }
+
+#endif

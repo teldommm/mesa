@@ -25,7 +25,8 @@
  *
  */
 
-#pragma once
+#ifndef BRW_CFG_H
+#define BRW_CFG_H
 
 struct bblock_t;
 
@@ -525,7 +526,8 @@ namespace brw {
          return true;
       }
 
-      void dump(FILE *file = stderr) const;
+      void
+      dump() const;
 
    private:
       unsigned num_parents;
@@ -534,3 +536,5 @@ namespace brw {
 }
 
 #endif
+
+#endif /* BRW_CFG_H */

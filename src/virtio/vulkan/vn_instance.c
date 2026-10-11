@@ -139,8 +139,7 @@ vn_instance_init_ring(struct vn_instance *instance)
    struct vn_ring_layout layout;
    vn_ring_get_layout(buf_size, extra_size, &layout);
 
-   instance->ring.ring = vn_ring_create(instance, &layout, direct_order,
-                                        false /* is_tls_ring */);
+   instance->ring.ring = vn_ring_create(instance, &layout, direct_order);
    if (!instance->ring.ring)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -276,7 +275,6 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       return vn_error(NULL, result);
    }
 
-   VkInstance instance_handle = vn_instance_to_handle(instance);
    /* ring_idx = 0 reserved for CPU timeline */
    instance->ring_idx_used_mask = 0x1;
 
@@ -295,10 +293,6 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    }
 
    result = vn_instance_init_renderer(instance);
-   if (result == VK_ERROR_INITIALIZATION_FAILED) {
-      *pInstance = instance_handle;
-      return VK_SUCCESS;
-   }
    if (result != VK_SUCCESS)
       goto out_mtx_destroy;
 
@@ -338,6 +332,7 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       local_create_info.pApplicationInfo = &local_app_info;
    }
 
+   VkInstance instance_handle = vn_instance_to_handle(instance);
    result = vn_call_vkCreateInstance(instance->ring.ring, pCreateInfo, NULL,
                                      &instance_handle);
    if (result != VK_SUCCESS)
@@ -411,18 +406,16 @@ vn_DestroyInstance(VkInstance _instance,
    mtx_destroy(&instance->physical_device.mutex);
    mtx_destroy(&instance->ring_idx_mutex);
 
-   if (instance->renderer) {
-      vn_call_vkDestroyInstance(instance->ring.ring, _instance, NULL);
+   vn_call_vkDestroyInstance(instance->ring.ring, _instance, NULL);
 
-      vn_instance_fini_ring(instance);
+   vn_instance_fini_ring(instance);
 
-      vn_renderer_shmem_pool_fini(instance->renderer,
-                                  &instance->reply_shmem_pool);
+   vn_renderer_shmem_pool_fini(instance->renderer,
+                               &instance->reply_shmem_pool);
 
-      vn_renderer_shmem_pool_fini(instance->renderer, &instance->cs_shmem_pool);
+   vn_renderer_shmem_pool_fini(instance->renderer, &instance->cs_shmem_pool);
 
-      vn_renderer_destroy(instance->renderer, alloc);
-   }
+   vn_renderer_destroy(instance->renderer, alloc);
 
    driDestroyOptionCache(&instance->dri_options);
    driDestroyOptionInfo(&instance->available_dri_options);

@@ -34,7 +34,7 @@ struct pipe_screen;
 extern "C" {
 #endif
 
-PUBLIC struct pipe_screen *
+struct pipe_screen *
 ddebug_screen_create(struct pipe_screen *screen);
 
 #ifdef __cplusplus

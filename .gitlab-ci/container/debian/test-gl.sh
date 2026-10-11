@@ -2,12 +2,7 @@
 # shellcheck disable=SC2086 # we want word splitting
 
 set -e
-
-. .gitlab-ci/setup-test-env.sh
-
 set -o xtrace
-
-uncollapsed_section_start debian_setup "Base Debian system setup"
 
 export DEBIAN_FRONTEND=noninteractive
 export LLVM_VERSION="${LLVM_VERSION:=15}"
@@ -82,8 +77,6 @@ apt-get install -y --no-remove "${DEPS[@]}" "${EPHEMERAL[@]}" \
 
 . .gitlab-ci/container/container_pre_build.sh
 
-section_end debian_setup
-
 ############### Build piglit
 
 PIGLIT_OPTS="-DPIGLIT_USE_WAFFLE=ON
@@ -104,10 +97,6 @@ PIGLIT_OPTS="-DPIGLIT_USE_WAFFLE=ON
 
 ############### Build dEQP GL
 
-DEQP_API=tools \
-DEQP_TARGET=surfaceless \
-. .gitlab-ci/container/build-deqp.sh
-
 DEQP_API=GL \
 DEQP_TARGET=surfaceless \
 . .gitlab-ci/container/build-deqp.sh
@@ -115,8 +104,6 @@ DEQP_TARGET=surfaceless \
 DEQP_API=GLES \
 DEQP_TARGET=surfaceless \
 . .gitlab-ci/container/build-deqp.sh
-
-rm -rf /VK-GL-CTS
 
 ############### Build apitrace
 
@@ -132,10 +119,6 @@ rm -rf /VK-GL-CTS
 
 ############### Uninstall the build software
 
-uncollapsed_section_switch debian_cleanup "Cleaning up base Debian system"
-
 apt-get purge -y "${EPHEMERAL[@]}"
 
 . .gitlab-ci/container/container_post_build.sh
-
-section_end debian_cleanup

@@ -42,9 +42,7 @@ namespace {
 class find_precision_visitor : public ir_rvalue_enter_visitor {
 public:
    find_precision_visitor(const struct gl_shader_compiler_options *options);
-   find_precision_visitor(const find_precision_visitor &) = delete;
    ~find_precision_visitor();
-   find_precision_visitor & operator=(const find_precision_visitor &) = delete;
 
    virtual void handle_rvalue(ir_rvalue **rvalue);
    virtual ir_visitor_status visit_enter(ir_call *ir);
@@ -960,9 +958,6 @@ public:
    {
       _mesa_set_destroy(lower_vars, NULL);
    }
-
-   lower_variables_visitor(const lower_variables_visitor &) = delete;
-   lower_variables_visitor & operator=(const lower_variables_visitor &) = delete;
 
    virtual ir_visitor_status visit(ir_variable *var);
    virtual ir_visitor_status visit_enter(ir_assignment *ir);

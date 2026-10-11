@@ -108,6 +108,7 @@ nir_shader *si_get_prev_stage_nir_shader(struct si_shader *shader,
                                          struct si_shader *prev_shader,
                                          struct si_shader_args *args,
                                          bool *free_nir);
+unsigned si_get_tcs_out_patch_stride(const struct si_shader_info *info);
 void si_get_ps_prolog_args(struct si_shader_args *args,
                            const union si_shader_part_key *key);
 void si_get_ps_epilog_args(struct si_shader_args *args,
@@ -117,6 +118,7 @@ void si_get_ps_epilog_args(struct si_shader_args *args,
                            struct ac_arg *sample_mask);
 
 /* gfx10_shader_ngg.c */
+unsigned gfx10_ngg_get_vertices_per_prim(struct si_shader *shader);
 bool gfx10_ngg_export_prim_early(struct si_shader *shader);
 unsigned gfx10_ngg_get_scratch_dw_size(struct si_shader *shader);
 bool gfx10_ngg_calculate_subgroup_info(struct si_shader *shader);

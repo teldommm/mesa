@@ -97,7 +97,7 @@ check_push_constants_ubo(struct v3dv_cmd_buffer *cmd_buffer,
                       cmd_buffer->push_constants_resource.bo);
 
       if (!cmd_buffer->push_constants_resource.bo) {
-         mesa_loge("Failed to allocate memory for push constants\n");
+         fprintf(stderr, "Failed to allocate memory for push constants\n");
          abort();
       }
 
@@ -105,7 +105,7 @@ check_push_constants_ubo(struct v3dv_cmd_buffer *cmd_buffer,
                             cmd_buffer->push_constants_resource.bo,
                             cmd_buffer->push_constants_resource.bo->size);
       if (!ok) {
-         mesa_loge("failed to map push constants buffer\n");
+         fprintf(stderr, "failed to map push constants buffer\n");
          abort();
       }
    } else {
@@ -616,8 +616,10 @@ v3dv_write_uniforms_wg_offsets(struct v3dv_cmd_buffer *cmd_buffer,
          } else {
             assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
             num_layers = 2048;
-            mesa_logd("Skipping gl_LayerID shader sanity check for "
-                      "secondary command buffer\n");
+#if MESA_DEBUG
+            fprintf(stderr, "Skipping gl_LayerID shader sanity check for "
+                            "secondary command buffer\n");
+#endif
          }
          cl_aligned_u32(&uniforms, num_layers);
          break;

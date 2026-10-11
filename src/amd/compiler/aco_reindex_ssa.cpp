@@ -79,18 +79,20 @@ reindex_program(idx_ctx& ctx, Program* program)
 } /* end namespace */
 
 void
-reindex_ssa(Program* program)
+reindex_ssa(Program* program, bool update_live_out = false)
 {
    idx_ctx ctx;
    reindex_program(ctx, program);
-
-   monotonic_buffer_resource old_memory = std::move(program->live.memory);
-   for (IDSet& set : program->live.live_in) {
-      IDSet new_set(program->live.memory);
-      for (uint32_t id : set)
-         new_set.insert(ctx.renames[id]);
-      set = std::move(new_set);
+   if (update_live_out) {
+      for (IDSet& set : program->live.live_in) {
+         IDSet new_set(program->live.memory);
+         for (uint32_t id : set)
+            new_set.insert(ctx.renames[id]);
+         set = new_set;
+      }
    }
+
+   program->allocationID = program->temp_rc.size();
 }
 
 } // namespace aco

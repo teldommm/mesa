@@ -2173,21 +2173,18 @@ ADDR_E_RETURNCODE ADDR_API Addr3ComputeNonBlockCompressedView(
 *       Calculate sub resource offset for swizzle pattern.
 ****************************************************************************************************
 */
-ADDR_E_RETURNCODE ADDR_API Addr3ComputeSubResourceOffsetForSwizzlePattern(
+VOID ADDR_API Addr3ComputeSubResourceOffsetForSwizzlePattern(
     ADDR_HANDLE                                                     hLib, ///< handle of addrlib
     const ADDR3_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_INPUT* pIn,  ///< [in] input
     ADDR3_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_OUTPUT*      pOut) ///< [out] output
 {
-    ADDR_E_RETURNCODE returnCode = ADDR_ERROR;
-    V3::Lib*          pLib       = V3::Lib::GetLib(hLib);
+    V3::Lib* pLib = V3::Lib::GetLib(hLib);
 
     if (pLib != NULL)
     {
-        returnCode = pLib->ComputeSubResourceOffsetForSwizzlePattern(pIn, pOut);
+        pLib->ComputeSubResourceOffsetForSwizzlePattern(pIn, pOut);
     }
     ADDR_RESET_DEBUG_PRINTERS();
-
-    return returnCode;
 }
 
 /**

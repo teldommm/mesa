@@ -43,6 +43,8 @@
 #include "main/macros.h"
 #include "main/varray.h"
 
+#include "compiler/glsl/ir_uniform.h"
+
 #include "vbo/vbo.h"
 
 #include "st_context.h"

@@ -41,14 +41,15 @@ impl XPlatManager {
     pub fn new() -> Self {
         Self {
             #[cfg(glx)]
-            glx_get_proc_addr: Self::get_proc_address_func(c"glXGetProcAddress"),
-            egl_get_proc_addr: Self::get_proc_address_func(c"eglGetProcAddress"),
+            glx_get_proc_addr: Self::get_proc_address_func("glXGetProcAddress"),
+            egl_get_proc_addr: Self::get_proc_address_func("eglGetProcAddress"),
         }
     }
 
-    fn get_proc_address_func<T>(name: &CStr) -> T {
+    fn get_proc_address_func<T>(name: &str) -> T {
+        let cname = CString::new(name).unwrap();
         unsafe {
-            let pfn = dlsym(ptr::null_mut(), name.as_ptr());
+            let pfn = dlsym(ptr::null_mut(), cname.as_ptr());
             mem::transmute_copy(&pfn)
         }
     }

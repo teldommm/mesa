@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#pragma once
+#ifndef ELK_DISASM_H
+#define ELK_DISASM_H
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -37,3 +38,5 @@ void elk_disassemble_with_errors(const struct elk_isa_info *isa,
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
+#endif /* ELK_DISASM_H */

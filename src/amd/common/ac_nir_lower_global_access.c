@@ -70,13 +70,9 @@ static bool
 process_instr(nir_builder *b, nir_intrinsic_instr *intrin, void *_)
 {
    nir_intrinsic_op op;
-   unsigned access = 0;
    switch (intrin->intrinsic) {
-   case nir_intrinsic_load_global_constant:
-      access |= ACCESS_NON_WRITEABLE |
-                (nir_intrinsic_access(intrin) & ACCESS_VOLATILE ? 0 : ACCESS_CAN_REORDER);
-      FALLTHROUGH;
    case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_constant:
       op = nir_intrinsic_load_global_amd;
       break;
    case nir_intrinsic_global_atomic:
@@ -124,7 +120,7 @@ process_instr(nir_builder *b, nir_intrinsic_instr *intrin, void *_)
    new_intrin->src[addr_src_idx] = nir_src_for_ssa(addr);
 
    if (nir_intrinsic_has_access(intrin))
-      nir_intrinsic_set_access(new_intrin, nir_intrinsic_access(intrin) | access);
+      nir_intrinsic_set_access(new_intrin, nir_intrinsic_access(intrin));
    if (nir_intrinsic_has_align_mul(intrin))
       nir_intrinsic_set_align_mul(new_intrin, nir_intrinsic_align_mul(intrin));
    if (nir_intrinsic_has_align_offset(intrin))

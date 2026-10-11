@@ -25,9 +25,6 @@
  *
  **************************************************************************/
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #ifndef NULL_SW_WINSYS_H_
 #define NULL_SW_WINSYS_H_
@@ -41,7 +38,3 @@ null_sw_create(void);
 
 
 #endif /* NULL_SW_WINSYS_H_ */
-
-#ifdef __cplusplus
-}
-#endif

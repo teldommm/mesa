@@ -23,7 +23,6 @@ files_libradeonsi = files(
   'driinfo_radeonsi.h',
   'gfx10_shader_ngg.c',
   'gfx11_query.c',
-  'si_barrier.c',
   'si_blit.c',
   'si_buffer.c',
   'si_build_pm4.h',
@@ -32,7 +31,6 @@ files_libradeonsi = files(
   'si_compute_blit.c',
   'si_cp_dma.c',
   'si_cp_reg_shadowing.c',
-  'si_cp_utils.c',
   'si_debug.c',
   'si_descriptors.c',
   'si_fence.c',
@@ -77,6 +75,7 @@ files_libradeonsi = files(
   'si_vpe.c',
   'si_vpe.h',
   'pspdecryptionparam.h',
+  'radeon_temporal.h',
   'radeon_uvd.c',
   'radeon_uvd.h',
   'radeon_uvd_enc.c',
@@ -105,7 +104,7 @@ files_libradeonsi = files(
 
 radeonsi_include_dirs = [inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_amd_common,
                          inc_amd_common_llvm, inc_gallium_drivers, inc_compiler, inc_amd, inc_amd_vpe]
-radeonsi_deps = [dep_llvm, dep_clock, dep_libdrm, idep_nir_headers, idep_amdgfxregs_h, idep_mesautil, idep_aco, idep_u_tracepoints, idep_si_tracepoints]
+radeonsi_deps = [dep_llvm, dep_clock, dep_libdrm_radeon, idep_nir_headers, idep_amdgfxregs_h, idep_mesautil, idep_aco, idep_u_tracepoints, idep_si_tracepoints]
 
 if with_perfetto
   radeonsi_deps += dep_perfetto

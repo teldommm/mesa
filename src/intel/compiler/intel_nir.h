@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#pragma once
+#ifndef INTEL_NIR_H
+#define INTEL_NIR_H
 
 #include "nir.h"
 
@@ -44,3 +45,5 @@ bool intel_nir_lower_printf(nir_shader *nir);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* INTEL_NIR_H */

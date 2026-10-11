@@ -355,8 +355,6 @@ struct draw_context
     */
    float plane[DRAW_TOTAL_CLIP_PLANES][4];
 
-   uint32_t viewmask;
-
    /* If a prim stage introduces new vertex attributes, they'll be stored here
     */
    struct {

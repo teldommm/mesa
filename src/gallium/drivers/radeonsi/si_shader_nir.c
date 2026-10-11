@@ -42,12 +42,6 @@ static uint8_t si_vectorize_callback(const nir_instr *instr, const void *data)
       switch (alu->op) {
       case nir_op_unpack_32_2x16_split_x:
       case nir_op_unpack_32_2x16_split_y:
-      case nir_op_extract_i8:
-      case nir_op_extract_u8:
-      case nir_op_extract_i16:
-      case nir_op_extract_u16:
-      case nir_op_insert_u8:
-      case nir_op_insert_u16:
          return 1;
       default:
          return 2;
@@ -122,7 +116,6 @@ void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
       /* Needed for algebraic lowering */
       NIR_PASS(progress, nir, nir_lower_bit_size, si_lower_bit_size_callback, NULL);
       NIR_PASS(progress, nir, nir_opt_algebraic);
-      NIR_PASS(progress, nir, nir_opt_generate_bfi);
       NIR_PASS(progress, nir, nir_opt_constant_folding);
 
       if (!nir->info.flrp_lowered) {
@@ -308,6 +301,8 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
 
    NIR_PASS_V(nir, ac_nir_lower_sin_cos);
 
+   NIR_PASS_V(nir, nir_lower_subgroups, sscreen->nir_lower_subgroups_options);
+
    /* Lower load constants to scalar and then clean up the mess */
    NIR_PASS_V(nir, nir_lower_load_const_to_scalar);
    NIR_PASS_V(nir, nir_lower_var_copies);
@@ -342,16 +337,16 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
        * divisible by 2.
        */
       options.lower_local_invocation_index =
-         nir->info.derivative_group == DERIVATIVE_GROUP_QUADS ||
+         nir->info.cs.derivative_group == DERIVATIVE_GROUP_QUADS ||
          (sscreen->info.gfx_level >= GFX12 &&
-          nir->info.derivative_group == DERIVATIVE_GROUP_NONE &&
+          nir->info.cs.derivative_group == DERIVATIVE_GROUP_NONE &&
           (nir->info.workgroup_size_variable ||
            (nir->info.workgroup_size[0] % 2 == 0 && nir->info.workgroup_size[1] % 2 == 0)));
       NIR_PASS_V(nir, nir_lower_compute_system_values, &options);
 
       /* Gfx12 supports this in hw. */
       if (sscreen->info.gfx_level < GFX12 &&
-          nir->info.derivative_group == DERIVATIVE_GROUP_QUADS) {
+          nir->info.cs.derivative_group == DERIVATIVE_GROUP_QUADS) {
          nir_opt_cse(nir); /* CSE load_local_invocation_id */
          memset(&options, 0, sizeof(options));
          options.shuffle_local_ids_for_quad_derivatives = true;
@@ -400,7 +395,7 @@ static bool si_mark_divergent_texture_non_uniform(struct nir_shader *nir)
 
          nir_tex_instr *tex = nir_instr_as_tex(instr);
          for (int i = 0; i < tex->num_srcs; i++) {
-            bool divergent = nir_src_is_divergent(&tex->src[i].src);
+            bool divergent = tex->src[i].src.ssa->divergent;
 
             switch (tex->src[i].src_type) {
             case nir_tex_src_texture_deref:
@@ -426,9 +421,10 @@ static bool si_mark_divergent_texture_non_uniform(struct nir_shader *nir)
    return divergence_changed;
 }
 
-char *si_finalize_nir(struct pipe_screen *screen, struct nir_shader *nir)
+char *si_finalize_nir(struct pipe_screen *screen, void *nirptr)
 {
    struct si_screen *sscreen = (struct si_screen *)screen;
+   struct nir_shader *nir = (struct nir_shader *)nirptr;
 
    nir_lower_io_passes(nir, false);
    NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
@@ -479,6 +475,7 @@ char *si_finalize_nir(struct pipe_screen *screen, struct nir_shader *nir)
    if (progress)
       si_nir_opts(sscreen, nir, false);
 
+   NIR_PASS_V(nir, nir_convert_to_lcssa, true, true); /* required by divergence analysis */
    NIR_PASS_V(nir, nir_divergence_analysis); /* to find divergent loops */
 
    /* Must be after divergence analysis. */

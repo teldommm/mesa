@@ -677,6 +677,16 @@ do_alu_action(struct lp_build_nir_context *bld_base,
    case nir_op_fcos:
       result = lp_build_cos(get_flt_bld(bld_base, src_bit_size[0]), src[0]);
       break;
+   case nir_op_fddx:
+   case nir_op_fddx_coarse:
+   case nir_op_fddx_fine:
+      result = lp_build_ddx(get_flt_bld(bld_base, src_bit_size[0]), src[0]);
+      break;
+   case nir_op_fddy:
+   case nir_op_fddy_coarse:
+   case nir_op_fddy_fine:
+      result = lp_build_ddy(get_flt_bld(bld_base, src_bit_size[0]), src[0]);
+      break;
    case nir_op_fdiv:
       result = lp_build_div(get_flt_bld(bld_base, src_bit_size[0]),
                             src[0], src[1]);
@@ -1066,26 +1076,6 @@ visit_alu(struct lp_build_nir_context *bld_base,
    const unsigned num_components = instr->def.num_components;
    unsigned src_components;
 
-   struct lp_type half_type = bld_base->half_bld.type;
-   struct lp_type float_type = bld_base->base.type;
-   struct lp_type double_type = bld_base->dbl_bld.type;
-
-   /* Set the per-intruction float controls. */
-   bld_base->half_bld.type.signed_zero_preserve |=
-      !!(instr->fp_fast_math & FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP16);
-   bld_base->half_bld.type.nan_preserve |=
-      !!(instr->fp_fast_math & FLOAT_CONTROLS_NAN_PRESERVE_FP16);
-
-   bld_base->base.type.signed_zero_preserve |=
-      !!(instr->fp_fast_math & FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP32);
-   bld_base->base.type.nan_preserve |=
-      !!(instr->fp_fast_math & FLOAT_CONTROLS_NAN_PRESERVE_FP32);
-
-   bld_base->dbl_bld.type.signed_zero_preserve |=
-      !!(instr->fp_fast_math & FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP64);
-   bld_base->dbl_bld.type.nan_preserve |=
-      !!(instr->fp_fast_math & FLOAT_CONTROLS_NAN_PRESERVE_FP64);
-
    switch (instr->op) {
    case nir_op_vec2:
    case nir_op_vec3:
@@ -1168,11 +1158,6 @@ visit_alu(struct lp_build_nir_context *bld_base,
       }
    }
    assign_ssa_dest(bld_base, &instr->def, result);
-
-   /* Restore the global float controls. */
-   bld_base->half_bld.type = half_type;
-   bld_base->base.type = float_type;
-   bld_base->dbl_bld.type = double_type;
 }
 
 
@@ -2138,7 +2123,6 @@ visit_intrinsic(struct lp_build_nir_context *bld_base,
       visit_store_reg(bld_base, instr);
       break;
    case nir_intrinsic_load_input:
-   case nir_intrinsic_load_per_primitive_input:
       visit_load_input(bld_base, instr, result);
       break;
    case nir_intrinsic_store_output:
@@ -2330,26 +2314,6 @@ visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_param:
       visit_load_param(bld_base, instr, result);
       break;
-   case nir_intrinsic_ddx:
-   case nir_intrinsic_ddy:
-   case nir_intrinsic_ddx_coarse:
-   case nir_intrinsic_ddy_coarse:
-   case nir_intrinsic_ddx_fine:
-   case nir_intrinsic_ddy_fine: {
-      LLVMValueRef src = get_src(bld_base, instr->src[0]);
-      src = cast_type(bld_base, src, nir_type_float, nir_src_bit_size(instr->src[0]));
-
-      struct lp_build_context *bld = get_flt_bld(bld_base, nir_src_bit_size(instr->src[0]));
-
-      if (instr->intrinsic == nir_intrinsic_ddx ||
-          instr->intrinsic == nir_intrinsic_ddx_coarse ||
-          instr->intrinsic == nir_intrinsic_ddx_fine)
-         result[0] = lp_build_ddx(bld, src);
-      else
-         result[0] = lp_build_ddy(bld, src);
-
-      break;
-   }
    default:
       fprintf(stderr, "Unsupported intrinsic: ");
       nir_print_instr(&instr->instr, stderr);
@@ -2845,37 +2809,20 @@ visit_block(struct lp_build_nir_context *bld_base, nir_block *block)
    }
 }
 
-static bool
-lp_should_flatten_cf_list(struct exec_list *cf_list)
-{
-   if (exec_list_is_empty(cf_list))
-      return true;
-   if (!exec_list_is_singular(cf_list))
-      return false;
-
-   struct exec_node *head = exec_list_get_head(cf_list);
-   nir_block *block = nir_cf_node_as_block(exec_node_data(nir_cf_node, head, node));
-   return exec_list_length(&block->instr_list) < 8;
-}
 
 static void
 visit_if(struct lp_build_nir_context *bld_base, nir_if *if_stmt)
 {
    LLVMValueRef cond = get_src(bld_base, if_stmt->condition);
 
-   bool flatten_then = lp_should_flatten_cf_list(&if_stmt->then_list);
-
-   bld_base->if_cond(bld_base, cond, flatten_then);
+   bld_base->if_cond(bld_base, cond);
    visit_cf_list(bld_base, &if_stmt->then_list);
 
    if (!exec_list_is_empty(&if_stmt->else_list)) {
-      bool flatten_else = lp_should_flatten_cf_list(&if_stmt->else_list);
-      bld_base->else_stmt(bld_base, flatten_then, flatten_else);
+      bld_base->else_stmt(bld_base);
       visit_cf_list(bld_base, &if_stmt->else_list);
-      bld_base->endif_stmt(bld_base, flatten_else);
-   } else {
-      bld_base->endif_stmt(bld_base, flatten_then);
    }
+   bld_base->endif_stmt(bld_base);
 }
 
 
@@ -3030,9 +2977,6 @@ lp_build_opt_nir(struct nir_shader *nir)
 
    NIR_PASS_V(nir, nir_lower_flrp, 16|32|64, true);
    NIR_PASS_V(nir, nir_lower_fp16_casts, nir_lower_fp16_all | nir_lower_fp16_split_fp64);
-
-   NIR_PASS(_, nir, nir_lower_alu);
-
    do {
       progress = false;
       NIR_PASS(progress, nir, nir_opt_constant_folding);

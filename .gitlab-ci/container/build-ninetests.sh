@@ -6,8 +6,6 @@
 
 set -ex -o pipefail
 
-uncollapsed_section_start ninetests "Building Nine tests"
-
 ### Careful editing anything below this line
 
 git config --global user.email "mesa@example.com"
@@ -25,5 +23,3 @@ mv NineTests/NineTests /NineTests/
 
 popd
 rm -rf /Xnine
-
-section_end ninetests

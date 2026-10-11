@@ -6,9 +6,8 @@
  */
 
 #include "svga3d_reg.h"
-#include "vmw_surf_defs.h"
+#include "svga3d_surfacedefs.h"
 
-#include "include/svga3d_surfacedefs.h"
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
 #include "util/u_thread.h"
@@ -423,13 +422,13 @@ svga_texture_transfer_map_direct(struct svga_context *svga,
           (tex->b.target == PIPE_TEXTURE_2D_ARRAY) ||
           (tex->b.target == PIPE_TEXTURE_CUBE_ARRAY)) {
          st->base.layer_stride =
-            vmw_surf_get_image_offset(tex->key.format, baseLevelSize,
-                                      tex->b.last_level + 1, 1, 0);
+            svga3dsurface_get_image_offset(tex->key.format, baseLevelSize,
+                                           tex->b.last_level + 1, 1, 0);
       }
 
-      offset = vmw_surf_get_image_offset(tex->key.format, baseLevelSize,
-                                         tex->b.last_level + 1, /* numMips */
-                                         st->slice, level);
+      offset = svga3dsurface_get_image_offset(tex->key.format, baseLevelSize,
+                                              tex->b.last_level + 1, /* numMips */
+                                              st->slice, level);
       if (level > 0) {
          assert(offset > 0);
       }
@@ -437,11 +436,11 @@ svga_texture_transfer_map_direct(struct svga_context *svga,
       mip_width = u_minify(tex->b.width0, level);
       mip_height = u_minify(tex->b.height0, level);
 
-      offset += vmw_surf_get_pixel_offset(tex->key.format,
-                                          mip_width, mip_height,
-                                          st->box.x,
-                                          st->box.y,
-                                          st->box.z);
+      offset += svga3dsurface_get_pixel_offset(tex->key.format,
+                                               mip_width, mip_height,
+                                               st->box.x,
+                                               st->box.y,
+                                               st->box.z);
 
       return (void *) (map + offset);
    }
@@ -1542,10 +1541,10 @@ svga_texture_device_format_has_alpha(struct pipe_resource *texture)
    /* the svga_texture() call below is invalid for PIPE_BUFFER resources */
    assert(texture->target != PIPE_BUFFER);
 
-   const struct SVGA3dSurfaceDesc *surf_desc =
-      vmw_surf_get_desc(svga_texture(texture)->key.format);
+   const struct svga3d_surface_desc *surf_desc =
+      svga3dsurface_get_desc(svga_texture(texture)->key.format);
 
-   enum SVGA3dBlockDesc block_desc = surf_desc->blockDesc;
+   enum svga3d_block_desc block_desc = surf_desc->block_desc;
 
    return !!((block_desc & SVGA3DBLOCKDESC_ALPHA) ||
              ((block_desc == SVGA3DBLOCKDESC_TYPELESS) &&

@@ -32,27 +32,13 @@
 
 static bool debug;
 
-static inline bool
-skip_inst(struct qinst *inst)
-{
-        return inst->qpu.type != V3D_QPU_INSTR_TYPE_ALU;
-}
-
 bool
 vir_opt_small_immediates(struct v3d_compile *c)
 {
         bool progress = false;
 
-        /* Shader-db shows that small immediates generally lead to higher
-         * instruction counts for geometry stages.
-         */
-        if (c->s->info.stage != MESA_SHADER_FRAGMENT &&
-            c->s->info.stage != MESA_SHADER_COMPUTE) {
-                return progress;
-        }
-
         vir_for_each_inst_inorder(inst, c) {
-                if (skip_inst(inst))
+                if (inst->qpu.type != V3D_QPU_INSTR_TYPE_ALU)
                         continue;
 
                 /* The small immediate value sits in the raddr B field, so we

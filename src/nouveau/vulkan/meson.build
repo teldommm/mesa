@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: MIT
 nvk_files = files(
   '../../gallium/auxiliary/tgsi/tgsi_from_mesa.c',
-  'nvk_acceleration_structure.c',
   'nvk_buffer.c',
   'nvk_buffer.h',
   'nvk_buffer_view.c',
@@ -13,7 +12,6 @@ nvk_files = files(
   'nvk_cmd_copy.c',
   'nvk_cmd_dispatch.c',
   'nvk_cmd_draw.c',
-  'nvk_cmd_indirect.c',
   'nvk_cmd_meta.c',
   'nvk_cmd_pool.c',
   'nvk_cmd_pool.h',
@@ -25,26 +23,20 @@ nvk_files = files(
   'nvk_descriptor_set_layout.h',
   'nvk_descriptor_table.c',
   'nvk_descriptor_table.h',
-  'nvk_descriptor_types.h',
   'nvk_device.c',
   'nvk_device.h',
   'nvk_device_memory.c',
   'nvk_device_memory.h',
-  'nvk_edb_bview_cache.c',
-  'nvk_edb_bview_cache.h',
   'nvk_event.c',
   'nvk_event.h',
   'nvk_format.c',
   'nvk_format.h',
   'nvk_heap.c',
   'nvk_heap.h',
-  'nvk_host_copy.c',
   'nvk_image.c',
   'nvk_image.h',
   'nvk_image_view.c',
   'nvk_image_view.h',
-  'nvk_indirect_execution_set.c',
-  'nvk_indirect_execution_set.h',
   'nvk_instance.c',
   'nvk_instance.h',
   'nvk_mme.c',
@@ -102,14 +94,6 @@ nvk_deps = [
   idep_vulkan_wsi_headers,
 ]
 
-nvk_flags = []
-
-if with_platform_android
-  nvk_deps += [dep_android, idep_u_gralloc]
-  nvk_flags += '-DVK_USE_PLATFORM_ANDROID_KHR'
-  nvk_files += files('nvk_android.c')
-endif
-
 libnvk = static_library(
   'nvk',
   [
@@ -126,14 +110,13 @@ libnvk = static_library(
   ],
   link_with : [libnouveau_codegen],
   dependencies : [nvk_deps, idep_nouveau_codegen],
-  c_args : [no_override_init_args, nvk_flags],
   gnu_symbol_visibility : 'hidden',
 )
 
 libvulkan_nouveau = shared_library(
   'vulkan_nouveau',
   link_whole : [libnvk],
-  link_args: [ld_args_build_id, ld_args_bsymbolic, ld_args_gc_sections],
+  link_args: [ld_args_build_id],
   gnu_symbol_visibility : 'hidden',
   install : true,
 )
@@ -151,7 +134,7 @@ nouveau_icd = custom_target(
   output : 'nouveau_icd.@0@.json'.format(host_machine.cpu()),
   command : [
     prog_python, '@INPUT0@',
-    '--api-version', '1.4', '--xml', '@INPUT1@',
+    '--api-version', '1.3', '--xml', '@INPUT1@',
     '--lib-path', join_paths(icd_lib_path, icd_file_name),
     '--out', '@OUTPUT@',
   ],
@@ -168,7 +151,7 @@ custom_target(
   output : _dev_icdname,
   command : [
     prog_python, '@INPUT0@',
-    '--api-version', '1.4', '--xml', '@INPUT1@',
+    '--api-version', '1.3', '--xml', '@INPUT1@',
     '--lib-path', meson.current_build_dir() / icd_file_name,
     '--out', '@OUTPUT@',
   ],

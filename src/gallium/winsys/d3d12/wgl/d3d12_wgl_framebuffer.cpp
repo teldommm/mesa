@@ -54,8 +54,6 @@ struct d3d12_wgl_framebuffer {
    enum pipe_format pformat;
    HWND window;
    ComPtr<IDXGISwapChain3> swapchain;
-   HANDLE waitable_object;
-   int latency = 2;
    struct pipe_resource *buffers[num_buffers];
    bool single_buffered;
    struct pipe_resource *offscreen_buffer;
@@ -94,9 +92,6 @@ d3d12_wgl_framebuffer_destroy(struct stw_winsys_framebuffer *fb,
       pipe_resource_reference(&framebuffer->offscreen_buffer, NULL);
    }
 
-   if (framebuffer->waitable_object)
-      CloseHandle(framebuffer->waitable_object);
-
    delete framebuffer;
 }
 
@@ -111,7 +106,7 @@ d3d12_wgl_framebuffer_resize(stw_winsys_framebuffer *fb,
    DXGI_SWAP_CHAIN_DESC1 desc = {};
    desc.BufferCount = num_buffers;
    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
-   desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+   desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
    desc.Format = d3d12_get_format(templ->format);
    desc.Width = templ->width0;
    desc.Height = templ->height0;
@@ -137,11 +132,6 @@ d3d12_wgl_framebuffer_resize(stw_winsys_framebuffer *fb,
 
       screen->factory->MakeWindowAssociation(framebuffer->window,
                                              DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_PRINT_SCREEN);
-
-      framebuffer->waitable_object = framebuffer->swapchain->GetFrameLatencyWaitableObject();
-      WaitForSingleObject(framebuffer->waitable_object, INFINITE);
-
-      framebuffer->swapchain->SetMaximumFrameLatency(framebuffer->latency);
    }
    else {
       struct pipe_fence_handle *fence = NULL;
@@ -216,15 +206,10 @@ d3d12_wgl_framebuffer_present(stw_winsys_framebuffer *fb, int interval)
       return false;
    }
 
-   HRESULT hr;
    if (interval < 1)
-      hr = framebuffer->swapchain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
+      return S_OK == framebuffer->swapchain->Present(0, DXGI_PRESENT_ALLOW_TEARING);
    else
-      hr = framebuffer->swapchain->Present(interval, 0);
-
-   if (hr == S_OK)
-      return WaitForSingleObject(framebuffer->waitable_object, 2000) == WAIT_OBJECT_0;
-   return false;
+      return S_OK == framebuffer->swapchain->Present(interval, 0);
 }
 
 static struct pipe_resource *
@@ -279,24 +264,6 @@ d3d12_wgl_framebuffer_flush_frontbuffer(struct stw_winsys_framebuffer *pframebuf
    pipe->flush(pipe, NULL, 0);
 }
 
-static void
-d3d12_wgl_framebuffer_set_latency(struct stw_winsys_framebuffer *pframebuffer,
-                                  int latency)
-{
-   if (latency < 1)
-      return;
-
-   auto framebuffer = d3d12_wgl_framebuffer(pframebuffer);
-   int delta = latency - framebuffer->latency;
-   while (delta < 0 && framebuffer->waitable_object) {
-      WaitForSingleObject(framebuffer->waitable_object, INFINITE);
-      ++delta;
-   }
-   framebuffer->latency = latency;
-   if (framebuffer->swapchain)
-      framebuffer->swapchain->SetMaximumFrameLatency(latency);
-}
-
 struct stw_winsys_framebuffer *
 d3d12_wgl_create_framebuffer(struct pipe_screen *screen,
                              HWND hWnd,
@@ -327,7 +294,6 @@ d3d12_wgl_create_framebuffer(struct pipe_screen *screen,
    fb->base.present = d3d12_wgl_framebuffer_present;
    fb->base.get_resource = d3d12_wgl_framebuffer_get_resource;
    fb->base.flush_frontbuffer = d3d12_wgl_framebuffer_flush_frontbuffer;
-   fb->base.set_latency = d3d12_wgl_framebuffer_set_latency;
 
    return &fb->base;
 }

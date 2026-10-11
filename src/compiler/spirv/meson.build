@@ -36,7 +36,6 @@ files_libvtn = files(
   'vtn_amd.c',
   'vtn_cfg.c',
   'vtn_cmat.c',
-  'vtn_debug.c',
   'vtn_glsl450.c',
   'vtn_opencl.c',
   'vtn_private.h',
@@ -55,12 +54,12 @@ libvtn = static_library(
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa],
   c_args : [c_msvc_compat_args, no_override_init_args],
   gnu_symbol_visibility : 'hidden',
-  dependencies : [dep_spirv_tools, idep_nir, dep_valgrind],
+  dependencies : [idep_nir, dep_valgrind],
   build_by_default : false,
 )
 
 idep_vtn = declare_dependency(
-  dependencies : [dep_spirv_tools, idep_nir, idep_mesautil],
+  dependencies : [idep_nir, idep_mesautil],
   link_with : libvtn,
 )
 
@@ -76,25 +75,6 @@ spirv2nir = executable(
   build_by_default : with_tools.contains('nir'),
   install : with_tools.contains('nir'),
 )
-
-# Due to the cross build issues in current meson, we only build vtn_bindgen when
-# building drivers that need it.
-#
-# XXX: Build by default once https://github.com/mesonbuild/meson/pull/12022
-# ships.
-if with_gallium_asahi or with_asahi_vk
-   prog_vtn_bindgen = executable(
-     'vtn_bindgen',
-     ['vtn_bindgen.c'],
-     include_directories : [inc_include, inc_src],
-     c_args : [c_msvc_compat_args, no_override_init_args],
-     dependencies : [idep_vtn, idep_mesautil],
-     # If we can run host binaries directly, just build vtn_bindgen for the host.
-     # Most commonly this happens when doing a cross compile from an x86_64 build
-     # machine to an x86 host
-     native : not meson.can_run_host_binaries(),
-   )
-endif
 
 if with_tests
   test(

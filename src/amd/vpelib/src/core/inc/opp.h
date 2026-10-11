@@ -121,7 +121,6 @@ struct opp_funcs {
 struct opp {
     struct vpe_priv  *vpe_priv;
     struct opp_funcs *funcs;
-    unsigned int      inst;
 };
 
 #ifdef __cplusplus

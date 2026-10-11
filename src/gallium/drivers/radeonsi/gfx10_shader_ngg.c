@@ -8,6 +8,38 @@
 #include "si_query.h"
 #include "si_shader_internal.h"
 
+unsigned gfx10_ngg_get_vertices_per_prim(struct si_shader *shader)
+{
+   const struct si_shader_info *info = &shader->selector->info;
+
+   if (shader->selector->stage == MESA_SHADER_GEOMETRY)
+      return mesa_vertices_per_prim(info->base.gs.output_primitive);
+   else if (shader->selector->stage == MESA_SHADER_VERTEX) {
+      if (info->base.vs.blit_sgprs_amd) {
+         /* Blits always use axis-aligned rectangles with 3 vertices. */
+         return 3;
+      } else if (shader->key.ge.opt.ngg_culling & SI_NGG_CULL_LINES)
+         return 2;
+      else {
+         /* The shader compiler replaces 0 with 3. The generated code will be correct regardless
+          * of the draw primitive type, but it's less efficient.
+          *
+          * Computing prim export values for non-existent vertices has no effect.
+          */
+         return 0; /* unknown */
+      }
+   } else {
+      assert(shader->selector->stage == MESA_SHADER_TESS_EVAL);
+
+      if (info->base.tess.point_mode)
+         return 1;
+      else if (info->base.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES)
+         return 2;
+      else
+         return 3;
+   }
+}
+
 bool gfx10_ngg_export_prim_early(struct si_shader *shader)
 {
    struct si_shader_selector *sel = shader->selector;
@@ -35,8 +67,7 @@ unsigned gfx10_ngg_get_scratch_dw_size(struct si_shader *shader)
                                       si_get_max_workgroup_size(shader),
                                       shader->wave_size,
                                       si_shader_uses_streamout(shader),
-                                      si_shader_culling_enabled(shader),
-                                      false) / 4;
+                                      shader->key.ge.opt.ngg_culling) / 4;
 }
 
 /**
@@ -52,8 +83,9 @@ bool gfx10_ngg_calculate_subgroup_info(struct si_shader *shader)
       shader->previous_stage_sel ? shader->previous_stage_sel : gs_sel;
    const gl_shader_stage gs_stage = gs_sel->stage;
    const unsigned gs_num_invocations = MAX2(gs_sel->info.base.gs.invocations, 1);
-   const unsigned input_prim = si_get_input_prim(gs_sel, &shader->key, false);
-   const bool use_adjacency = mesa_prim_has_adjacency(input_prim);
+   const unsigned input_prim = si_get_input_prim(gs_sel, &shader->key);
+   const bool use_adjacency =
+      input_prim >= MESA_PRIM_LINES_ADJACENCY && input_prim <= MESA_PRIM_TRIANGLE_STRIP_ADJACENCY;
    const unsigned max_verts_per_prim = mesa_vertices_per_prim(input_prim);
    const unsigned min_verts_per_prim = gs_stage == MESA_SHADER_GEOMETRY ? max_verts_per_prim : 1;
 
@@ -119,7 +151,7 @@ retry_select_mode:
          si_shader_uses_streamout(shader),
          shader->key.ge.mono.u.vs_export_prim_id,
          gfx10_ngg_writes_user_edgeflags(shader),
-         si_shader_culling_enabled(shader),
+         shader->key.ge.opt.ngg_culling,
          uses_instance_id,
          uses_primitive_id) / 4;
    }

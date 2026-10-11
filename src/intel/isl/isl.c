@@ -29,7 +29,6 @@
 #include "dev/intel_debug.h"
 #include "genxml/genX_bits.h"
 #include "util/log.h"
-#include "util/u_math.h"
 
 #include "isl.h"
 #include "isl_gfx4.h"
@@ -458,33 +457,6 @@ isl_device_get_sample_counts(const struct isl_device *dev)
    } else {
       return ISL_SAMPLE_COUNT_1_BIT;
    }
-}
-
-uint64_t
-isl_get_sampler_clear_field_offset(const struct intel_device_info *devinfo,
-                                   enum isl_format format)
-{
-   assert(devinfo->ver == 11 || devinfo->ver == 12);
-
-   /* For 32bpc formats, the sampler fetches the raw clear color dwords
-    * used for rendering instead of the converted pixel dwords typically
-    * used for sampling. The CLEAR_COLOR struct page documents this for
-    * 128bpp formats, but not for 32bpp and 64bpp formats.
-    *
-    * Note that although the sampler doesn't use the converted clear color
-    * field with 32bpc formats, the hardware will still convert the clear
-    * color to a pixel when the surface format size is less than 128bpp.
-    */
-   if (isl_format_get_layout(format)->channels.r.bits == 32)
-      return 0;
-
-   /* According to Wa_2201730850, the gfx120 sampler reads the
-    * U24_X8-formatted pixel from the first raw clear color dword.
-    */
-   if (devinfo->verx10 == 120 && format == ISL_FORMAT_R24_UNORM_X8_TYPELESS)
-      return 0;
-
-   return 16;
 }
 
 static uint32_t
@@ -1744,45 +1716,11 @@ isl_choose_miptail_start_level(const struct isl_device *dev,
       return 15;
    }
 
-   if (info->dim == ISL_SURF_DIM_3D &&
-       isl_tiling_is_std_y(tile_info->tiling) &&
-       _isl_surf_info_supports_ccs(dev, info->format, info->usage)) {
-      /* From the workarounds section in the SKL PRM:
-       *
-       *    "RCC cacheline is composed of X-adjacent 64B fragments instead of
-       *     memory adjacent. This causes a single 128B cacheline to straddle
-       *     multiple LODs inside the TYF MIPtail for 3D surfaces (beyond a
-       *     certain slot number), leading to corruption when CCS is enabled
-       *     for these LODs and RT is later bound as texture. WA: If
-       *     RENDER_SURFACE_STATE.Surface Type = 3D and
-       *     RENDER_SURFACE_STATE.Auxiliary Surface Mode != AUX_NONE and
-       *     RENDER_SURFACE_STATE.Tiled ResourceMode is TYF or TYS, Set the
-       *     value of RENDER_SURFACE_STATE.Mip Tail Start LOD to a mip that
-       *     larger than those present in the surface (i.e. 15)"
-       *
-       * Referred to as Wa_1207137018 on ICL+. Disable miptails as suggested.
-       */
-      return 15;
-   }
-
    assert(isl_tiling_is_64(tile_info->tiling) ||
           isl_tiling_is_std_y(tile_info->tiling));
    assert(info->samples == 1);
 
    uint32_t max_miptail_levels = tile_info->max_miptail_levels;
-
-   if (max_miptail_levels > 11 &&
-       _isl_surf_info_supports_ccs(dev, info->format, info->usage)) {
-      /* SKL PRMs, Volume 5: Memory Views, Tiling and Mip Tails for 2D
-       * Surfaces:
-       *
-       *    "Lossless compression must not be used on surfaces which have MIP
-       *     Tail which contains MIPs for Slots greater than 11."
-       *
-       * Reduce the slot consumption to keep compression enabled.
-       */
-      max_miptail_levels = 11;
-   }
 
    /* Start with the minimum number of levels that will fit in the tile */
    uint32_t min_miptail_start =
@@ -1922,21 +1860,6 @@ isl_calc_array_pitch_el_rows_gfx4_2d(
        *    of the tile height
        */
       pitch_el_rows = isl_align(pitch_el_rows, tile_info->logical_extent_el.height);
-   }
-
-   if (isl_surf_usage_is_depth(info->usage) &&
-       _isl_surf_info_supports_ccs(dev, info->format, info->usage)) {
-      /* From the TGL PRM, Vol 9, "Compressed Depth Buffers" (under the
-       * "Texture performant" and "ZCS" columns):
-       *
-       *    Update with clear at either 16x8 or 8x4 granularity, based on
-       *    fs_clr or otherwise.
-       *
-       * When fast-clearing, hardware behaves in unexpected ways if the clear
-       * rectangle, aligned to 16x8, could cover neighboring LODs. Align the
-       * array pitch to 8 in order to increase the number of aligned LODs.
-       */
-      pitch_el_rows = isl_align(pitch_el_rows, 8);
    }
 
    return pitch_el_rows;
@@ -2944,9 +2867,6 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
    if (INTEL_DEBUG(DEBUG_NO_HIZ))
       return false;
 
-   if (surf->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)
-      return false;
-
    /* HiZ support does not exist prior to Gfx5 */
    if (ISL_GFX_VER(dev) < 5)
       return false;
@@ -3131,29 +3051,49 @@ isl_surf_supports_ccs(const struct isl_device *dev,
    if (ISL_GFX_VER(dev) >= 9 && surf->tiling == ISL_TILING_X)
       return false;
 
-   /* TODO: add CCS support for Ys/Yf */
-   if (isl_tiling_is_std_y(surf->tiling))
-      return false;
-
-   /* Wa_22015614752: There are issues with multiple engines accessing
-    * the same CCS cacheline in parallel. This can happen if this image
-    * has multiple subresources. Such conflicts can be avoided with
-    * tilings that set the subresource alignment to 64K and with miptails
-    * disabled. If we aren't using such a configuration, disable CCS.
+   /* SKL PRMs, Volume 5: Memory Views, Tiling and Mip Tails for 2D Surfaces:
+    *
+    *    "Lossless compression must not be used on surfaces which have MIP
+    *     Tail which contains MIPs for Slots greater than 11."
     */
-   if (intel_needs_workaround(dev->info, 22015614752) &&
-       (surf->usage & ISL_SURF_USAGE_MULTI_ENGINE_PAR_BIT) &&
-       (surf->levels > 1 ||
-        surf->logical_level0_px.depth > 1 ||
-        surf->logical_level0_px.array_len > 1)) {
-      assert(surf->miptail_start_level >= surf->levels);
-      if (surf->tiling != ISL_TILING_64) {
-         assert(surf->tiling == ISL_TILING_4);
+   if (surf->miptail_start_level < surf->levels) {
+      const uint32_t miptail_levels = surf->levels - surf->miptail_start_level;
+      if (miptail_levels + isl_get_miptail_base_row(surf->tiling) > 11) {
+         assert(isl_tiling_is_64(surf->tiling) ||
+                isl_tiling_is_std_y(surf->tiling));
          return false;
       }
    }
 
-   if (ISL_GFX_VER(dev) == 12) {
+   /* From the workarounds section in the SKL PRM:
+    *
+    *    "RCC cacheline is composed of X-adjacent 64B fragments instead of
+    *     memory adjacent. This causes a single 128B cacheline to straddle
+    *     multiple LODs inside the TYF MIPtail for 3D surfaces (beyond a
+    *     certain slot number), leading to corruption when CCS is enabled
+    *     for these LODs and RT is later bound as texture. WA: If
+    *     RENDER_SURFACE_STATE.Surface Type = 3D and
+    *     RENDER_SURFACE_STATE.Auxiliary Surface Mode != AUX_NONE and
+    *     RENDER_SURFACE_STATE.Tiled ResourceMode is TYF or TYS, Set the
+    *     value of RENDER_SURFACE_STATE.Mip Tail Start LOD to a mip that
+    *     larger than those present in the surface (i.e. 15)"
+    *
+    * We simply disallow CCS on 3D surfaces with miptails.
+    *
+    * Referred to as Wa_1207137018 on ICL+
+    */
+   if (ISL_GFX_VERX10(dev) <= 120 &&
+       surf->dim == ISL_SURF_DIM_3D &&
+       surf->miptail_start_level < surf->levels) {
+      assert(isl_tiling_is_std_y(surf->tiling));
+      return false;
+   }
+
+   /* TODO: add CCS support for Ys/Yf */
+   if (isl_tiling_is_std_y(surf->tiling))
+      return false;
+
+   if (ISL_GFX_VER(dev) >= 12) {
       if (isl_surf_usage_is_stencil(surf->usage)) {
          /* HiZ and MCS aren't allowed with stencil */
          assert(hiz_or_mcs_surf == NULL || hiz_or_mcs_surf->size_B == 0);
@@ -3161,12 +3101,42 @@ isl_surf_supports_ccs(const struct isl_device *dev,
          /* Multi-sampled stencil cannot have CCS */
          if (surf->samples > 1)
             return false;
+
+         /* Wa_22015614752: There are issues with multiple engines accessing
+          * the same CCS cacheline in parallel. We need a 64KB alignment
+          * between image subresources in order to avoid those issues, but as
+          * can be seen from isl_gfx125_filter_tiling, we can't use Tile64 to
+          * achieve that for 3D surfaces. We're limited to rely on other
+          * layout parameters which can't help us to achieve the target
+          * in all cases. So, we choose to disable CCS.
+          */
+         if (intel_needs_workaround(dev->info, 22015614752) &&
+             (surf->usage & ISL_SURF_USAGE_MULTI_ENGINE_PAR_BIT) &&
+             surf->dim == ISL_SURF_DIM_3D) {
+            assert(surf->tiling == ISL_TILING_4);
+            return false;
+         }
       } else if (isl_surf_usage_is_depth(surf->usage)) {
          const struct isl_surf *hiz_surf = hiz_or_mcs_surf;
 
          /* With depth surfaces, HIZ is required for CCS. */
          if (hiz_surf == NULL || hiz_surf->size_B == 0)
             return false;
+
+         /* Wa_22015614752: There are issues with multiple engines accessing
+          * the same CCS cacheline in parallel. We need a 64KB alignment
+          * between image subresources in order to avoid those issues, but as
+          * can be seen from isl_gfx125_filter_tiling, we can't use Tile64 to
+          * achieve that for 3D surfaces. We're limited to rely on other
+          * layout parameters which can't help us to achieve the target
+          * in all cases. So, we choose to disable CCS.
+          */
+         if (intel_needs_workaround(dev->info, 22015614752) &&
+             (surf->usage & ISL_SURF_USAGE_MULTI_ENGINE_PAR_BIT) &&
+             surf->dim == ISL_SURF_DIM_3D) {
+            assert(surf->tiling == ISL_TILING_4);
+            return false;
+         }
 
          assert(hiz_surf->usage & ISL_SURF_USAGE_HIZ_BIT);
          assert(hiz_surf->tiling == ISL_TILING_HIZ);
@@ -3184,6 +3154,12 @@ isl_surf_supports_ccs(const struct isl_device *dev,
          /* Single-sampled color can't have MCS or HiZ */
          assert(hiz_or_mcs_surf == NULL || hiz_or_mcs_surf->size_B == 0);
 
+         /* Wa_1406738321: 3D textures need a blit to a new surface
+          * in order to perform a resolve. For now, just disable CCS on TGL.
+          */
+         if (dev->info->verx10 == 120 && surf->dim == ISL_SURF_DIM_3D)
+            return false;
+
          /* From Bspec 49252, Render Decompression:
           *
           *    "Compressed displayable surfaces must be 16KB aligned and have
@@ -3198,23 +3174,42 @@ isl_surf_supports_ccs(const struct isl_device *dev,
             if (surf->row_pitch_B % 512 != 0)
                return false;
          }
+      }
 
-         /* From BSpec 44930,
-          *
-          *    "Compression of 3D Ys surfaces with 64 or 128 bpp is not
-          *    supported in Gen12. Moreover, "Render Target Fast-clear Enable"
-          *    command is not supported for any 3D Ys surfaces. except when
-          *    Surface is a Procdural Texture."
-          *
-          * It's not clear where the exception applies, but either way, we
-          * don't support Procedural Textures.
+      if (intel_needs_workaround(dev->info, 22015614752) &&
+          (surf->usage & ISL_SURF_USAGE_MULTI_ENGINE_PAR_BIT) &&
+          (surf->levels > 1 ||
+           surf->logical_level0_px.depth > 1 ||
+           surf->logical_level0_px.array_len > 1)) {
+         /* There are issues with multiple engines accessing the same CCS
+          * cacheline in parallel. This can happen if this image has multiple
+          * subresources. Such conflicts can be avoided with tilings that set
+          * the subresource alignment to 64K and with miptails disabled. If we
+          * aren't using such a configuration, disable CCS.
           */
-         if (surf->dim == ISL_SURF_DIM_3D &&
-             surf->tiling == ISL_TILING_ICL_Ys &&
-             isl_format_get_layout(surf->format)->bpb >= 64)
+         assert(surf->miptail_start_level >= surf->levels);
+         if (surf->tiling != ISL_TILING_64)
             return false;
       }
-   } else if (ISL_GFX_VER(dev) < 12) {
+
+      /* BSpec 44930: (Gfx12, Gfx12.5)
+       *
+       *    "Compression of 3D Ys surfaces with 64 or 128 bpp is not supported
+       *     in Gen12. Moreover, "Render Target Fast-clear Enable" command is
+       *     not supported for any 3D Ys surfaces. except when Surface is a
+       *     Procdural Texture."
+       *
+       * Since the note applies to MTL, we apply this to TILE64 too.
+       */
+      uint32_t format_bpb = isl_format_get_layout(surf->format)->bpb;
+      if (ISL_GFX_VER(dev) == 12 &&
+          surf->dim == ISL_SURF_DIM_3D &&
+          (surf->tiling == ISL_TILING_ICL_Ys ||
+           isl_tiling_is_64(surf->tiling)) &&
+          (format_bpb == 64 || format_bpb == 128))
+         return false;
+   } else {
+      /* ISL_GFX_VER(dev) < 12 */
       if (surf->samples > 1)
          return false;
 
@@ -3338,9 +3333,6 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
       break;                                       \
    case 200:                                       \
       isl_gfx20_##func(__VA_ARGS__);               \
-      break;                                       \
-   case 300:                                       \
-      isl_gfx30_##func(__VA_ARGS__);               \
       break;                                       \
    default:                                        \
       assert(!"Unknown hardware generation");      \
@@ -3805,15 +3797,10 @@ isl_surf_get_image_range_B_tile(const struct isl_surf *surf,
                                       &z_offset_el,
                                       &array_slice);
 
-   struct isl_tile_info tile_info;
-   isl_surf_get_tile_info(surf, &tile_info);
-
    /* We want the range we return to be exclusive but the tile containing the
-    * last pixel (what we just calculated) is inclusive. Add one and round up
-    * to the tile size.
+    * last pixel (what we just calculated) is inclusive.  Add one.
     */
-   *end_tile_B = ALIGN_NPOT(*end_tile_B + 1, tile_info.phys_extent_B.w *
-                                             tile_info.phys_extent_B.h);
+   (*end_tile_B)++;
 
    assert(*end_tile_B <= surf->size_B);
 }

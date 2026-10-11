@@ -469,17 +469,8 @@ get_register_queries_function(const struct intel_device_info *devinfo)
       if (intel_device_info_eu_total(devinfo) <= 128)
          return intel_oa_register_queries_mtlgt3;
       return NULL;
-   case INTEL_PLATFORM_ARL_U:
-   case INTEL_PLATFORM_ARL_H:
-      if (intel_device_info_eu_total(devinfo) <= 64)
-         return intel_oa_register_queries_arlgt1;
-      if (intel_device_info_eu_total(devinfo) <= 128)
-         return intel_oa_register_queries_arlgt2;
-      return NULL;
    case INTEL_PLATFORM_LNL:
       return intel_oa_register_queries_lnl;
-   case INTEL_PLATFORM_BMG:
-      return intel_oa_register_queries_bmg;
    default:
       return NULL;
    }
@@ -928,6 +919,11 @@ intel_perf_get_counters_passes(struct intel_perf_config *perf,
    BITSET_ZERO(queries_mask);
 
    get_passes_mask(perf, counter_indices, counter_indices_count, queries_mask);
+   ASSERTED uint32_t n_passes = BITSET_COUNT(queries_mask);
+
+   struct intel_perf_query_info **pass_array = calloc(perf->n_queries,
+                                                      sizeof(*pass_array));
+   uint32_t n_written_passes = 0;
 
    for (uint32_t i = 0; i < counter_indices_count; i++) {
       assert(counter_indices[i] < perf->n_counters);
@@ -949,7 +945,22 @@ intel_perf_get_counters_passes(struct intel_perf_config *perf,
       assert(query_idx != UINT32_MAX);
 
       counter_pass[i].query = &perf->queries[query_idx];
+
+      uint32_t pass_idx = UINT32_MAX;
+      for (uint32_t p = 0; p < n_written_passes; p++) {
+         if (pass_array[p] == counter_pass[i].query) {
+            pass_idx = p;
+            break;
+         }
+      }
+
+      if (pass_idx == UINT32_MAX)
+         pass_array[n_written_passes] = counter_pass[i].query;
+
+      assert(n_written_passes <= n_passes);
    }
+
+   free(pass_array);
 }
 
 /* Accumulate 32bits OA counters */
@@ -1536,10 +1547,8 @@ intel_perf_init_metrics(struct intel_perf_config *perf_cfg,
       load_oa_metrics(perf_cfg, drm_fd, devinfo);
 
    /* sort query groups by name */
-   if (perf_cfg->queries != NULL) {
-      qsort(perf_cfg->queries, perf_cfg->n_queries,
-            sizeof(perf_cfg->queries[0]), intel_perf_compare_query_names);
-   }
+   qsort(perf_cfg->queries, perf_cfg->n_queries,
+         sizeof(perf_cfg->queries[0]), intel_perf_compare_query_names);
 
    build_unique_counter_list(perf_cfg);
 
@@ -1571,7 +1580,7 @@ int
 intel_perf_stream_open(struct intel_perf_config *perf_config, int drm_fd,
                        uint32_t ctx_id, uint64_t metrics_set_id,
                        uint64_t period_exponent, bool hold_preemption,
-                       bool enable, struct intel_bind_timeline *timeline)
+                       bool enable)
 {
    uint64_t report_format = intel_perf_get_oa_format(perf_config);
 
@@ -1583,7 +1592,7 @@ intel_perf_stream_open(struct intel_perf_config *perf_config, int drm_fd,
    case INTEL_KMD_TYPE_XE:
       return xe_perf_stream_open(perf_config, drm_fd, ctx_id, metrics_set_id,
                                  report_format, period_exponent,
-                                 hold_preemption, enable, timeline);
+                                 hold_preemption, enable);
    default:
          unreachable("missing");
          return 0;
@@ -1631,18 +1640,13 @@ intel_perf_stream_set_state(struct intel_perf_config *perf_config,
 
 int
 intel_perf_stream_set_metrics_id(struct intel_perf_config *perf_config,
-                                 int drm_fd, int perf_stream_fd,
-                                 uint32_t exec_queue,
-                                 uint64_t metrics_set_id,
-                                 struct intel_bind_timeline *timeline)
+                                 int perf_stream_fd, uint64_t metrics_set_id)
 {
    switch (perf_config->devinfo->kmd_type) {
    case INTEL_KMD_TYPE_I915:
       return i915_perf_stream_set_metrics_id(perf_stream_fd, metrics_set_id);
    case INTEL_KMD_TYPE_XE:
-      return xe_perf_stream_set_metrics_id(perf_stream_fd, drm_fd,
-                                           exec_queue, metrics_set_id,
-                                           timeline);
+      return xe_perf_stream_set_metrics_id(perf_stream_fd, metrics_set_id);
    default:
          unreachable("missing");
          return -1;

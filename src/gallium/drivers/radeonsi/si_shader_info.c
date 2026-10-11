@@ -47,6 +47,154 @@ unsigned si_get_num_shader_profiles(void)
    return ARRAY_SIZE(si_shader_profiles);
 }
 
+static unsigned get_inst_tessfactor_writemask(nir_intrinsic_instr *intrin)
+{
+   if (intrin->intrinsic != nir_intrinsic_store_output)
+      return 0;
+
+   unsigned writemask = nir_intrinsic_write_mask(intrin) << nir_intrinsic_component(intrin);
+   unsigned location = nir_intrinsic_io_semantics(intrin).location;
+
+   if (location == VARYING_SLOT_TESS_LEVEL_OUTER)
+      return writemask << 4;
+   else if (location == VARYING_SLOT_TESS_LEVEL_INNER)
+      return writemask;
+
+   return 0;
+}
+
+static void scan_tess_ctrl(nir_cf_node *cf_node, unsigned *upper_block_tf_writemask,
+                           unsigned *cond_block_tf_writemask,
+                           bool *tessfactors_are_def_in_all_invocs, bool is_nested_cf)
+{
+   switch (cf_node->type) {
+   case nir_cf_node_block: {
+      nir_block *block = nir_cf_node_as_block(cf_node);
+      nir_foreach_instr (instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+         if (intrin->intrinsic == nir_intrinsic_barrier &&
+             nir_intrinsic_execution_scope(intrin) >= SCOPE_WORKGROUP) {
+
+            /* If we find a barrier in nested control flow put this in the
+             * too hard basket. In GLSL this is not possible but it is in
+             * SPIR-V.
+             */
+            if (is_nested_cf) {
+               *tessfactors_are_def_in_all_invocs = false;
+               return;
+            }
+
+            /* The following case must be prevented:
+             *    gl_TessLevelInner = ...;
+             *    barrier();
+             *    if (gl_InvocationID == 1)
+             *       gl_TessLevelInner = ...;
+             *
+             * If you consider disjoint code segments separated by barriers, each
+             * such segment that writes tess factor channels should write the same
+             * channels in all codepaths within that segment.
+             */
+            if (*upper_block_tf_writemask || *cond_block_tf_writemask) {
+               /* Accumulate the result: */
+               *tessfactors_are_def_in_all_invocs &=
+                  !(*cond_block_tf_writemask & ~(*upper_block_tf_writemask));
+
+               /* Analyze the next code segment from scratch. */
+               *upper_block_tf_writemask = 0;
+               *cond_block_tf_writemask = 0;
+            }
+         } else
+            *upper_block_tf_writemask |= get_inst_tessfactor_writemask(intrin);
+      }
+
+      break;
+   }
+   case nir_cf_node_if: {
+      unsigned then_tessfactor_writemask = 0;
+      unsigned else_tessfactor_writemask = 0;
+
+      nir_if *if_stmt = nir_cf_node_as_if(cf_node);
+      foreach_list_typed(nir_cf_node, nested_node, node, &if_stmt->then_list)
+      {
+         scan_tess_ctrl(nested_node, &then_tessfactor_writemask, cond_block_tf_writemask,
+                        tessfactors_are_def_in_all_invocs, true);
+      }
+
+      foreach_list_typed(nir_cf_node, nested_node, node, &if_stmt->else_list)
+      {
+         scan_tess_ctrl(nested_node, &else_tessfactor_writemask, cond_block_tf_writemask,
+                        tessfactors_are_def_in_all_invocs, true);
+      }
+
+      if (then_tessfactor_writemask || else_tessfactor_writemask) {
+         /* If both statements write the same tess factor channels,
+          * we can say that the upper block writes them too.
+          */
+         *upper_block_tf_writemask |= then_tessfactor_writemask & else_tessfactor_writemask;
+         *cond_block_tf_writemask |= then_tessfactor_writemask | else_tessfactor_writemask;
+      }
+
+      break;
+   }
+   case nir_cf_node_loop: {
+      nir_loop *loop = nir_cf_node_as_loop(cf_node);
+      assert(!nir_loop_has_continue_construct(loop));
+      foreach_list_typed(nir_cf_node, nested_node, node, &loop->body)
+      {
+         scan_tess_ctrl(nested_node, cond_block_tf_writemask, cond_block_tf_writemask,
+                        tessfactors_are_def_in_all_invocs, true);
+      }
+
+      break;
+   }
+   default:
+      unreachable("unknown cf node type");
+   }
+}
+
+static bool are_tessfactors_def_in_all_invocs(const struct nir_shader *nir)
+{
+   assert(nir->info.stage == MESA_SHADER_TESS_CTRL);
+
+   /* The pass works as follows:
+    * If all codepaths write tess factors, we can say that all
+    * invocations define tess factors.
+    *
+    * Each tess factor channel is tracked separately.
+    */
+   unsigned main_block_tf_writemask = 0; /* if main block writes tess factors */
+   unsigned cond_block_tf_writemask = 0; /* if cond block writes tess factors */
+
+   /* Initial value = true. Here the pass will accumulate results from
+    * multiple segments surrounded by barriers. If tess factors aren't
+    * written at all, it's a shader bug and we don't care if this will be
+    * true.
+    */
+   bool tessfactors_are_def_in_all_invocs = true;
+
+   nir_foreach_function (function, nir) {
+      if (function->impl) {
+         foreach_list_typed(nir_cf_node, node, node, &function->impl->body)
+         {
+            scan_tess_ctrl(node, &main_block_tf_writemask, &cond_block_tf_writemask,
+                           &tessfactors_are_def_in_all_invocs, false);
+         }
+      }
+   }
+
+   /* Accumulate the result for the last code segment separated by a
+    * barrier.
+    */
+   if (main_block_tf_writemask || cond_block_tf_writemask) {
+      tessfactors_are_def_in_all_invocs &= !(cond_block_tf_writemask & ~main_block_tf_writemask);
+   }
+
+   return tessfactors_are_def_in_all_invocs;
+}
+
 static const nir_src *get_texture_src(nir_tex_instr *instr, nir_tex_src_type type)
 {
    for (unsigned i = 0; i < instr->num_srcs; i++) {
@@ -150,9 +298,9 @@ static void scan_io_usage(const nir_shader *nir, struct si_shader_info *info,
 
          info->input[loc].semantic = semantic + i;
 
-         /* "interpolate" starts out as FLAT. The first seen load_interpolated_input overwrites it.  */
-         if (semantic != VARYING_SLOT_PRIMITIVE_ID &&
-             info->input[loc].interpolate == INTERP_MODE_FLAT)
+         if (semantic == VARYING_SLOT_PRIMITIVE_ID)
+            info->input[loc].interpolate = INTERP_MODE_FLAT;
+         else
             info->input[loc].interpolate = interp;
 
          if (mask) {
@@ -172,7 +320,6 @@ static void scan_io_usage(const nir_shader *nir, struct si_shader_info *info,
 
       for (unsigned i = 0; i < num_slots; i++) {
          unsigned loc = driver_location + i;
-         unsigned slot_semantic = semantic + i;
 
          /* Call the translation functions to validate the semantic (call assertions in them). */
          if (nir->info.stage != MESA_SHADER_FRAGMENT &&
@@ -181,16 +328,19 @@ static void scan_io_usage(const nir_shader *nir, struct si_shader_info *info,
                 semantic == VARYING_SLOT_TESS_LEVEL_OUTER ||
                 (semantic >= VARYING_SLOT_PATCH0 && semantic <= VARYING_SLOT_PATCH31)) {
                ac_shader_io_get_unique_index_patch(semantic);
-               ac_shader_io_get_unique_index_patch(slot_semantic);
+               ac_shader_io_get_unique_index_patch(semantic + i);
             } else {
                si_shader_io_get_unique_index(semantic);
-               si_shader_io_get_unique_index(slot_semantic);
+               si_shader_io_get_unique_index(semantic + i);
             }
          }
 
-         info->output_semantic[loc] = slot_semantic;
+         info->output_semantic[loc] = semantic + i;
 
-         if (!is_output_load && mask) {
+         if (is_output_load) {
+            /* Output loads have only a few things that we need to track. */
+            info->output_readmask[loc] |= mask;
+         } else if (mask) {
             /* Output stores. */
             unsigned gs_streams = (uint32_t)nir_intrinsic_io_semantics(intr).gs_streams <<
                                   (nir_intrinsic_component(intr) * 2);
@@ -225,37 +375,6 @@ static void scan_io_usage(const nir_shader *nir, struct si_shader_info *info,
 
             info->output_usagemask[loc] |= mask;
             info->num_outputs = MAX2(info->num_outputs, loc + 1);
-
-            if (nir->info.stage == MESA_SHADER_VERTEX ||
-                nir->info.stage == MESA_SHADER_TESS_CTRL ||
-                nir->info.stage == MESA_SHADER_TESS_EVAL ||
-                nir->info.stage == MESA_SHADER_GEOMETRY) {
-               if (slot_semantic == VARYING_SLOT_TESS_LEVEL_INNER ||
-                   slot_semantic == VARYING_SLOT_TESS_LEVEL_OUTER ||
-                   (slot_semantic >= VARYING_SLOT_PATCH0 &&
-                    slot_semantic < VARYING_SLOT_TESS_MAX)) {
-                  info->patch_outputs_written |=
-                     BITFIELD_BIT(ac_shader_io_get_unique_index_patch(slot_semantic));
-               } else if ((slot_semantic <= VARYING_SLOT_VAR31 ||
-                           slot_semantic >= VARYING_SLOT_VAR0_16BIT) &&
-                          slot_semantic != VARYING_SLOT_EDGE) {
-                  uint64_t bit = BITFIELD64_BIT(si_shader_io_get_unique_index(slot_semantic));
-
-                  /* Ignore outputs that are not passed from VS to PS. */
-                  if (slot_semantic != VARYING_SLOT_POS &&
-                      slot_semantic != VARYING_SLOT_PSIZ &&
-                      slot_semantic != VARYING_SLOT_CLIP_VERTEX &&
-                      slot_semantic != VARYING_SLOT_LAYER)
-                     info->outputs_written_before_ps |= bit;
-
-                  /* LAYER and VIEWPORT have no effect if they don't feed the rasterizer. */
-                  if (slot_semantic != VARYING_SLOT_LAYER &&
-                      slot_semantic != VARYING_SLOT_VIEWPORT) {
-                     info->ls_es_outputs_written |= bit;
-                     info->tcs_outputs_written |= bit;
-                  }
-               }
-            }
 
             if (nir->info.stage == MESA_SHADER_FRAGMENT &&
                 semantic >= FRAG_RESULT_DATA0 && semantic <= FRAG_RESULT_DATA7) {
@@ -509,18 +628,8 @@ void si_nir_scan_shader(struct si_screen *sscreen, const struct nir_shader *nir,
 {
    memset(info, 0, sizeof(*info));
    info->base = nir->info;
-
-   bool force_use_aco = false;
-   if (sscreen->force_shader_use_aco) {
-      if (!memcmp(sscreen->use_aco_shader_blake, info->base.source_blake3,
-                  sizeof(sscreen->use_aco_shader_blake))) {
-         force_use_aco = true;
-      }
-   }
-
    info->base.use_aco_amd = aco_is_gpu_supported(&sscreen->info) &&
-                            (sscreen->use_aco || nir->info.use_aco_amd || force_use_aco) &&
-                            sscreen->info.has_image_opcodes;
+                            (sscreen->use_aco || nir->info.use_aco_amd);
 
    /* Get options from shader profiles. */
    for (unsigned i = 0; i < ARRAY_SIZE(si_shader_profiles); i++) {
@@ -551,22 +660,12 @@ void si_nir_scan_shader(struct si_screen *sscreen, const struct nir_shader *nir,
        * conditions are met.
        */
       info->writes_1_if_tex_is_1 = nir->info.writes_memory ? 0 : 0xff;
-
-      /* Initialize all FS inputs to flat. If we see load_interpolated_input for any component,
-       * it will be changed to its interp mode.
-       */
-      for (unsigned i = 0; i < ARRAY_SIZE(info->input); i++)
-         info->input[i].interpolate = INTERP_MODE_FLAT;
    }
 
    info->constbuf0_num_slots = nir->num_uniforms;
 
    if (nir->info.stage == MESA_SHADER_TESS_CTRL) {
-      nir_tcs_info tcs_info;
-      nir_gather_tcs_info(nir, &tcs_info, nir->info.tess._primitive_mode,
-                          nir->info.tess.spacing);
-
-      info->tessfactors_are_def_in_all_invocs = tcs_info.all_invocations_define_tess_levels;
+      info->tessfactors_are_def_in_all_invocs = are_tessfactors_def_in_all_invocs(nir);
    }
 
    /* tess factors are loaded as input instead of system value */
@@ -677,7 +776,50 @@ void si_nir_scan_shader(struct si_screen *sscreen, const struct nir_shader *nir,
    }
 
    info->uses_vmem_load_other |= info->uses_indirect_descriptor;
+
+   /* Trim output read masks based on write masks. */
+   for (unsigned i = 0; i < info->num_outputs; i++)
+      info->output_readmask[i] &= info->output_usagemask[i];
+
    info->has_divergent_loop = nir_has_divergent_loop((nir_shader*)nir);
+
+   if (nir->info.stage == MESA_SHADER_VERTEX ||
+       nir->info.stage == MESA_SHADER_TESS_CTRL ||
+       nir->info.stage == MESA_SHADER_TESS_EVAL ||
+       nir->info.stage == MESA_SHADER_GEOMETRY) {
+      if (nir->info.stage == MESA_SHADER_TESS_CTRL) {
+         /* Always reserve space for these. */
+         info->patch_outputs_written |=
+            (1ull << ac_shader_io_get_unique_index_patch(VARYING_SLOT_TESS_LEVEL_INNER)) |
+            (1ull << ac_shader_io_get_unique_index_patch(VARYING_SLOT_TESS_LEVEL_OUTER));
+      }
+      for (unsigned i = 0; i < info->num_outputs; i++) {
+         unsigned semantic = info->output_semantic[i];
+
+         if (semantic == VARYING_SLOT_TESS_LEVEL_INNER ||
+             semantic == VARYING_SLOT_TESS_LEVEL_OUTER ||
+             (semantic >= VARYING_SLOT_PATCH0 && semantic < VARYING_SLOT_TESS_MAX)) {
+            info->patch_outputs_written |= 1ull << ac_shader_io_get_unique_index_patch(semantic);
+         } else if ((semantic <= VARYING_SLOT_VAR31 || semantic >= VARYING_SLOT_VAR0_16BIT) &&
+                    semantic != VARYING_SLOT_EDGE) {
+            /* Ignore outputs that are not passed from VS to PS. */
+            if (semantic != VARYING_SLOT_POS &&
+                semantic != VARYING_SLOT_PSIZ &&
+                semantic != VARYING_SLOT_CLIP_VERTEX &&
+                semantic != VARYING_SLOT_LAYER) {
+               info->outputs_written_before_ps |= 1ull
+                                                  << si_shader_io_get_unique_index(semantic);
+            }
+
+            /* LAYER and VIEWPORT have no effect if they don't feed the rasterizer. */
+            if (semantic != VARYING_SLOT_LAYER &&
+                semantic != VARYING_SLOT_VIEWPORT) {
+               info->outputs_written_before_tes_gs |=
+                  BITFIELD64_BIT(si_shader_io_get_unique_index(semantic));
+            }
+         }
+      }
+   }
 
    if (nir->info.stage == MESA_SHADER_VERTEX) {
       info->num_vs_inputs =
@@ -689,18 +831,21 @@ void si_nir_scan_shader(struct si_screen *sscreen, const struct nir_shader *nir,
    if (nir->info.stage == MESA_SHADER_VERTEX ||
        nir->info.stage == MESA_SHADER_TESS_CTRL ||
        nir->info.stage == MESA_SHADER_TESS_EVAL) {
-      info->esgs_vertex_stride =
-         util_last_bit64(info->ls_es_outputs_written) * 16;
+      info->esgs_vertex_stride = info->lshs_vertex_stride =
+         util_last_bit64(info->outputs_written_before_tes_gs) * 16;
+
+      /* Add 1 dword to reduce LDS bank conflicts, so that each vertex
+       * will start on a different bank. (except for the maximum 32*16).
+       */
+      info->lshs_vertex_stride += 4;
 
       /* For the ESGS ring in LDS, add 1 dword to reduce LDS bank
        * conflicts, i.e. each vertex will start on a different bank.
        */
-      if (sscreen->info.gfx_level >= GFX9) {
-         if (info->esgs_vertex_stride)
-            info->esgs_vertex_stride += 4;
-      } else {
+      if (sscreen->info.gfx_level >= GFX9)
+         info->esgs_vertex_stride += 4;
+      else
          assert(((info->esgs_vertex_stride / 4) & C_028AAC_ITEMSIZE) == 0);
-      }
 
       info->tcs_vgpr_only_inputs = ~info->base.tess.tcs_cross_invocation_inputs_read &
                                    ~info->base.inputs_read_indirectly &

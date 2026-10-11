@@ -46,7 +46,11 @@ lower_patch_vertices_in_instr(nir_builder *b, nir_intrinsic_instr *load,
 
    nir_def_rewrite_uses(
       &load->def,
-      anv_load_driver_uniform(b, 1, gfx.tcs_input_vertices));
+      nir_load_push_constant(
+         b, 1, 32,
+         nir_imm_int(b, 0),
+         .base = offsetof(struct anv_push_constants, gfx.tcs_input_vertices),
+         .range = sizeof_field(struct anv_push_constants, gfx.tcs_input_vertices)));
    nir_instr_remove(&load->instr);
 
    return true;

@@ -27,7 +27,6 @@
 #include "state_tracker/st_texture.h"
 #include "state_tracker/st_context.h"
 #include "main/texobj.h"
-#include "util/libsync.h"
 
 #include "dri_helpers.h"
 #include "loader_dri_helper.h"
@@ -77,9 +76,9 @@ struct dri2_fence {
    void *cl_event;
 };
 
-unsigned
-dri_fence_get_caps(struct dri_screen *driscreen)
+static unsigned dri2_fence_get_caps(__DRIscreen *_screen)
 {
+   struct dri_screen *driscreen = dri_screen(_screen);
    struct pipe_screen *screen = driscreen->base.screen;
    unsigned caps = 0;
 
@@ -89,9 +88,10 @@ dri_fence_get_caps(struct dri_screen *driscreen)
    return caps;
 }
 
-void *
-dri_create_fence(struct dri_context *ctx)
+static void *
+dri2_create_fence(__DRIcontext *_ctx)
 {
+   struct dri_context *ctx = dri_context(_ctx);
    struct st_context *st = ctx->st;
    struct dri2_fence *fence = CALLOC_STRUCT(dri2_fence);
 
@@ -114,9 +114,10 @@ dri_create_fence(struct dri_context *ctx)
    return fence;
 }
 
-void *
-dri_create_fence_fd(struct dri_context *dri_ctx, int fd)
+static void *
+dri2_create_fence_fd(__DRIcontext *_ctx, int fd)
 {
+   struct dri_context *dri_ctx = dri_context(_ctx);
    struct st_context *st = dri_ctx->st;
    struct pipe_context *ctx = st->pipe;
    struct dri2_fence *fence = CALLOC_STRUCT(dri2_fence);
@@ -142,18 +143,20 @@ dri_create_fence_fd(struct dri_context *dri_ctx, int fd)
    return fence;
 }
 
-int
-dri_get_fence_fd(struct dri_screen *driscreen, void *_fence)
+static int
+dri2_get_fence_fd(__DRIscreen *_screen, void *_fence)
 {
+   struct dri_screen *driscreen = dri_screen(_screen);
    struct pipe_screen *screen = driscreen->base.screen;
    struct dri2_fence *fence = (struct dri2_fence*)_fence;
 
    return screen->fence_get_fd(screen, fence->pipe_fence);
 }
 
-void *
-dri_get_fence_from_cl_event(struct dri_screen *driscreen, intptr_t cl_event)
+static void *
+dri2_get_fence_from_cl_event(__DRIscreen *_screen, intptr_t cl_event)
 {
+   struct dri_screen *driscreen = dri_screen(_screen);
    struct dri2_fence *fence;
 
    if (!dri2_load_opencl_interop(driscreen))
@@ -174,9 +177,10 @@ dri_get_fence_from_cl_event(struct dri_screen *driscreen, intptr_t cl_event)
    return fence;
 }
 
-void
-dri_destroy_fence(struct dri_screen *driscreen, void *_fence)
+static void
+dri2_destroy_fence(__DRIscreen *_screen, void *_fence)
 {
+   struct dri_screen *driscreen = dri_screen(_screen);
    struct pipe_screen *screen = driscreen->base.screen;
    struct dri2_fence *fence = (struct dri2_fence*)_fence;
 
@@ -190,8 +194,8 @@ dri_destroy_fence(struct dri_screen *driscreen, void *_fence)
    FREE(fence);
 }
 
-GLboolean
-dri_client_wait_sync(struct dri_context *_ctx, void *_fence, unsigned flags,
+static GLboolean
+dri2_client_wait_sync(__DRIcontext *_ctx, void *_fence, unsigned flags,
                       uint64_t timeout)
 {
    struct dri2_fence *fence = (struct dri2_fence*)_fence;
@@ -217,10 +221,10 @@ dri_client_wait_sync(struct dri_context *_ctx, void *_fence, unsigned flags,
    }
 }
 
-void
-dri_server_wait_sync(struct dri_context *_ctx, void *_fence, unsigned flags)
+static void
+dri2_server_wait_sync(__DRIcontext *_ctx, void *_fence, unsigned flags)
 {
-   struct st_context *st = _ctx->st;
+   struct st_context *st = dri_context(_ctx)->st;
    struct pipe_context *ctx = st->pipe;
    struct dri2_fence *fence = (struct dri2_fence*)_fence;
 
@@ -242,27 +246,28 @@ dri_server_wait_sync(struct dri_context *_ctx, void *_fence, unsigned flags)
 const __DRI2fenceExtension dri2FenceExtension = {
    .base = { __DRI2_FENCE, 2 },
 
-   .create_fence = dri_create_fence,
-   .get_fence_from_cl_event = dri_get_fence_from_cl_event,
-   .destroy_fence = dri_destroy_fence,
-   .client_wait_sync = dri_client_wait_sync,
-   .server_wait_sync = dri_server_wait_sync,
-   .get_capabilities = dri_fence_get_caps,
-   .create_fence_fd = dri_create_fence_fd,
-   .get_fence_fd = dri_get_fence_fd,
+   .create_fence = dri2_create_fence,
+   .get_fence_from_cl_event = dri2_get_fence_from_cl_event,
+   .destroy_fence = dri2_destroy_fence,
+   .client_wait_sync = dri2_client_wait_sync,
+   .server_wait_sync = dri2_server_wait_sync,
+   .get_capabilities = dri2_fence_get_caps,
+   .create_fence_fd = dri2_create_fence_fd,
+   .get_fence_fd = dri2_get_fence_fd,
 };
 
-struct dri_image *
-dri_create_image_from_renderbuffer(struct dri_context *dri_ctx,
+__DRIimage *
+dri2_create_image_from_renderbuffer(__DRIcontext *context,
 				     int renderbuffer, void *loaderPrivate,
                                      unsigned *error)
 {
+   struct dri_context *dri_ctx = dri_context(context);
    struct st_context *st = dri_ctx->st;
    struct gl_context *ctx = st->ctx;
    struct pipe_context *p_ctx = st->pipe;
    struct gl_renderbuffer *rb;
    struct pipe_resource *tex;
-   struct dri_image *img;
+   __DRIimage *img;
 
    /* Wait for glthread to finish to get up-to-date GL object lookups. */
    _mesa_glthread_finish(st->ctx);
@@ -292,7 +297,7 @@ dri_create_image_from_renderbuffer(struct dri_context *dri_ctx,
       return NULL;
    }
 
-   img = CALLOC_STRUCT(dri_image);
+   img = CALLOC_STRUCT(__DRIimageRec);
    if (!img) {
       *error = __DRI_IMAGE_ERROR_BAD_ALLOC;
       return NULL;
@@ -321,7 +326,7 @@ dri_create_image_from_renderbuffer(struct dri_context *dri_ctx,
 }
 
 void
-dri2_destroy_image(struct dri_image *img)
+dri2_destroy_image(__DRIimage *img)
 {
    const __DRIimageLoaderExtension *imgLoader = img->screen->image.loader;
    const __DRIdri2LoaderExtension *dri2Loader = img->screen->dri2.loader;
@@ -343,12 +348,13 @@ dri2_destroy_image(struct dri_image *img)
 }
 
 
-struct dri_image *
-dri2_create_from_texture(struct dri_context *dri_ctx, int target, unsigned texture,
+__DRIimage *
+dri2_create_from_texture(__DRIcontext *context, int target, unsigned texture,
                          int depth, int level, unsigned *error,
                          void *loaderPrivate)
 {
-   struct dri_image *img;
+   __DRIimage *img;
+   struct dri_context *dri_ctx = dri_context(context);
    struct st_context *st = dri_ctx->st;
    struct gl_context *ctx = st->ctx;
    struct pipe_context *p_ctx = st->pipe;
@@ -390,7 +396,7 @@ dri2_create_from_texture(struct dri_context *dri_ctx, int target, unsigned textu
       return NULL;
    }
 
-   img = CALLOC_STRUCT(dri_image);
+   img = CALLOC_STRUCT(__DRIimageRec);
    if (!img) {
       *error = __DRI_IMAGE_ERROR_BAD_ALLOC;
       return NULL;
@@ -550,18 +556,6 @@ static const struct dri2_format_mapping dri2_format_table[] = {
         { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8 },
           { 1, 1, 1, __DRI_IMAGE_FORMAT_GR88 } } },
 
-      /* 10 bit 4:2:0 and 4:2:2 formats; the components
-         are tightly packed, so the planes don't correspond
-         to any native DRI format */
-      { DRM_FORMAT_NV15,          __DRI_IMAGE_FORMAT_NONE,
-        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_NV15, 2,
-        { { 0, 0, 0, __DRI_IMAGE_FORMAT_NONE },
-          { 1, 1, 1, __DRI_IMAGE_FORMAT_NONE } } },
-      { DRM_FORMAT_NV20,          __DRI_IMAGE_FORMAT_NONE,
-        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_NV20, 2,
-        { { 0, 0, 0, __DRI_IMAGE_FORMAT_NONE },
-          { 1, 1, 0, __DRI_IMAGE_FORMAT_NONE } } },
-
       { DRM_FORMAT_P010,          __DRI_IMAGE_FORMAT_NONE,
         __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_P010, 2,
         { { 0, 0, 0, __DRI_IMAGE_FORMAT_R16 },
@@ -580,7 +574,7 @@ static const struct dri2_format_mapping dri2_format_table[] = {
           { 1, 1, 1, __DRI_IMAGE_FORMAT_GR1616 } } },
 
       { DRM_FORMAT_NV16,          __DRI_IMAGE_FORMAT_NONE,
-        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_NV16, 2,
+        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_NV12, 2,
         { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8 },
           { 1, 1, 0, __DRI_IMAGE_FORMAT_GR88 } } },
 
@@ -690,34 +684,12 @@ dri2_get_pipe_format_for_dri_format(int format)
    return PIPE_FORMAT_NONE;
 }
 
-static enum pipe_format
-alt_pipe_format(enum pipe_format yuv_fmt)
-{
-   switch(yuv_fmt) {
-   case PIPE_FORMAT_NV12:
-      return PIPE_FORMAT_R8_G8B8_420_UNORM;
-   case PIPE_FORMAT_NV16:
-      return PIPE_FORMAT_R8_G8B8_422_UNORM;
-   case PIPE_FORMAT_NV21:
-      return PIPE_FORMAT_R8_B8G8_420_UNORM;
-   case PIPE_FORMAT_NV15:
-      return PIPE_FORMAT_R10_G10B10_420_UNORM;
-   case PIPE_FORMAT_NV20:
-      return PIPE_FORMAT_R10_G10B10_422_UNORM;
-   default:
-      return yuv_fmt;
-   }
-}
-
 bool
 dri2_yuv_dma_buf_supported(struct dri_screen *screen,
                            const struct dri2_format_mapping *map)
 {
    struct pipe_screen *pscreen = screen->base.screen;
 
-   if (pscreen->is_format_supported(pscreen, alt_pipe_format(map->pipe_format),
-                                    screen->target, 0, 0, PIPE_BIND_SAMPLER_VIEW))
-      return true;
    for (unsigned i = 0; i < map->nplanes; i++) {
       if (!pscreen->is_format_supported(pscreen,
             dri2_get_pipe_format_for_dri_format(map->planes[i].dri_format),
@@ -728,9 +700,10 @@ dri2_yuv_dma_buf_supported(struct dri_screen *screen,
 }
 
 bool
-dri_query_dma_buf_formats(struct dri_screen *screen, int max, int *formats,
+dri2_query_dma_buf_formats(__DRIscreen *_screen, int max, int *formats,
                            int *count)
 {
+   struct dri_screen *screen = dri_screen(_screen);
    struct pipe_screen *pscreen = screen->base.screen;
    int i, j;
 
@@ -759,58 +732,4 @@ dri_query_dma_buf_formats(struct dri_screen *screen, int max, int *formats,
    return true;
 }
 
-
-struct dri_image *
-dri_create_image_with_modifiers(struct dri_screen *screen,
-                                 uint32_t width, uint32_t height,
-                                 uint32_t dri_format, uint32_t dri_usage,
-                                 const uint64_t *modifiers,
-                                 unsigned int modifiers_count,
-                                 void *loaderPrivate)
-{
-   if (modifiers && modifiers_count > 0) {
-      bool has_valid_modifier = false;
-      int i;
-
-      /* It's acceptable to create an image with INVALID modifier in the list,
-       * but it cannot be on the only modifier (since it will certainly fail
-       * later). While we could easily catch this after modifier creation, doing
-       * the check here is a convenient debug check likely pointing at whatever
-       * interface the client is using to build its modifier list.
-       */
-      for (i = 0; i < modifiers_count; i++) {
-         if (modifiers[i] != DRM_FORMAT_MOD_INVALID) {
-            has_valid_modifier = true;
-            break;
-         }
-      }
-      if (!has_valid_modifier)
-         return NULL;
-   }
-
-   return dri_create_image(screen, width, height, dri_format,
-                           modifiers, modifiers_count, dri_usage,
-                           loaderPrivate);
-}
-
-void
-dri_image_fence_sync(struct dri_context *ctx, struct dri_image *img)
-{
-   struct pipe_context *pipe = ctx->st->pipe;
-   struct pipe_fence_handle *fence;
-   int fd = img->in_fence_fd;
-
-   if (fd == -1)
-      return;
-
-   validate_fence_fd(fd);
-
-   img->in_fence_fd = -1;
-
-   pipe->create_fence_fd(pipe, &fence, fd, PIPE_FD_TYPE_NATIVE_SYNC);
-   pipe->fence_server_sync(pipe, fence);
-   pipe->screen->fence_reference(pipe->screen, &fence, NULL);
-
-   close(fd);
-}
 /* vim: set sw=3 ts=8 sts=3 expandtab: */

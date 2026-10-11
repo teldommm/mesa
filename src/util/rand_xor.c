@@ -24,6 +24,10 @@
 
 #include "detect_os.h"
 
+#ifdef __TERMUX__
+#define SYS_getrandom 278
+#endif
+
 #if !DETECT_OS_WINDOWS
 #if defined(HAVE_GETRANDOM)
 #include <sys/random.h>
@@ -68,8 +72,8 @@ s_rand_xorshift128plus(uint64_t seed[2], bool randomised_seed)
 #if !DETECT_OS_WINDOWS
    size_t seed_size = sizeof(uint64_t) * 2;
 
-#if defined(HAVE_GETRANDOM) && !defined __TERMUX__
-   ssize_t ret = getrandom(seed, seed_size, GRND_NONBLOCK);
+#if defined(HAVE_GETRANDOM)
+   ssize_t ret = syscall(SYS_getrandom, seed, seed_size, GRND_NONBLOCK);
    if (ret == seed_size)
       return;
 #endif

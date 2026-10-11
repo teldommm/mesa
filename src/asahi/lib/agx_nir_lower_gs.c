@@ -8,19 +8,25 @@
 #include "asahi/compiler/agx_compile.h"
 #include "compiler/nir/nir_builder.h"
 #include "gallium/include/pipe/p_defines.h"
-#include "libagx/geometry.h"
-#include "libagx/libagx.h"
+#include "shaders/geometry.h"
 #include "util/bitscan.h"
 #include "util/list.h"
 #include "util/macros.h"
 #include "util/ralloc.h"
 #include "util/u_math.h"
+#include "libagx_shaders.h"
 #include "nir.h"
 #include "nir_builder_opcodes.h"
 #include "nir_intrinsics.h"
 #include "nir_intrinsics_indices.h"
 #include "nir_xfb_info.h"
 #include "shader_enums.h"
+
+/* Marks a transform feedback store, which must not be stripped from the
+ * prepass since that's where the transform feedback happens. Chosen as a
+ * vendored flag not to alias other flags we'll see.
+ */
+#define ACCESS_XFB (ACCESS_IS_SWIZZLED_AMD)
 
 enum gs_counter {
    GS_COUNTER_VERTICES = 0,
@@ -203,21 +209,9 @@ agx_load_per_vertex_input(nir_builder *b, nir_intrinsic_instr *intr,
    assert(intr->intrinsic == nir_intrinsic_load_per_vertex_input);
    nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
 
-   nir_def *location = nir_iadd_imm(b, intr->src[1].ssa, sem.location);
-   nir_def *addr;
-
-   if (b->shader->info.stage == MESA_SHADER_GEOMETRY) {
-      /* GS may be preceded by VS or TES so specified as param */
-      addr = libagx_geometry_input_address(
-         b, nir_load_geometry_param_buffer_agx(b), vertex, location);
-   } else {
-      assert(b->shader->info.stage == MESA_SHADER_TESS_CTRL);
-
-      /* TCS always preceded by VS so we use the VS state directly */
-      addr = libagx_vertex_output_address(b, nir_load_vs_output_buffer_agx(b),
-                                          nir_load_vs_outputs_agx(b), vertex,
-                                          location);
-   }
+   nir_def *addr = libagx_vertex_output_address(
+      b, nir_load_vs_output_buffer_agx(b), nir_load_vs_outputs_agx(b), vertex,
+      nir_iadd_imm(b, intr->src[1].ssa, sem.location));
 
    addr = nir_iadd_imm(b, addr, 4 * nir_intrinsic_component(intr));
    return nir_load_global_constant(b, addr, 4, intr->def.num_components,
@@ -343,6 +337,31 @@ lower_gs_count_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    default:
       return false;
    }
+}
+
+static bool
+lower_prolog_id(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   b->cursor = nir_before_instr(&intr->instr);
+
+   nir_def *id;
+   if (intr->intrinsic == nir_intrinsic_load_primitive_id)
+      id = load_primitive_id(b);
+   else if (intr->intrinsic == nir_intrinsic_load_instance_id)
+      id = load_instance_id(b);
+   else
+      return false;
+
+   b->cursor = nir_instr_remove(&intr->instr);
+   nir_def_rewrite_uses(&intr->def, id);
+   return true;
+}
+
+bool
+agx_nir_lower_sw_vs_id(nir_shader *s)
+{
+   return nir_shader_intrinsics_pass(s, lower_prolog_id,
+                                     nir_metadata_control_flow, NULL);
 }
 
 static bool
@@ -854,9 +873,10 @@ write_xfb(nir_builder *b, struct lower_gs_state *state, unsigned stream,
             nir_imm_int(b, buffer), nir_imm_int(b, stride),
             nir_imm_int(b, output.offset));
 
-         nir_store_global(b, addr, 4,
-                          nir_channels(b, value, output.component_mask),
-                          nir_component_mask(count));
+         nir_build_store_global(
+            b, nir_channels(b, value, output.component_mask), addr,
+            .align_mul = 4, .write_mask = nir_component_mask(count),
+            .access = ACCESS_XFB);
       }
    }
 
@@ -1454,25 +1474,22 @@ lower_vs_before_gs(nir_builder *b, nir_intrinsic_instr *intr, void *data)
     */
    nir_def *mask = nir_imm_int64(b, b->shader->info.outputs_written);
 
-   nir_def *buffer;
    nir_def *nr_verts;
    if (b->shader->info.stage == MESA_SHADER_VERTEX) {
-      buffer = nir_load_vs_output_buffer_agx(b);
       nr_verts =
          libagx_input_vertices(b, nir_load_input_assembly_buffer_agx(b));
    } else {
-      assert(b->shader->info.stage == MESA_SHADER_TESS_EVAL);
-
-      /* Instancing is unrolled during tessellation so nr_verts is ignored. */
-      nr_verts = nir_imm_int(b, 0);
-      buffer = libagx_tes_buffer(b, nir_load_tess_param_buffer_agx(b));
+      /* TODO: Do something similar for tessellation, load_num_workgroups is
+       * annoying in a software graphics shader.
+       */
+      nr_verts = nir_channel(b, nir_load_num_workgroups(b), 0);
    }
 
    nir_def *linear_id = nir_iadd(b, nir_imul(b, load_instance_id(b), nr_verts),
                                  load_primitive_id(b));
 
-   nir_def *addr =
-      libagx_vertex_output_address(b, buffer, mask, linear_id, location);
+   nir_def *addr = libagx_vertex_output_address(
+      b, nir_load_vs_output_buffer_agx(b), mask, linear_id, location);
 
    assert(nir_src_bit_size(intr->src[0]) == 32);
    addr = nir_iadd_imm(b, addr, nir_intrinsic_component(intr) * 4);
@@ -1484,7 +1501,7 @@ lower_vs_before_gs(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
 bool
 agx_nir_lower_vs_before_gs(struct nir_shader *vs,
-                           const struct nir_shader *libagx)
+                           const struct nir_shader *libagx, uint64_t *outputs)
 {
    bool progress = false;
 
@@ -1496,5 +1513,114 @@ agx_nir_lower_vs_before_gs(struct nir_shader *vs,
    if (progress)
       link_libagx(vs, libagx);
 
-   return progress;
+   /* Turn into a compute shader now that we're free of vertexisms */
+   vs->info.stage = MESA_SHADER_COMPUTE;
+   memset(&vs->info.cs, 0, sizeof(vs->info.cs));
+   vs->xfb_info = NULL;
+   *outputs = vs->info.outputs_written;
+   return true;
+}
+
+void
+agx_nir_prefix_sum_gs(nir_builder *b, const void *data)
+{
+   const unsigned *words = data;
+
+   b->shader->info.workgroup_size[0] = 1024;
+
+   libagx_prefix_sum(b, load_geometry_param(b, count_buffer),
+                     load_geometry_param(b, input_primitives),
+                     nir_imm_int(b, *words),
+                     nir_channel(b, nir_load_workgroup_id(b), 0));
+}
+
+void
+agx_nir_prefix_sum_tess(nir_builder *b, const void *data)
+{
+   b->shader->info.workgroup_size[0] = 1024;
+   libagx_prefix_sum_tess(b, nir_load_preamble(b, 1, 64, .base = 0));
+}
+
+void
+agx_nir_gs_setup_indirect(nir_builder *b, const void *data)
+{
+   const struct agx_gs_setup_indirect_key *key = data;
+
+   libagx_gs_setup_indirect(b, nir_load_preamble(b, 1, 64, .base = 0),
+                            nir_imm_int(b, key->prim),
+                            nir_channel(b, nir_load_local_invocation_id(b), 0));
+}
+
+void
+agx_nir_unroll_restart(nir_builder *b, const void *data)
+{
+   const struct agx_unroll_restart_key *key = data;
+   b->shader->info.workgroup_size[0] = 1024;
+
+   nir_def *ia = nir_load_preamble(b, 1, 64, .base = 0);
+   nir_def *draw = nir_channel(b, nir_load_workgroup_id(b), 0);
+   nir_def *lane = nir_channel(b, nir_load_local_invocation_id(b), 0);
+   nir_def *mode = nir_imm_int(b, key->prim);
+
+   if (key->index_size_B == 1)
+      libagx_unroll_restart_u8(b, ia, mode, draw, lane);
+   else if (key->index_size_B == 2)
+      libagx_unroll_restart_u16(b, ia, mode, draw, lane);
+   else if (key->index_size_B == 4)
+      libagx_unroll_restart_u32(b, ia, mode, draw, lane);
+   else
+      unreachable("invalid index size");
+}
+
+void
+agx_nir_tessellate(nir_builder *b, const void *data)
+{
+   const struct agx_tessellator_key *key = data;
+   b->shader->info.workgroup_size[0] = 64;
+
+   nir_def *params = nir_load_preamble(b, 1, 64, .base = 0);
+   nir_def *patch = nir_channel(b, nir_load_global_invocation_id(b, 32), 0);
+   nir_def *mode = nir_imm_int(b, key->mode);
+   nir_def *partitioning = nir_imm_int(b, key->partitioning);
+   nir_def *output_prim = nir_imm_int(b, key->output_primitive);
+
+   if (key->prim == TESS_PRIMITIVE_ISOLINES)
+      libagx_tess_isoline(b, params, mode, partitioning, output_prim, patch);
+   else if (key->prim == TESS_PRIMITIVE_TRIANGLES)
+      libagx_tess_tri(b, params, mode, partitioning, output_prim, patch);
+   else if (key->prim == TESS_PRIMITIVE_QUADS)
+      libagx_tess_quad(b, params, mode, partitioning, output_prim, patch);
+   else
+      unreachable("invalid tess primitive");
+}
+
+void
+agx_nir_tess_setup_indirect(nir_builder *b, const void *data)
+{
+   const struct agx_tess_setup_indirect_key *key = data;
+
+   nir_def *params = nir_load_preamble(b, 1, 64, .base = 0);
+   nir_def *with_counts = nir_imm_bool(b, key->with_counts);
+   nir_def *point_mode = nir_imm_bool(b, key->point_mode);
+
+   libagx_tess_setup_indirect(b, params, with_counts, point_mode);
+}
+
+void
+agx_nir_increment_cs_invocations(nir_builder *b, const void *data)
+{
+   libagx_increment_cs_invocations(b, nir_load_preamble(b, 1, 64, .base = 0));
+}
+
+void
+agx_nir_increment_ia_counters(nir_builder *b, const void *data)
+{
+   const struct agx_increment_ia_counters_key *key = data;
+   b->shader->info.workgroup_size[0] = key->index_size_B ? 1024 : 1;
+
+   nir_def *params = nir_load_preamble(b, 1, 64, .base = 0);
+   nir_def *index_size_B = nir_imm_int(b, key->index_size_B);
+   nir_def *thread = nir_channel(b, nir_load_global_invocation_id(b, 32), 0);
+
+   libagx_increment_ia_counters(b, params, index_size_B, thread);
 }

@@ -102,16 +102,16 @@ vk_spec_info_to_nir_spirv(const VkSpecializationInfo *spec_info,
       spec_entries[i].id = spec_info->pMapEntries[i].constantID;
       switch (entry.size) {
       case 8:
-         memcpy(&spec_entries[i].value.u64, data, entry.size);
+         spec_entries[i].value.u64 = *(const uint64_t *)data;
          break;
       case 4:
-         memcpy(&spec_entries[i].value.u32, data, entry.size);
+         spec_entries[i].value.u32 = *(const uint32_t *)data;
          break;
       case 2:
-         memcpy(&spec_entries[i].value.u16, data, entry.size);
+         spec_entries[i].value.u16 = *(const uint16_t *)data;
          break;
       case 1:
-         memcpy(&spec_entries[i].value.u8, data, entry.size);
+         spec_entries[i].value.u8 = *(const uint8_t *)data;
          break;
       case 0:
       default:

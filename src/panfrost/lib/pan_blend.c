@@ -687,13 +687,6 @@ GENX(pan_blend_create_shader)(const struct pan_blend_state *state,
          .io_semantics.location = i ? VARYING_SLOT_VAR0 : VARYING_SLOT_COL0,
          .io_semantics.num_slots = 1, .base = i, .dest_type = src_type);
 
-      if (state->alpha_to_one && src_type == nir_type_float32) {
-         /* force alpha to 1 */
-         src = nir_vector_insert_imm(&b, src,
-                                     nir_imm_floatN_t(&b, 1.0, src->bit_size),
-                                     3);
-      }
-
       /* On Midgard, the blend shader is responsible for format conversion.
        * As the OpenGL spec requires integer conversions to saturate, we must
        * saturate ourselves here. On Bifrost and later, the conversion
@@ -713,7 +706,7 @@ GENX(pan_blend_create_shader)(const struct pan_blend_state *state,
 
    b.shader->info.io_lowered = true;
 
-   NIR_PASS(_, b.shader, nir_lower_blend, &options);
+   NIR_PASS_V(b.shader, nir_lower_blend, &options);
 
    return b.shader;
 }
@@ -815,10 +808,10 @@ GENX(pan_blend_get_shader_locked)(struct pan_blend_shader_cache *cache,
       .logicop_func = state->logicop_func,
       .nr_samples = state->rts[rt].nr_samples,
       .equation = state->rts[rt].equation,
-      .alpha_to_one = state->alpha_to_one,
    };
+
    /* Blend shaders should only be used for blending on Bifrost onwards */
-   assert(PAN_ARCH <= 5 || state->logicop_enable || state->alpha_to_one ||
+   assert(PAN_ARCH <= 5 || state->logicop_enable ||
           !pan_blend_is_opaque(state->rts[rt].equation));
    assert(state->rts[rt].equation.color_mask != 0);
 
@@ -884,11 +877,11 @@ GENX(pan_blend_get_shader_locked)(struct pan_blend_shader_cache *cache,
    pan_shader_preprocess(nir, inputs.gpu_id);
 
 #if PAN_ARCH >= 6
-   NIR_PASS(_, nir, GENX(pan_inline_rt_conversion), rt_formats);
+   NIR_PASS_V(nir, GENX(pan_inline_rt_conversion), rt_formats);
 #else
-   NIR_PASS(_, nir, pan_lower_framebuffer, rt_formats,
-            pan_raw_format_mask_midgard(rt_formats), MAX2(key.nr_samples, 1),
-            cache->gpu_id < 0x700);
+   NIR_PASS_V(nir, pan_lower_framebuffer, rt_formats,
+              pan_raw_format_mask_midgard(rt_formats), MAX2(key.nr_samples, 1),
+              cache->gpu_id < 0x700);
 #endif
 
    GENX(pan_shader_compile)(nir, &inputs, &variant->binary, &info);

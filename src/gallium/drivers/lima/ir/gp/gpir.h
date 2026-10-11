@@ -142,7 +142,7 @@ typedef struct {
 
    /* for node pred_list */
    struct list_head pred_link;
-   /* for node succ_list */
+   /* for ndoe succ_list */
    struct list_head succ_link;
 } gpir_dep;
 

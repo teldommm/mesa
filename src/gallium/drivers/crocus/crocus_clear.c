@@ -288,6 +288,11 @@ fast_clear_color(struct crocus_context *ice,
                                 "fast clear: pre-flush",
                                 PIPE_CONTROL_RENDER_TARGET_FLUSH);
 
+   /* If we reach this point, we need to fast clear to change the state to
+    * ISL_AUX_STATE_CLEAR, or to update the fast clear color (or both).
+    */
+   blorp_flags |= color_changed ? 0 : BLORP_BATCH_NO_UPDATE_CLEAR_COLOR;
+
    struct blorp_batch blorp_batch;
    blorp_batch_init(&ice->blorp, &blorp_batch, batch, blorp_flags);
 
@@ -451,6 +456,8 @@ fast_clear_depth(struct crocus_context *ice,
 {
    struct crocus_batch *batch = &ice->batches[CROCUS_BATCH_RENDER];
 
+   bool update_clear_depth = false;
+
    /* If we're clearing to a new clear value, then we need to resolve any clear
     * flags out of the HiZ buffer into the real depth buffer.
     */
@@ -485,13 +492,14 @@ fast_clear_depth(struct crocus_context *ice,
              * value so this shouldn't happen often.
              */
             crocus_hiz_exec(ice, batch, res, res_level, layer, 1,
-                            ISL_AUX_OP_FULL_RESOLVE);
+                            ISL_AUX_OP_FULL_RESOLVE, false);
             crocus_resource_set_aux_state(ice, res, res_level, layer, 1,
                                           ISL_AUX_STATE_RESOLVED);
          }
       }
       const union isl_color_value clear_value = { .f32 = {depth, } };
       crocus_resource_set_clear_color(ice, res, clear_value);
+      update_clear_depth = true;
    }
 
    for (unsigned l = 0; l < box->depth; l++) {
@@ -499,9 +507,14 @@ fast_clear_depth(struct crocus_context *ice,
          crocus_resource_level_has_hiz(res, level) ?
          crocus_resource_get_aux_state(res, level, box->z + l) :
          ISL_AUX_STATE_AUX_INVALID;
-      if (aux_state != ISL_AUX_STATE_CLEAR) {
+      if (update_clear_depth || aux_state != ISL_AUX_STATE_CLEAR) {
+         if (aux_state == ISL_AUX_STATE_CLEAR) {
+            perf_debug(&ice->dbg, "Performing HiZ clear just to update the "
+                       "depth clear value\n");
+         }
          crocus_hiz_exec(ice, batch, res, level,
-                         box->z + l, 1, ISL_AUX_OP_FAST_CLEAR);
+                         box->z + l, 1, ISL_AUX_OP_FAST_CLEAR,
+                         update_clear_depth);
       }
    }
 

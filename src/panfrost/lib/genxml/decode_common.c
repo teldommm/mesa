@@ -33,7 +33,6 @@
 #include "util/macros.h"
 #include "util/u_debug.h"
 #include "util/u_hexdump.h"
-#include "lib/pan_props.h"
 #include "decode.h"
 
 #include "compiler/bifrost/disassemble.h"
@@ -417,48 +416,14 @@ pandecode_jc(struct pandecode_context *ctx, mali_ptr jc_gpu_va, unsigned gpu_id)
 }
 
 void
-pandecode_interpret_cs(struct pandecode_context *ctx, mali_ptr queue_gpu_va,
-                       uint32_t size, unsigned gpu_id, uint32_t *regs)
+pandecode_cs(struct pandecode_context *ctx, mali_ptr queue_gpu_va,
+             uint32_t size, unsigned gpu_id, uint32_t *regs)
 {
    simple_mtx_lock(&ctx->lock);
 
    switch (pan_arch(gpu_id)) {
    case 10:
-      pandecode_interpret_cs_v10(ctx, queue_gpu_va, size, gpu_id, regs);
-      break;
-   default:
-      unreachable("Unsupported architecture");
-   }
-
-   simple_mtx_unlock(&ctx->lock);
-}
-
-void
-pandecode_cs_binary(struct pandecode_context *ctx, mali_ptr bin_gpu_va,
-                   uint32_t size, unsigned gpu_id)
-{
-   simple_mtx_lock(&ctx->lock);
-
-   switch (pan_arch(gpu_id)) {
-   case 10:
-      pandecode_cs_binary_v10(ctx, bin_gpu_va, size, gpu_id);
-      break;
-   default:
-      unreachable("Unsupported architecture");
-   }
-
-   simple_mtx_unlock(&ctx->lock);
-}
-
-void
-pandecode_cs_trace(struct pandecode_context *ctx, mali_ptr trace_gpu_va,
-                   uint32_t size, unsigned gpu_id)
-{
-   simple_mtx_lock(&ctx->lock);
-
-   switch (pan_arch(gpu_id)) {
-   case 10:
-      pandecode_cs_trace_v10(ctx, trace_gpu_va, size, gpu_id);
+      pandecode_cs_v10(ctx, queue_gpu_va, size, gpu_id, regs);
       break;
    default:
       unreachable("Unsupported architecture");

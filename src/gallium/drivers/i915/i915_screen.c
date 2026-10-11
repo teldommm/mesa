@@ -120,6 +120,7 @@ static const nir_shader_compiler_options i915_compiler_options = {
    .lower_sincos = true,
    .lower_uniforms_to_ubo = true,
    .lower_vector_cmp = true,
+   .use_interpolated_input_intrinsics = true,
    .force_indirect_unrolling = nir_var_all,
    .force_indirect_unrolling_sampler = true,
    .max_unroll_iterations = 32,
@@ -164,14 +165,12 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_mul_2x32_64 = true,
    .lower_ifind_msb = true,
    .max_unroll_iterations = 32,
+   .use_interpolated_input_intrinsics = true,
    .lower_cs_local_index_to_id = true,
    .lower_uniforms_to_ubo = true,
    .lower_vector_cmp = true,
    .lower_device_index_to_zero = true,
    /* .support_16bit_alu = true, */
-   .support_indirect_inputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES),
-   .support_indirect_outputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES),
-   .has_ddx_intrinsics = true,
    .no_integers = true,
 };
 
@@ -253,8 +252,10 @@ i915_check_control_flow(nir_shader *s)
 }
 
 static char *
-i915_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *s)
+i915_finalize_nir(struct pipe_screen *pscreen, void *nir)
 {
+   nir_shader *s = nir;
+
    if (s->info.stage == MESA_SHADER_FRAGMENT)
       i915_optimize_nir(s);
 
@@ -364,6 +365,8 @@ i915_get_shader_param(struct pipe_screen *screen, enum pipe_shader_type shader,
       case PIPE_SHADER_CAP_CONT_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
          return 0;
+      case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+      case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       case PIPE_SHADER_CAP_SUBROUTINES:
@@ -411,7 +414,6 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_USER_VERTEX_BUFFERS:
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
    case PIPE_CAP_TGSI_TEXCOORD:
-   case PIPE_CAP_CALL_FINALIZE_NIR_IN_LINKER:
       return 1;
 
    case PIPE_CAP_TEXTURE_TRANSFER_MODES:

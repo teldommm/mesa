@@ -13,6 +13,7 @@
  */
 
 #include "../svga_format.h"
+#include "svga_types.h"
 #include "svga_shader_dump.h"
 #include "svga3d_reg.h"
 

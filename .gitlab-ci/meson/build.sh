@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1003 # works for us now...
 # shellcheck disable=SC2086 # we want word splitting
-# shellcheck disable=SC1091 # paths only become valid at runtime
-
-. "${SCRIPTS_DIR}/setup-test-env.sh"
 
 section_switch meson-cross-file "meson: cross file generate"
 
@@ -101,32 +98,6 @@ case $CI_JOB_NAME in
         ;;
 esac
 
-# LTO handling
-case $CI_PIPELINE_SOURCE in
-    schedule)
-      # run builds with LTO only for nightly
-      if [ "$CI_JOB_NAME" == "debian-ppc64el" ]; then
-	      # /tmp/ccWlDCPV.s: Assembler messages:
-	      # /tmp/ccWlDCPV.s:15250880: Error: operand out of range (0xfffffffffdd4e688 is not between 0xfffffffffe000000 and 0x1fffffc)
-	      LTO=false
-      # enable one by one for now
-      elif [ "$CI_JOB_NAME" == "fedora-release" ] || [ "$CI_JOB_NAME" == "debian-build-testing" ]; then
-	      LTO=true
-      else
-	      LTO=false
-      fi
-      ;;
-    *)
-      LTO=false
-      ;;
-esac
-
-if [ "$LTO" == "true" ]; then
-    MAX_LD=2
-else
-    MAX_LD=${FDO_CI_CONCURRENT:-4}
-fi
-
 section_switch meson-configure "meson: configure"
 
 rm -rf _build
@@ -152,20 +123,26 @@ meson setup _build \
       -D vulkan-drivers=${VULKAN_DRIVERS:-[]} \
       -D video-codecs=all \
       -D werror=true \
-      -D b_lto=${LTO} \
-      -D backend_max_links=${MAX_LD} \
       ${EXTRA_OPTION}
 cd _build
 meson configure
 
 uncollapsed_section_switch meson-build "meson: build"
 
-ninja
+if command -V mold &> /dev/null ; then
+    mold --run ninja
+else
+    ninja
+fi
 
 
 uncollapsed_section_switch meson-test "meson: test"
 LC_ALL=C.UTF-8 meson test --num-processes "${FDO_CI_CONCURRENT:-4}" --print-errorlogs ${MESON_TEST_ARGS}
 section_switch meson-install "meson: install"
-ninja install
+if command -V mold &> /dev/null ; then
+    mold --run ninja install
+else
+    ninja install
+fi
 cd ..
 section_end meson-install

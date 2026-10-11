@@ -169,7 +169,7 @@ lower_rt_derefs(nir_shader *shader)
  */
 struct rt_variables {
    struct radv_device *device;
-   const VkPipelineCreateFlags2 flags;
+   const VkPipelineCreateFlags2KHR flags;
    bool monolithic;
 
    /* idx of the next shader to run in the next iteration of the main loop.
@@ -221,7 +221,8 @@ struct rt_variables {
 };
 
 static struct rt_variables
-create_rt_variables(nir_shader *shader, struct radv_device *device, const VkPipelineCreateFlags2 flags, bool monolithic)
+create_rt_variables(nir_shader *shader, struct radv_device *device, const VkPipelineCreateFlags2KHR flags,
+                    bool monolithic)
 {
    struct rt_variables vars = {
       .device = device,
@@ -791,8 +792,22 @@ inline_constants(nir_shader *dst, nir_shader *src)
    if (!src->constant_data_size)
       return;
 
+   uint32_t align_mul = 1;
+   if (dst->constant_data_size) {
+      nir_foreach_block (block, nir_shader_get_entrypoint(src)) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(instr);
+            if (intrinsic->intrinsic == nir_intrinsic_load_constant)
+               align_mul = MAX2(align_mul, nir_intrinsic_align_mul(intrinsic));
+         }
+      }
+   }
+
    uint32_t old_constant_data_size = dst->constant_data_size;
-   uint32_t base_offset = align(dst->constant_data_size, 64);
+   uint32_t base_offset = align(dst->constant_data_size, align_mul);
    dst->constant_data_size = base_offset + src->constant_data_size;
    dst->constant_data = rerzalloc_size(dst, dst->constant_data, old_constant_data_size, dst->constant_data_size);
    memcpy((char *)dst->constant_data + base_offset, src->constant_data, src->constant_data_size);
@@ -800,21 +815,14 @@ inline_constants(nir_shader *dst, nir_shader *src)
    if (!base_offset)
       return;
 
-   uint32_t base_align_mul = base_offset ? 1 << (ffs(base_offset) - 1) : NIR_ALIGN_MUL_MAX;
    nir_foreach_block (block, nir_shader_get_entrypoint(src)) {
       nir_foreach_instr (instr, block) {
          if (instr->type != nir_instr_type_intrinsic)
             continue;
 
          nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(instr);
-         if (intrinsic->intrinsic == nir_intrinsic_load_constant) {
+         if (intrinsic->intrinsic == nir_intrinsic_load_constant)
             nir_intrinsic_set_base(intrinsic, base_offset + nir_intrinsic_base(intrinsic));
-
-            uint32_t align_mul = nir_intrinsic_align_mul(intrinsic);
-            uint32_t align_offset = nir_intrinsic_align_offset(intrinsic);
-            align_mul = MIN2(align_mul, base_align_mul);
-            nir_intrinsic_set_align(intrinsic, align_mul, align_offset % align_mul);
-         }
       }
    }
 }
@@ -843,6 +851,23 @@ insert_rt_case(nir_builder *b, nir_shader *shader, struct rt_variables *vars, ni
    ralloc_free(var_remap);
 }
 
+static bool
+radv_lower_payload_arg_to_offset(nir_builder *b, nir_intrinsic_instr *instr, void *data)
+{
+   if (instr->intrinsic != nir_intrinsic_trace_ray)
+      return false;
+
+   nir_deref_instr *payload = nir_src_as_deref(instr->src[10]);
+   assert(payload->deref_type == nir_deref_type_var);
+
+   b->cursor = nir_before_instr(&instr->instr);
+   nir_def *offset = nir_imm_int(b, payload->var->data.driver_location);
+
+   nir_src_rewrite(&instr->src[10], offset);
+
+   return true;
+}
+
 void
 radv_nir_lower_rt_io(nir_shader *nir, bool monolithic, uint32_t payload_offset)
 {
@@ -854,6 +879,17 @@ radv_nir_lower_rt_io(nir_shader *nir, bool monolithic, uint32_t payload_offset)
 
       NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_function_temp, nir_address_format_32bit_offset);
    } else {
+      if (nir->info.stage == MESA_SHADER_RAYGEN) {
+         /* Use nir_lower_vars_to_explicit_types to assign the payload locations. We call
+          * nir_lower_vars_to_explicit_types later after splitting the payloads.
+          */
+         uint32_t scratch_size = nir->scratch_size;
+         nir_lower_vars_to_explicit_types(nir, nir_var_function_temp, glsl_get_natural_size_align_bytes);
+         nir->scratch_size = scratch_size;
+
+         nir_shader_intrinsics_pass(nir, radv_lower_payload_arg_to_offset, nir_metadata_control_flow, NULL);
+      }
+
       NIR_PASS(_, nir, radv_nir_lower_ray_payload_derefs, payload_offset);
    }
 }
@@ -1695,7 +1731,7 @@ radv_build_traversal_shader(struct radv_device *device, struct radv_ray_tracing_
                             struct radv_ray_tracing_stage_info *info)
 {
    const struct radv_physical_device *pdev = radv_device_physical(device);
-   const VkPipelineCreateFlagBits2 create_flags = vk_rt_pipeline_create_flags(pCreateInfo);
+   const VkPipelineCreateFlagBits2KHR create_flags = vk_rt_pipeline_create_flags(pCreateInfo);
 
    /* Create the traversal shader as an intersection shader to prevent validation failures due to
     * invalid variable modes.*/
@@ -1771,12 +1807,7 @@ lower_rt_instruction_monolithic(nir_builder *b, nir_instr *instr, void *data)
 
    switch (intr->intrinsic) {
    case nir_intrinsic_execute_callable:
-      /* It's allowed to place OpExecuteCallableKHR in a SPIR-V, even if the RT pipeline doesn't contain
-       * any callable shaders. However, it's impossible to execute the instruction in a valid way, so just remove any
-       * nir_intrinsic_execute_callable we encounter.
-       */
-      nir_instr_remove(instr);
-      return true;
+      unreachable("nir_intrinsic_execute_callable");
    case nir_intrinsic_trace_ray: {
       vars->payload_offset = nir_src_as_uint(intr->src[10]);
 
@@ -1912,7 +1943,7 @@ radv_nir_lower_rt_abi(nir_shader *shader, const VkRayTracingPipelineCreateInfoKH
 {
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
 
-   const VkPipelineCreateFlagBits2 create_flags = vk_rt_pipeline_create_flags(pCreateInfo);
+   const VkPipelineCreateFlagBits2KHR create_flags = vk_rt_pipeline_create_flags(pCreateInfo);
 
    struct rt_variables vars = create_rt_variables(shader, device, create_flags, monolithic);
 

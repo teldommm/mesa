@@ -38,7 +38,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_buffer, vk.base, VkBuffer,
 static inline uint64_t
 panvk_buffer_gpu_ptr(const struct panvk_buffer *buffer, uint64_t offset)
 {
-   if (!buffer->dev_addr)
+   if (buffer->bo == NULL)
       return 0;
 
    return buffer->dev_addr + offset;
@@ -48,7 +48,7 @@ static inline uint64_t
 panvk_buffer_range(const struct panvk_buffer *buffer, uint64_t offset,
                    uint64_t range)
 {
-   if (!buffer->dev_addr)
+   if (buffer->bo == NULL)
       return 0;
 
    return vk_buffer_range(&buffer->vk, offset, range);

@@ -42,9 +42,6 @@ static const struct debug_control tu_debug_options[] = {
    { "fdm", TU_DEBUG_FDM },
    { "noconform", TU_DEBUG_NOCONFORM },
    { "rd", TU_DEBUG_RD },
-   { "hiprio", TU_DEBUG_HIPRIO },
-   { "noconcurrentresolves", TU_DEBUG_NO_CONCURRENT_RESOLVES },
-   { "noconcurrentunresolves", TU_DEBUG_NO_CONCURRENT_UNRESOLVES },
    { NULL, 0 }
 };
 

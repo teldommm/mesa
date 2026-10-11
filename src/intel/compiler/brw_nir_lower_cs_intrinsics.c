@@ -27,6 +27,7 @@
 struct lower_intrinsics_state {
    nir_shader *nir;
    nir_function_impl *impl;
+   enum gl_derivative_group derivative_group;
    bool progress;
    bool hw_generated_local_id;
    nir_builder builder;
@@ -61,7 +62,7 @@ compute_local_index_id(struct lower_intrinsics_state *state, nir_intrinsic_instr
       }
 
       if (state->hw_generated_local_id) {
-         assert(nir->info.derivative_group != DERIVATIVE_GROUP_QUADS);
+         assert(state->derivative_group != DERIVATIVE_GROUP_QUADS);
 
          nir_def *local_id_vec = nir_load_local_invocation_id(b);
          nir_def *local_id[3] = { nir_channel(b, local_id_vec, 0),
@@ -131,7 +132,7 @@ compute_local_index_id(struct lower_intrinsics_state *state, nir_intrinsic_instr
     */
 
    nir_def *id_x, *id_y, *id_z;
-   switch (nir->info.derivative_group) {
+   switch (state->derivative_group) {
    case DERIVATIVE_GROUP_NONE:
       if (nir->info.num_images == 0 &&
           nir->info.num_textures == 0) {
@@ -332,14 +333,16 @@ brw_nir_lower_cs_intrinsics(nir_shader *nir,
    struct lower_intrinsics_state state = {
       .nir = nir,
       .hw_generated_local_id = false,
+      .derivative_group = gl_shader_stage_is_compute(nir->info.stage) ?
+                          nir->info.cs.derivative_group : DERIVATIVE_GROUP_NONE,
    };
 
    /* Constraints from NV_compute_shader_derivatives. */
    if (!nir->info.workgroup_size_variable) {
-      if (nir->info.derivative_group == DERIVATIVE_GROUP_QUADS) {
+      if (state.derivative_group == DERIVATIVE_GROUP_QUADS) {
          assert(nir->info.workgroup_size[0] % 2 == 0);
          assert(nir->info.workgroup_size[1] % 2 == 0);
-      } else if (nir->info.derivative_group == DERIVATIVE_GROUP_LINEAR) {
+      } else if (state.derivative_group == DERIVATIVE_GROUP_LINEAR) {
          ASSERTED unsigned workgroup_size =
             nir->info.workgroup_size[0] *
             nir->info.workgroup_size[1] *
@@ -350,7 +353,7 @@ brw_nir_lower_cs_intrinsics(nir_shader *nir,
 
    if (devinfo->verx10 >= 125 && prog_data &&
        nir->info.stage == MESA_SHADER_COMPUTE &&
-       nir->info.derivative_group != DERIVATIVE_GROUP_QUADS &&
+       state.derivative_group != DERIVATIVE_GROUP_QUADS &&
        !nir->info.workgroup_size_variable &&
        util_is_power_of_two_nonzero(nir->info.workgroup_size[0]) &&
        util_is_power_of_two_nonzero(nir->info.workgroup_size[1])) {
@@ -359,7 +362,6 @@ brw_nir_lower_cs_intrinsics(nir_shader *nir,
 
       /* TODO: more heuristics about 1D/SLM access vs. 2D access */
       bool linear =
-         nir->info.derivative_group == DERIVATIVE_GROUP_LINEAR ||
          BITSET_TEST(nir->info.system_values_read,
                      SYSTEM_VALUE_LOCAL_INVOCATION_INDEX) ||
          (nir->info.workgroup_size[1] == 1 &&

@@ -11,7 +11,6 @@ use rusticl_opencl_gen::*;
 
 use std::cmp;
 use std::mem;
-use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -24,19 +23,19 @@ use std::thread::JoinHandle;
 ///
 /// Used for tracking bound GPU state to lower CPU overhead and centralize state tracking
 pub struct QueueContext {
-    // need to use ManuallyDrop so we can recycle the context without cloning
-    ctx: ManuallyDrop<PipeContext>,
-    dev: &'static Device,
+    ctx: PipeContext,
     use_stream: bool,
 }
 
 impl QueueContext {
-    fn new_for(device: &'static Device) -> CLResult<Self> {
-        let ctx = device.create_context().ok_or(CL_OUT_OF_HOST_MEMORY)?;
+    fn new_for(device: &Device) -> CLResult<Self> {
+        let ctx = device
+            .screen()
+            .create_context()
+            .ok_or(CL_OUT_OF_HOST_MEMORY)?;
 
         Ok(Self {
-            ctx: ManuallyDrop::new(ctx),
-            dev: device,
+            ctx: ctx,
             use_stream: device.prefers_real_buffer_in_cb0(),
         })
     }
@@ -67,9 +66,7 @@ impl Deref for QueueContext {
 
 impl Drop for QueueContext {
     fn drop(&mut self) {
-        let ctx = unsafe { ManuallyDrop::take(&mut self.ctx) };
-        ctx.set_constant_buffer(0, &[]);
-        self.dev.recycle_context(ctx);
+        self.ctx.set_constant_buffer(0, &[])
     }
 }
 
@@ -86,7 +83,7 @@ pub struct Queue {
     pub context: Arc<Context>,
     pub device: &'static Device,
     pub props: cl_command_queue_properties,
-    pub props_v2: Properties<cl_queue_properties>,
+    pub props_v2: Option<Properties<cl_queue_properties>>,
     state: Mutex<QueueState>,
     _thrd: JoinHandle<()>,
 }
@@ -105,7 +102,7 @@ impl Queue {
         context: Arc<Context>,
         device: &'static Device,
         props: cl_command_queue_properties,
-        props_v2: Properties<cl_queue_properties>,
+        props_v2: Option<Properties<cl_queue_properties>>,
     ) -> CLResult<Arc<Queue>> {
         // we assume that memory allocation is the only possible failure. Any other failure reason
         // should be detected earlier (e.g.: checking for CAPs).

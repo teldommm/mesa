@@ -16,6 +16,7 @@
 #define __SVGA3D_H__
 
 
+#include "svga_types.h"
 #include "svga_winsys.h"
 #include "svga_reg.h"
 #include "svga3d_reg.h"
@@ -240,44 +241,6 @@ SVGA3D_SetGBShader(struct svga_winsys_context *swc,
                    struct svga_winsys_gb_shader *gbshader);
 
 enum pipe_error
-SVGA3D_DefineGBSurface_v2(struct svga_winsys_context *swc,
-                          uint32 sid,
-                          SVGA3dSurface1Flags surfaceFlags,
-                          SVGA3dSurfaceFormat format,
-                          uint32 numMipLevels,
-                          uint32 multisampleCount,
-                          SVGA3dTextureFilter autogenFilter,
-                          SVGA3dSize size,
-                          uint32 arraySize);
-
-enum pipe_error
-SVGA3D_DefineGBSurface_v3(struct svga_winsys_context *swc,
-                          uint32 sid,
-                          SVGA3dSurfaceAllFlags surfaceFlags,
-                          SVGA3dSurfaceFormat format,
-                          uint32 numMipLevels,
-                          uint32 multisampleCount,
-                          SVGA3dMSPattern multisamplePattern,
-                          SVGA3dMSQualityLevel qualityLevel,
-                          SVGA3dTextureFilter autogenFilter,
-                          SVGA3dSize size,
-                          uint32 arraySize);
-
-enum pipe_error
-SVGA3D_DefineGBSurface_v4(struct svga_winsys_context *swc,
-                          uint32 sid,
-                          SVGA3dSurfaceAllFlags surfaceFlags,
-                          SVGA3dSurfaceFormat format,
-                          uint32 numMipLevels,
-                          uint32 multisampleCount,
-                          SVGA3dMSPattern multisamplePattern,
-                          SVGA3dMSQualityLevel qualityLevel,
-                          SVGA3dTextureFilter autogenFilter,
-                          SVGA3dSize size,
-                          uint32 arraySize,
-                          uint32 bufferByteStride);
-
-enum pipe_error
 SVGA3D_BindGBSurface(struct svga_winsys_context *swc,
                      struct svga_winsys_surface *surface);
 
@@ -330,10 +293,6 @@ SVGA3D_SetGBShaderConstsInline(struct svga_winsys_context *swc,
                                SVGA3dShaderType shaderType,
                                SVGA3dShaderConstType constType,
                                const void *values);
-
-enum pipe_error
-SVGA3D_DestroyGBSurface(struct svga_winsys_context *swc,
-                        uint32 sid);
 
 /*
  * Queries

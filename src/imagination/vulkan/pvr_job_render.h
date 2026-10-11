@@ -83,7 +83,6 @@ struct pvr_render_job {
       bool has_depth_attachment : 1;
       bool has_stencil_attachment : 1;
       bool requires_spm_scratch_buffer : 1;
-      bool disable_pixel_merging : 1;
    };
 
    uint32_t pds_pixel_event_data_offset;
@@ -110,7 +109,7 @@ struct pvr_render_job {
       uint32_t height;
       VkExtent2D physical_extent;
       uint32_t layer_size;
-      enum ROGUE_CR_ZLS_FORMAT_TYPE zls_format;
+      enum PVRX(CR_ZLS_FORMAT_TYPE) zls_format;
       /* FIXME: This should be of type 'enum pvr_memlayout', but this is defined
        * in pvr_private.h, which causes a circular include dependency. For now,
        * treat it as a uint32_t. A couple of ways to possibly fix this:

@@ -28,49 +28,24 @@
 #include "nir.h"
 #include "nir_builder.h"
 
-static bool
-phi_srcs_equal(nir_def *a, nir_def *b)
+static nir_alu_instr *
+get_parent_mov(nir_def *ssa)
 {
-   if (a == b)
-      return true;
+   if (ssa->parent_instr->type != nir_instr_type_alu)
+      return NULL;
 
-   if (a->parent_instr->type != b->parent_instr->type)
-      return false;
-
-   if (a->parent_instr->type != nir_instr_type_alu &&
-       a->parent_instr->type != nir_instr_type_load_const)
-      return false;
-
-   if (!nir_instrs_equal(a->parent_instr, b->parent_instr))
-      return false;
-
-   /* nir_instrs_equal ignores exact/fast_math */
-   if (a->parent_instr->type == nir_instr_type_alu) {
-      nir_alu_instr *a_alu = nir_instr_as_alu(a->parent_instr);
-      nir_alu_instr *b_alu = nir_instr_as_alu(b->parent_instr);
-      if (a_alu->exact != b_alu->exact || a_alu->fp_fast_math != b_alu->fp_fast_math)
-         return false;
-   }
-
-   return true;
+   nir_alu_instr *alu = nir_instr_as_alu(ssa->parent_instr);
+   return (alu->op == nir_op_mov) ? alu : NULL;
 }
 
 static bool
-src_dominates_block(nir_src *src, void *state)
+matching_mov(nir_alu_instr *mov1, nir_def *ssa)
 {
-   nir_block *block = state;
-   return nir_block_dominates(src->ssa->parent_instr->block, block);
-}
+   if (!mov1)
+      return false;
 
-static bool
-can_rematerialize_phi_src(nir_block *imm_dom, nir_def *def)
-{
-   if (def->parent_instr->type == nir_instr_type_alu) {
-      return nir_foreach_src(def->parent_instr, src_dominates_block, imm_dom);
-   } else if (def->parent_instr->type == nir_instr_type_load_const) {
-      return true;
-   }
-   return false;
+   nir_alu_instr *mov2 = get_parent_mov(ssa);
+   return mov2 && nir_alu_srcs_equal(mov1, mov2, 0, 0);
 }
 
 /*
@@ -95,8 +70,8 @@ remove_phis_block(nir_block *block, nir_builder *b)
 
    nir_foreach_phi_safe(phi, block) {
       nir_def *def = NULL;
+      nir_alu_instr *mov = NULL;
       bool srcs_same = true;
-      bool needs_remat = false;
 
       nir_foreach_phi_src(src, phi) {
          /* For phi nodes at the beginning of loops, we may encounter some
@@ -113,22 +88,17 @@ remove_phis_block(nir_block *block, nir_builder *b)
          if (src->src.ssa == &phi->def)
             continue;
 
-         /* Ignore undef sources. */
-         if (nir_src_is_undef(src->src))
-            continue;
-
          if (def == NULL) {
             def = src->src.ssa;
-            if (!nir_block_dominates(def->parent_instr->block, block->imm_dom)) {
-               if (!can_rematerialize_phi_src(block->imm_dom, def)) {
-                  srcs_same = false;
-                  break;
-               }
-               needs_remat = true;
+            mov = get_parent_mov(def);
+         } else if (nir_src_is_undef(src->src) &&
+                    nir_block_dominates(def->parent_instr->block, src->pred)) {
+            /* Ignore this undef source. */
+         } else {
+            if (src->src.ssa != def && !matching_mov(mov, src->src.ssa)) {
+               srcs_same = false;
+               break;
             }
-         } else if (!phi_srcs_equal(src->src.ssa, def)) {
-            srcs_same = false;
-            break;
          }
       }
 
@@ -136,14 +106,22 @@ remove_phis_block(nir_block *block, nir_builder *b)
          continue;
 
       if (!def) {
-         /* In this case, the phi had no non undef sources. So turn it into an undef. */
+         /* In this case, the phi had no sources. So turn it into an undef. */
+
          b->cursor = nir_after_phis(block);
-         def = nir_undef(b, phi->def.num_components, phi->def.bit_size);
-      } else if (needs_remat) {
-         b->cursor = nir_after_block_before_jump(block->imm_dom);
-         nir_instr *remat = nir_instr_clone(b->shader, def->parent_instr);
-         nir_builder_instr_insert(b, remat);
-         def = nir_instr_def(remat);
+         def = nir_undef(b, phi->def.num_components,
+                         phi->def.bit_size);
+      } else if (mov) {
+         /* If the sources were all movs from the same source with the same
+          * swizzle, then we can't just pick a random move because it may not
+          * dominate the phi node. Instead, we need to emit our own move after
+          * the phi which uses the shared source, and rewrite uses of the phi
+          * to use the move instead. This is ok, because while the movs may
+          * not all dominate the phi node, their shared source does.
+          */
+
+         b->cursor = nir_after_phis(block);
+         def = nir_mov_alu(b, mov->src[0], def->num_components);
       }
 
       nir_def_replace(&phi->def, def);
@@ -155,27 +133,10 @@ remove_phis_block(nir_block *block, nir_builder *b)
 }
 
 bool
-nir_remove_single_src_phis_block(nir_block *block)
+nir_opt_remove_phis_block(nir_block *block)
 {
-   assert(block->predecessors->entries <= 1);
-   bool progress = false;
-   nir_foreach_phi_safe(phi, block) {
-      nir_def *def = NULL;
-      nir_foreach_phi_src(src, phi) {
-         def = src->src.ssa;
-         break;
-      }
-
-      if (!def) {
-         nir_builder b = nir_builder_create(nir_cf_node_get_function(&block->cf_node));
-         b.cursor = nir_after_phis(block);
-         def = nir_undef(&b, phi->def.num_components, phi->def.bit_size);
-      }
-
-      nir_def_replace(&phi->def, def);
-      progress = true;
-   }
-   return progress;
+   nir_builder b = nir_builder_create(nir_cf_node_get_function(&block->cf_node));
+   return remove_phis_block(block, &b);
 }
 
 static bool

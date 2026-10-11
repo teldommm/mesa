@@ -29,6 +29,7 @@
 #include "main/shaderapi.h"
 #include "main/shaderobj.h"
 #include "main/context.h"
+#include "compiler/glsl/ir_uniform.h"
 #include "api_exec_decl.h"
 
 static bool

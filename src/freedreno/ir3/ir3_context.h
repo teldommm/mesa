@@ -1,6 +1,24 @@
 /*
- * Copyright © 2015-2018 Rob Clark <robclark@freedesktop.org>
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2015-2018 Rob Clark <robclark@freedesktop.org>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -48,7 +66,6 @@ struct ir3_context {
    struct ir3_instruction **outputs;
 
    struct ir3_block *block;    /* the current block */
-   struct ir3_builder build;
    struct ir3_block *in_block; /* block created for shader inputs */
 
    nir_function_impl *impl;
@@ -84,8 +101,6 @@ struct ir3_context {
 
    /* Compute shader inputs: */
    struct ir3_instruction *local_invocation_id, *work_group_id;
-
-   struct ir3_instruction *frag_shading_rate;
 
    /* mapping from nir_register to defining instruction: */
    struct hash_table *def_ht;
@@ -182,13 +197,6 @@ struct ir3_context *ir3_context_init(struct ir3_compiler *compiler,
                                      struct ir3_shader_variant *so);
 void ir3_context_free(struct ir3_context *ctx);
 
-static inline void
-ir3_context_set_block(struct ir3_context *ctx, struct ir3_block *block)
-{
-   ctx->block = block;
-   ctx->build = ir3_builder_at(ir3_before_terminator(block));
-}
-
 struct ir3_instruction **ir3_get_dst_ssa(struct ir3_context *ctx,
                                          nir_def *dst, unsigned n);
 struct ir3_instruction **ir3_get_def(struct ir3_context *ctx, nir_def *def,
@@ -205,10 +213,10 @@ ir3_get_src(struct ir3_context *ctx, nir_src *src)
 }
 
 void ir3_put_def(struct ir3_context *ctx, nir_def *def);
-struct ir3_instruction *ir3_create_collect(struct ir3_builder *build,
+struct ir3_instruction *ir3_create_collect(struct ir3_block *block,
                                            struct ir3_instruction *const *arr,
                                            unsigned arrsz);
-void ir3_split_dest(struct ir3_builder *build, struct ir3_instruction **dst,
+void ir3_split_dest(struct ir3_block *block, struct ir3_instruction **dst,
                     struct ir3_instruction *src, unsigned base, unsigned n);
 void ir3_handle_bindless_cat6(struct ir3_instruction *instr, nir_src rsrc);
 void ir3_handle_nonuniform(struct ir3_instruction *instr,
@@ -217,10 +225,10 @@ void emit_intrinsic_image_size_tex(struct ir3_context *ctx,
                                    nir_intrinsic_instr *intr,
                                    struct ir3_instruction **dst);
 
-#define ir3_collect(build, ...)                                                \
+#define ir3_collect(block, ...)                                                \
    ({                                                                          \
       struct ir3_instruction *__arr[] = {__VA_ARGS__};                         \
-      ir3_create_collect(build, __arr, ARRAY_SIZE(__arr));                     \
+      ir3_create_collect(block, __arr, ARRAY_SIZE(__arr));                     \
    })
 
 NORETURN void ir3_context_error(struct ir3_context *ctx, const char *format,

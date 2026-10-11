@@ -28,7 +28,7 @@
 #include "brw_fs_builder.h"
 #include "brw_cfg.h"
 
-/** @file
+/** @file brw_fs_cse.cpp
  *
  * Support for SSA-based global Common Subexpression Elimination (CSE).
  */
@@ -119,7 +119,6 @@ is_expression(const fs_visitor *v, const fs_inst *const inst)
    case SHADER_OPCODE_INT_REMAINDER:
    case SHADER_OPCODE_SIN:
    case SHADER_OPCODE_COS:
-   case SHADER_OPCODE_LOAD_SUBGROUP_INVOCATION:
       return true;
    case SHADER_OPCODE_LOAD_PAYLOAD:
       return !is_coalescing_payload(v->alloc, inst);
@@ -473,19 +472,6 @@ brw_fs_opt_cse_defs(fs_visitor &s)
                /* Determine whether inst is actually negate(match) */
                bool ops_must_match = operands_match(inst, match, &negate);
                assert(ops_must_match);
-            }
-
-            /* Some later instruction could depend on the flags written by
-             * this instruction. It can only be removed if the previous
-             * instruction that write the flags is identical.
-             */
-            if (inst->flags_written(devinfo)) {
-               bool ignored;
-
-               if (last_flag_write == NULL ||
-                   !instructions_match(last_flag_write, inst, &ignored)) {
-                  continue;
-               }
             }
 
             progress = true;

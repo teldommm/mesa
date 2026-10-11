@@ -8,6 +8,8 @@
 #ifndef SVGA_SCREEN_CACHE_H_
 #define SVGA_SCREEN_CACHE_H_
 
+
+#include "svga_types.h"
 #include "svga_reg.h"
 #include "svga3d_reg.h"
 

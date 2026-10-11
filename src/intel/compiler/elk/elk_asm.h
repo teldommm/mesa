@@ -22,7 +22,8 @@
  *
  */
 
-#pragma once
+#ifndef ELK_ASM_H
+#define ELK_ASM_H
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -71,7 +72,6 @@ struct options {
    unsigned access_mode:1;
    unsigned compression_control:2;
    unsigned thread_control:2;
-   unsigned branch_control:1;
    unsigned no_dd_check:1; // Dependency control
    unsigned no_dd_clear:1; // Dependency control
    unsigned mask_control:1;
@@ -108,3 +108,5 @@ struct target_label {
    char *name;
    int offset;
 };
+
+#endif /* ELK_ASM_H */

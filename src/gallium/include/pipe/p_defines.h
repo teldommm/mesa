@@ -414,15 +414,6 @@ enum pipe_flush_flags
 #define PIPE_CONTEXT_MEDIA_ONLY      (1 << 9)
 
 /**
- * Create a realtime priority context.
- *
- * The context must run at the highest possible priority and be capable of
- * preempting the current executing context when commands are flushed
- * by such a realtime context.
- */
-#define PIPE_CONTEXT_REALTIME_PRIORITY (1 << 10)
-
-/**
  * Flags for pipe_context::memory_barrier.
  */
 #define PIPE_BARRIER_MAPPED_BUFFER     (1 << 0)
@@ -501,8 +492,6 @@ enum pipe_flush_flags
 #define PIPE_BIND_PRIME_BLIT_DST (1 << 24)
 #define PIPE_BIND_USE_FRONT_RENDERING (1 << 25) /* Resource may be used for frontbuffer rendering */
 #define PIPE_BIND_CONST_BW    (1 << 26) /* Avoid using a data dependent layout (AFBC, UBWC, etc) */
-#define PIPE_BIND_VIDEO_DECODE_DPB     (1 << 27) /* video engine DPB decode reconstructed picture */
-#define PIPE_BIND_VIDEO_ENCODE_DPB     (1 << 28) /* video engine DPB encode reconstructed picture */
 
 /**
  * Flags for the driver about resource behaviour:
@@ -631,12 +620,6 @@ enum pipe_reset_status
    PIPE_UNKNOWN_CONTEXT_RESET,
 };
 
-enum pipe_vertex_input_alignment {
-   PIPE_VERTEX_INPUT_ALIGNMENT_NONE,
-   PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE,
-   PIPE_VERTEX_INPUT_ALIGNMENT_ELEMENT,
-};
-
 
 /**
  * Conservative rasterization modes.
@@ -680,19 +663,6 @@ enum pipe_conservative_raster_mode
 #define PIPE_IMAGE_ACCESS_VOLATILE           (1 << 3)
 #define PIPE_IMAGE_ACCESS_TEX2D_FROM_BUFFER  (1 << 4)
 #define PIPE_IMAGE_ACCESS_DRIVER_INTERNAL    (1 << 5)
-
-/**
- * Shader subgroup feature flags aligned with GL_KHR_shader_subgroup.
- */
-#define PIPE_SHADER_SUBGROUP_FEATURE_BASIC            (1 << 0)
-#define PIPE_SHADER_SUBGROUP_FEATURE_VOTE             (1 << 1)
-#define PIPE_SHADER_SUBGROUP_FEATURE_ARITHMETIC       (1 << 2)
-#define PIPE_SHADER_SUBGROUP_FEATURE_BALLOT           (1 << 3)
-#define PIPE_SHADER_SUBGROUP_FEATURE_SHUFFLE          (1 << 4)
-#define PIPE_SHADER_SUBGROUP_FEATURE_SHUFFLE_RELATIVE (1 << 5)
-#define PIPE_SHADER_SUBGROUP_FEATURE_CLUSTERED        (1 << 6)
-#define PIPE_SHADER_SUBGROUP_FEATURE_QUAD             (1 << 7)
-#define PIPE_SHADER_SUBGROUP_NUM_FEATURES             8
 
 /**
  * Implementation capabilities/limits which are queried through
@@ -754,7 +724,10 @@ enum pipe_cap
    PIPE_CAP_ESSL_FEATURE_LEVEL,
    PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION,
    PIPE_CAP_USER_VERTEX_BUFFERS,
-   PIPE_CAP_VERTEX_INPUT_ALIGNMENT,
+   PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY,
+   PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY,
+   PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY,
+   PIPE_CAP_VERTEX_ATTRIB_ELEMENT_ALIGNED_ONLY,
    PIPE_CAP_COMPUTE,
    PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT,
    PIPE_CAP_START_INSTANCE,
@@ -837,6 +810,7 @@ enum pipe_cap
    PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT,
    PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR,
    PIPE_CAP_CULL_DISTANCE,
+   PIPE_CAP_CULL_DISTANCE_NOCOMBINE,
    PIPE_CAP_SHADER_GROUP_VOTE,
    PIPE_CAP_MAX_WINDOW_RECTANGLES,
    PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED,
@@ -979,14 +953,6 @@ enum pipe_cap
    PIPE_CAP_HAS_CONST_BW,
    PIPE_CAP_PERFORMANCE_MONITOR,
    PIPE_CAP_TEXTURE_SAMPLER_INDEPENDENT,
-   PIPE_CAP_ASTC_DECODE_MODE,
-   /** For GL_KHR_shader_subgroup */
-   PIPE_CAP_SHADER_SUBGROUP_SIZE,
-   PIPE_CAP_SHADER_SUBGROUP_SUPPORTED_STAGES,
-   PIPE_CAP_SHADER_SUBGROUP_SUPPORTED_FEATURES,
-   PIPE_CAP_SHADER_SUBGROUP_QUAD_ALL_STAGES,
-   PIPE_CAP_MULTIVIEW,
-   PIPE_CAP_CALL_FINALIZE_NIR_IN_LINKER,
    PIPE_CAP_LAST,
    /* XXX do not add caps after PIPE_CAP_LAST! */
 };
@@ -1010,10 +976,9 @@ enum pipe_texture_transfer_mode {
  *
  * Note that these match __EGL_CONTEXT_PRIORITY_*_BIT.
  */
-#define PIPE_CONTEXT_PRIORITY_LOW      (1 << 0)
-#define PIPE_CONTEXT_PRIORITY_MEDIUM   (1 << 1)
-#define PIPE_CONTEXT_PRIORITY_HIGH     (1 << 2)
-#define PIPE_CONTEXT_PRIORITY_REALTIME (1 << 3)
+#define PIPE_CONTEXT_PRIORITY_LOW     (1 << 0)
+#define PIPE_CONTEXT_PRIORITY_MEDIUM  (1 << 1)
+#define PIPE_CONTEXT_PRIORITY_HIGH    (1 << 2)
 
 enum pipe_quirk_texture_border_color_swizzle {
    PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50 = (1 << 0),
@@ -1071,6 +1036,8 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_MAX_TEMPS,
    /* boolean caps */
    PIPE_SHADER_CAP_CONT_SUPPORTED,
+   PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR,
+   PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR,
    PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR,
    PIPE_SHADER_CAP_INDIRECT_CONST_ADDR,
    PIPE_SHADER_CAP_SUBROUTINES, /* BGNSUB, ENDSUB, CAL, RET */
@@ -1108,6 +1075,7 @@ enum pipe_shader_ir
    PIPE_SHADER_IR_TGSI = 0,
    PIPE_SHADER_IR_NATIVE,
    PIPE_SHADER_IR_NIR,
+   PIPE_SHADER_IR_NIR_SERIALIZED,
 };
 
 /**
@@ -1359,10 +1327,6 @@ enum pipe_perf_counter_data_type
    PIPE_PERF_COUNTER_DATA_TYPE_FLOAT,
    PIPE_PERF_COUNTER_DATA_TYPE_DOUBLE,
 };
-
-#define PIPE_ASTC_DECODE_FORMAT_FLOAT16 0
-#define PIPE_ASTC_DECODE_FORMAT_UNORM8  1
-#define PIPE_ASTC_DECODE_FORMAT_RGB9E5  2
 
 #define PIPE_UUID_SIZE 16
 #define PIPE_LUID_SIZE 8

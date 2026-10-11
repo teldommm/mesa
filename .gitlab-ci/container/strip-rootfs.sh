@@ -5,8 +5,6 @@
 # KERNEL_ROOTFS_TAG
 set -ex
 
-section_start strip-rootfs "Stripping rootfs"
-
 export DEBIAN_FRONTEND=noninteractive
 
 UNNEEDED_PACKAGES=(
@@ -28,7 +26,7 @@ apt-get autoremove --yes || true
 UNNEEDED_PACKAGES=(
   apt libapt-pkg6.0
   ncurses-bin ncurses-base libncursesw6 libncurses6
-  perl-base libperl5.36 perl-modules-5.36
+  perl-base
   debconf libdebconfclient0
   e2fsprogs e2fslibs libfdisk1
   insserv
@@ -42,8 +40,14 @@ UNNEEDED_PACKAGES=(
   hostname
   adduser
   debian-archive-keyring
-  libgl1-mesa-dri mesa-vulkan-drivers mesa-va-drivers mesa-vdpau-drivers i965-va-driver
-  intel-media-va-driver
+  libegl1-mesa-dev # mesa group
+  libegl-mesa0
+  libgl1-mesa-dev
+  libgl1-mesa-dri
+  libglapi-mesa
+  libgles2-mesa-dev
+  libglx-mesa0
+  mesa-common-dev
   gnupg2
   software-properties-common
 )
@@ -87,7 +91,6 @@ directories=(
   /var/lib/usbutils/usb.ids
   /root/.pip # pip cache
   /root/.cache
-  /root/.cargo
   /etc/apt # configuration archives of apt and dpkg
   /etc/dpkg
   /var/* # drop non-ostree directories
@@ -111,14 +114,6 @@ directories=(
   /usr/lib/*/libdb-5.3.so # libdb-5.3.so that is only used by this pam module ^
   /usr/lib/*/libnss_hesiod* # remove NSS support for nis, nisplus and hesiod
   /usr/lib/*/libnss_nis*
-  /usr/lib/*/wine # don't need Wine's implementation, using Proton instead
-  /usr/local/bin/mold
-  /usr/local/bin/bindgen
-  /usr/local/bin/cargo*
-  /usr/local/bin/clippy*
-  /usr/local/bin/rust*
-  /usr/local/bin/rls
-  /usr/lib/*/dri
 )
 
 for directory in "${directories[@]}"; do
@@ -136,26 +131,3 @@ files=(
 for files in "${files[@]}"; do
   find /usr /etc -name "$files" -prune -exec rm -r {} \;
 done
-
-# We purge apt and dpkg to save on space, which is great for runtime and
-# bandwidth use etc, but less great for cbuild which wants to run apt-get clean
-# when we're done. Install a stub which works for that and is apologetic for
-# anyone else.
-cat >/usr/bin/apt-get <<EOF
-#!/bin/bash
-
-if [ "\${1:-}" != "clean" ]; then
-    echo "Couldn't run '\$0 \$*', because apt has been cleaned from this container."
-    echo ""
-    echo "After .gitlab-ci/container/strip-rootfs.sh has run, you cannot install"
-    echo "new packages."
-    echo ""
-    echo "Sorry."
-    exit 1
-fi
-EOF
-
-chmod +x /usr/bin/apt-get
-ln -s /usr/bin/apt-get /usr/bin/apt
-
-section_end strip-rootfs

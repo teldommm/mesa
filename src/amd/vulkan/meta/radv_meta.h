@@ -26,7 +26,6 @@
 #include "radv_shader_object.h"
 #include "radv_sqtt.h"
 
-#include "vk_render_pass.h"
 #include "vk_shader_module.h"
 
 #ifdef __cplusplus
@@ -155,7 +154,7 @@ void radv_device_finish_meta_etc_decode_state(struct radv_device *device);
 VkResult radv_device_init_meta_astc_decode_state(struct radv_device *device, bool on_demand);
 void radv_device_finish_meta_astc_decode_state(struct radv_device *device);
 
-VkResult radv_device_init_dgc_prepare_state(struct radv_device *device, bool on_demand);
+VkResult radv_device_init_dgc_prepare_state(struct radv_device *device);
 void radv_device_finish_dgc_prepare_state(struct radv_device *device);
 
 void radv_meta_save(struct radv_meta_saved_state *saved_state, struct radv_cmd_buffer *cmd_buffer, uint32_t flags);
@@ -253,7 +252,7 @@ uint32_t radv_clear_fmask(struct radv_cmd_buffer *cmd_buffer, struct radv_image 
 uint32_t radv_clear_dcc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image,
                         const VkImageSubresourceRange *range, uint32_t value);
 uint32_t radv_clear_htile(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *image,
-                          const VkImageSubresourceRange *range, uint32_t value, bool is_clear);
+                          const VkImageSubresourceRange *range, uint32_t value);
 
 void radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const void *data, uint64_t size);
 

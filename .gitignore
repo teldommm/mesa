@@ -5,4 +5,6 @@
 *.out
 /build
 .venv/
-*.patch
+s3tc2.comp
+src/vulkan/wrapper/lib/
+.idea

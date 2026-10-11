@@ -1,6 +1,24 @@
 /*
- * Copyright © 2015 Rob Clark <robclark@freedesktop.org>
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2015 Rob Clark <robclark@freedesktop.org>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -33,7 +51,6 @@ static const struct debug_named_value shader_debug_options[] = {
    {"fullnop",    IR3_DBG_FULLNOP,    "Add nops before each instruction"},
    {"noearlypreamble", IR3_DBG_NOEARLYPREAMBLE, "Disable early preambles"},
    {"nodescprefetch", IR3_DBG_NODESCPREFETCH, "Disable descriptor prefetch optimization"},
-   {"expandrpt",  IR3_DBG_EXPANDRPT,  "Expand rptN instructions"},
 #if MESA_DEBUG
    /* MESA_DEBUG-only options: */
    {"schedmsgs",  IR3_DBG_SCHEDMSGS,  "Enable scheduler debug messages"},
@@ -96,10 +113,9 @@ static const nir_shader_compiler_options ir3_base_options = {
    .lower_unpack_unorm_4x8 = true,
    .lower_unpack_unorm_2x16 = true,
    .lower_pack_split = true,
+   .use_interpolated_input_intrinsics = true,
    .lower_to_scalar = true,
    .has_imul24 = true,
-   .has_icsel_eqz32 = true,
-   .has_icsel_eqz16 = true,
    .has_fsub = true,
    .has_isub = true,
    .force_indirect_unrolling_sampler = true,
@@ -109,18 +125,10 @@ static const nir_shader_compiler_options ir3_base_options = {
    .lower_cs_local_index_to_id = true,
    .lower_wpos_pntc = true,
 
-   .lower_hadd = true,
-   .lower_hadd64 = true,
-   .lower_fisnormal = true,
-
    .lower_int64_options = (nir_lower_int64_options)~0,
    .lower_doubles_options = (nir_lower_doubles_options)~0,
 
    .divergence_analysis_options = nir_divergence_uniform_load_tears,
-   .scalarize_ddx = true,
-
-   .per_view_unique_driver_locations = true,
-   .compact_view_index = true,
 };
 
 struct ir3_compiler *
@@ -156,7 +164,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
    compiler->num_predicates = 1;
    compiler->bitops_can_write_predicates = false;
    compiler->has_branch_and_or = false;
-   compiler->has_rpt_bary_f = false;
 
    if (compiler->gen >= 6) {
       compiler->samgq_workaround = true;
@@ -182,13 +189,11 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
       compiler->max_const_safe = 100;
 
       /* Compute shaders don't share a const file with the FS. Instead they
-       * have their own file, which is smaller than the FS one. On a7xx the size
-       * was doubled, although this doesn't work on X1-85.
+       * have their own file, which is smaller than the FS one.
        *
        * TODO: is this true on earlier gen's?
        */
-      compiler->max_const_compute =
-         (compiler->gen >= 7 && !dev_info->a7xx.compute_constlen_quirk) ? 512 : 256;
+      compiler->max_const_compute = 256;
 
       /* TODO: implement clip+cull distances on earlier gen's */
       compiler->has_clip_cull = true;
@@ -201,7 +206,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
 
       compiler->has_dp2acc = dev_info->a6xx.has_dp2acc;
       compiler->has_dp4acc = dev_info->a6xx.has_dp4acc;
-      compiler->has_compliant_dp4acc = dev_info->a7xx.has_compliant_dp4acc;
 
       if (compiler->gen == 6 && options->shared_push_consts) {
          compiler->shared_consts_base_offset = 504;
@@ -221,17 +225,11 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
       compiler->bitops_can_write_predicates = true;
       compiler->has_branch_and_or = true;
       compiler->has_predication = true;
-      compiler->predtf_nop_quirk = dev_info->a6xx.predtf_nop_quirk;
-      compiler->prede_nop_quirk = dev_info->a6xx.prede_nop_quirk;
       compiler->has_scalar_alu = dev_info->a6xx.has_scalar_alu;
       compiler->has_isam_v = dev_info->a6xx.has_isam_v;
       compiler->has_ssbo_imm_offsets = dev_info->a6xx.has_ssbo_imm_offsets;
       compiler->fs_must_have_non_zero_constlen_quirk = dev_info->a7xx.fs_must_have_non_zero_constlen_quirk;
       compiler->has_early_preamble = dev_info->a6xx.has_early_preamble;
-      compiler->has_rpt_bary_f = true;
-      compiler->has_shfl = true;
-      compiler->reading_shading_rate_requires_smask_quirk =
-         dev_info->a7xx.reading_shading_rate_requires_smask_quirk;
    } else {
       compiler->max_const_pipeline = 512;
       compiler->max_const_geom = 512;
@@ -292,7 +290,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
 
    compiler->bool_type = (compiler->gen >= 5) ? TYPE_U16 : TYPE_U32;
    compiler->has_shared_regfile = compiler->gen >= 5;
-   compiler->has_bitwise_triops = compiler->gen >= 5;
 
    /* The driver can't request this unless preambles are supported. */
    if (options->push_ubo_with_preamble)
@@ -300,24 +297,18 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
 
    /* Set up nir shader compiler options, using device-specific overrides of our base settings. */
    compiler->nir_options = ir3_base_options;
-   compiler->nir_options.has_iadd3 = dev_info->a6xx.has_sad;
 
    if (compiler->gen >= 6) {
       compiler->nir_options.vectorize_io = true,
       compiler->nir_options.force_indirect_unrolling = nir_var_all,
-      compiler->nir_options.lower_device_index_to_zero = true;
 
-      if (dev_info->a6xx.has_dp2acc || dev_info->a6xx.has_dp4acc) {
-         compiler->nir_options.has_udot_4x8 =
-            compiler->nir_options.has_udot_4x8_sat = true;
-         compiler->nir_options.has_sudot_4x8 =
-            compiler->nir_options.has_sudot_4x8_sat = true;
-      }
-
-      if (dev_info->a6xx.has_dp4acc && dev_info->a7xx.has_compliant_dp4acc) {
-         compiler->nir_options.has_sdot_4x8 =
-            compiler->nir_options.has_sdot_4x8_sat = true;
-      }
+      compiler->nir_options.lower_device_index_to_zero = true,
+      compiler->nir_options.has_udot_4x8 = true,
+      compiler->nir_options.has_sudot_4x8 = true,
+      compiler->nir_options.has_udot_4x8 = dev_info->a6xx.has_dp2acc;
+      compiler->nir_options.has_sudot_4x8 = dev_info->a6xx.has_dp2acc;
+      compiler->nir_options.has_udot_4x8_sat = dev_info->a6xx.has_dp2acc;
+      compiler->nir_options.has_sudot_4x8_sat = dev_info->a6xx.has_dp2acc;
    } else if (compiler->gen >= 3 && compiler->gen <= 5) {
       compiler->nir_options.vertex_id_zero_based = true;
    } else if (compiler->gen <= 2) {
@@ -334,9 +325,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
     */
    if (compiler->gen >= 5 && !(ir3_shader_debug & IR3_DBG_NOFP16))
       compiler->nir_options.support_16bit_alu = true;
-
-   compiler->nir_options.support_indirect_inputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES);
-   compiler->nir_options.support_indirect_outputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES);
 
    if (!options->disable_cache)
       ir3_disk_cache_init(compiler);

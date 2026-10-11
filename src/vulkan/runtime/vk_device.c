@@ -137,7 +137,12 @@ vk_device_init(struct vk_device *device,
       device->enabled_extensions.extensions[idx] = true;
    }
 
-   /* Unconditionally enable all features, we disable the unsupported ones in our driver directly */   
+   VkResult result =
+      vk_physical_device_check_device_features(physical_device,
+                                               pCreateInfo);
+   if (result != VK_SUCCESS)
+      return result;
+
    collect_enabled_features(device, pCreateInfo);
 
    p_atomic_set(&device->private_data_next_index, 0);
@@ -160,12 +165,8 @@ vk_device_init(struct vk_device *device,
       break;
 
    case VK_DEVICE_TIMELINE_MODE_ASSISTED:
-      if (os_get_option("MESA_VK_ENABLE_SUBMIT_THREAD")) {
-         if (debug_get_bool_option("MESA_VK_ENABLE_SUBMIT_THREAD", false)) {
-            device->submit_mode = VK_QUEUE_SUBMIT_MODE_THREADED;
-         } else {
-            device->submit_mode = VK_QUEUE_SUBMIT_MODE_IMMEDIATE;
-         }
+      if (debug_get_bool_option("MESA_VK_ENABLE_SUBMIT_THREAD", false)) {
+         device->submit_mode = VK_QUEUE_SUBMIT_MODE_THREADED;
       } else {
          device->submit_mode = VK_QUEUE_SUBMIT_MODE_THREADED_ON_DEMAND;
       }
@@ -181,19 +182,6 @@ vk_device_init(struct vk_device *device,
 #endif /* DETECT_OS_ANDROID */
 
    simple_mtx_init(&device->trace_mtx, mtx_plain);
-
-   vk_foreach_struct_const (ext, pCreateInfo->pNext) {
-      switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_DEVICE_PIPELINE_BINARY_INTERNAL_CACHE_CONTROL_KHR: {
-         const VkDevicePipelineBinaryInternalCacheControlKHR *cache_control = (const void *)ext;
-         if (cache_control->disableInternalCache)
-            device->disable_internal_cache = true;
-         break;
-      }
-      default:
-         break;
-      }
-   }
 
    return VK_SUCCESS;
 }

@@ -42,6 +42,32 @@ binding_has_immutable_samplers(const VkDescriptorSetLayoutBinding *binding)
    }
 }
 
+static bool
+is_sampler(const VkDescriptorSetLayoutBinding *binding)
+{
+   switch (binding->descriptorType) {
+   case VK_DESCRIPTOR_TYPE_SAMPLER:
+   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
+is_texture(const VkDescriptorSetLayoutBinding *binding)
+{
+   switch (binding->descriptorType) {
+   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+      return true;
+   default:
+      return false;
+   }
+}
+
 VkResult
 panvk_per_arch(CreateDescriptorSetLayout)(
    VkDevice _device, const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
@@ -76,7 +102,7 @@ panvk_per_arch(CreateDescriptorSetLayout)(
       result = vk_create_sorted_bindings(pCreateInfo->pBindings,
                                          pCreateInfo->bindingCount, &bindings);
       if (result != VK_SUCCESS)
-         return panvk_error(device, result);
+         return vk_error(device, result);
 
       num_bindings = bindings[pCreateInfo->bindingCount - 1].binding + 1;
    }
@@ -90,7 +116,7 @@ panvk_per_arch(CreateDescriptorSetLayout)(
 
    if (!vk_descriptor_set_layout_multizalloc(&device->vk, &ma)) {
       free(bindings);
-      return panvk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    layout->flags = pCreateInfo->flags;
@@ -164,7 +190,7 @@ panvk_per_arch(CreateDescriptorSetLayout)(
       /* Immutable samplers are ignored for now */
    }
 
-   _mesa_blake3_final(&hash_ctx, layout->vk.blake3);
+   _mesa_blake3_final(&hash_ctx, layout->hash);
 
    free(bindings);
    *pSetLayout = panvk_descriptor_set_layout_to_handle(layout);

@@ -42,9 +42,7 @@ void
 print_block_markers(FILE* output, Program* program, const std::vector<bool>& referenced_blocks,
                     unsigned* next_block, unsigned pos)
 {
-   while (*next_block < program->blocks.size() && pos >= program->blocks[*next_block].offset) {
-      assert(pos == program->blocks[*next_block].offset ||
-             program->blocks[*next_block].instructions.empty());
+   while (*next_block < program->blocks.size() && pos == program->blocks[*next_block].offset) {
       if (referenced_blocks[*next_block])
          fprintf(output, "BB%u:\n", *next_block);
       (*next_block)++;

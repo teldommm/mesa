@@ -88,6 +88,11 @@ static void pvr_image_setup_mip_levels(struct pvr_image *image)
    VkExtent3D extent =
       vk_image_extent_to_elements(&image->vk, image->physical_extent);
 
+   /* Mip-mapped textures that are non-dword aligned need dword-aligned levels
+    * so they can be TQd from.
+    */
+   const uint32_t level_alignment = image->vk.mip_levels > 1 ? 4 : 1;
+
    assert(image->vk.mip_levels <= ARRAY_SIZE(image->mip_levels));
 
    image->layer_size = 0;
@@ -100,6 +105,7 @@ static void pvr_image_setup_mip_levels(struct pvr_image *image)
       mip_level->size = image->vk.samples * mip_level->pitch *
                         mip_level->height_pitch *
                         ALIGN(extent.depth, extent_alignment);
+      mip_level->size = ALIGN(mip_level->size, level_alignment);
       mip_level->offset = image->layer_size;
 
       image->layer_size += mip_level->size;
@@ -109,21 +115,19 @@ static void pvr_image_setup_mip_levels(struct pvr_image *image)
       extent.depth = u_minify(extent.depth, 1);
    }
 
-   if (image->vk.mip_levels > 1) {
-      /* The hw calculates layer strides as if a full mip chain up until 1x1x1
-       * were present so we need to account for that in the `layer_size`.
-       */
-      while (extent.height != 1 || extent.width != 1 || extent.depth != 1) {
-         const uint32_t height_pitch = ALIGN(extent.height, extent_alignment);
-         const uint32_t pitch = cpp * ALIGN(extent.width, extent_alignment);
+   /* The hw calculates layer strides as if a full mip chain up until 1x1x1
+    * were present so we need to account for that in the `layer_size`.
+    */
+   while (extent.height != 1 || extent.width != 1 || extent.depth != 1) {
+      const uint32_t height_pitch = ALIGN(extent.height, extent_alignment);
+      const uint32_t pitch = cpp * ALIGN(extent.width, extent_alignment);
 
-         image->layer_size += image->vk.samples * pitch * height_pitch *
-                              ALIGN(extent.depth, extent_alignment);
+      image->layer_size += image->vk.samples * pitch * height_pitch *
+                           ALIGN(extent.depth, extent_alignment);
 
-         extent.height = u_minify(extent.height, 1);
-         extent.width = u_minify(extent.width, 1);
-         extent.depth = u_minify(extent.depth, 1);
-      }
+      extent.height = u_minify(extent.height, 1);
+      extent.width = u_minify(extent.width, 1);
+      extent.depth = u_minify(extent.depth, 1);
    }
 
    /* TODO: It might be useful to store the alignment in the image so it can be
@@ -273,29 +277,6 @@ void pvr_GetImageSubresourceLayout(VkDevice device,
    pvr_get_image_subresource_layout(image, subresource, layout);
 }
 
-static void pvr_adjust_non_compressed_view(const struct pvr_image *image,
-                                           struct pvr_texture_state_info *info)
-{
-   const uint32_t base_level = info->base_level;
-
-   if (!vk_format_is_compressed(image->vk.format) ||
-       vk_format_is_compressed(info->format)) {
-      return;
-   }
-
-   /* Cannot use the image state, as the miplevel sizes for an
-    * uncompressed chain view may not decrease by 2 each time compared to the
-    * compressed one e.g. (22x22,11x11,5x5) -> (6x6,3x3,2x2)
-    * Instead manually apply an offset and patch the size
-    */
-   info->extent.width = u_minify(info->extent.width, base_level);
-   info->extent.height = u_minify(info->extent.height, base_level);
-   info->extent.depth = u_minify(info->extent.depth, base_level);
-   info->extent = vk_image_extent_to_elements(&image->vk, info->extent);
-   info->offset += image->mip_levels[base_level].offset;
-   info->base_level = 0;
-}
-
 VkResult pvr_CreateImageView(VkDevice _device,
                              const VkImageViewCreateInfo *pCreateInfo,
                              const VkAllocationCallbacks *pAllocator,
@@ -327,7 +308,8 @@ VkResult pvr_CreateImageView(VkDevice _device,
    info.is_cube = (info.type == VK_IMAGE_VIEW_TYPE_CUBE ||
                    info.type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY);
    info.array_size = iview->vk.layer_count;
-   info.offset = iview->vk.base_array_layer * image->layer_size;
+   info.offset = iview->vk.base_array_layer * image->layer_size +
+                 image->mip_levels[info.base_level].offset;
    info.mipmaps_present = (image->vk.mip_levels > 1) ? true : false;
    info.stride = image->physical_extent.width;
    info.tex_state_type = PVR_TEXTURE_STATE_SAMPLE;
@@ -337,8 +319,6 @@ VkResult pvr_CreateImageView(VkDevice _device,
    info.addr = image->dev_addr;
 
    info.format = pCreateInfo->format;
-
-   pvr_adjust_non_compressed_view(image, &info);
 
    vk_component_mapping_to_pipe_swizzle(iview->vk.swizzle, input_swizzle);
    format_swizzle = pvr_get_format_swizzle(info.format);
@@ -429,27 +409,30 @@ VkResult pvr_CreateBufferView(VkDevice _device,
    struct pvr_buffer_view *bview;
    VkResult result;
 
-   bview = vk_buffer_view_create(&device->vk,
-                                 pCreateInfo,
-                                 pAllocator,
-                                 sizeof(*bview));
+   bview = vk_object_alloc(&device->vk,
+                           pAllocator,
+                           sizeof(*bview),
+                           VK_OBJECT_TYPE_BUFFER_VIEW);
    if (!bview)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   bview->format = pCreateInfo->format;
+   bview->range =
+      vk_buffer_range(&buffer->vk, pCreateInfo->offset, pCreateInfo->range);
 
    /* If the remaining size of the buffer is not a multiple of the element
     * size of the format, the nearest smaller multiple is used.
     */
-   bview->vk.range -=
-      bview->vk.range % vk_format_get_blocksize(bview->vk.format);
+   bview->range -= bview->range % vk_format_get_blocksize(bview->format);
 
    /* The range of the buffer view shouldn't be smaller than one texel. */
-   assert(bview->vk.range >= vk_format_get_blocksize(bview->vk.format));
+   assert(bview->range >= vk_format_get_blocksize(bview->format));
 
    info.base_level = 0U;
    info.mip_levels = 1U;
    info.mipmaps_present = false;
    info.extent.width = 8192U;
-   info.extent.height = bview->vk.elements;
+   info.extent.height = bview->range / vk_format_get_blocksize(bview->format);
    info.extent.height = DIV_ROUND_UP(info.extent.height, info.extent.width);
    info.extent.depth = 0U;
    info.sample_count = 1U;
@@ -460,7 +443,7 @@ VkResult pvr_CreateBufferView(VkDevice _device,
    info.is_cube = false;
    info.type = VK_IMAGE_VIEW_TYPE_2D;
    info.tex_state_type = PVR_TEXTURE_STATE_SAMPLE;
-   info.format = bview->vk.format;
+   info.format = bview->format;
    info.flags = PVR_TEXFLAGS_INDEX_LOOKUP;
    info.aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT;
 
@@ -494,5 +477,5 @@ void pvr_DestroyBufferView(VkDevice _device,
    if (!bview)
       return;
 
-   vk_buffer_view_destroy(&device->vk, pAllocator, &bview->vk);
+   vk_object_free(&device->vk, pAllocator, bview);
 }

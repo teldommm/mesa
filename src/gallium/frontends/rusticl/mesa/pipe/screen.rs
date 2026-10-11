@@ -7,6 +7,7 @@ use crate::util::disk_cache::*;
 use mesa_rust_gen::*;
 use mesa_rust_util::has_required_feature;
 use mesa_rust_util::ptr::ThreadSafeCPtr;
+use mesa_rust_util::string::*;
 
 use std::convert::TryInto;
 use std::ffi::CStr;
@@ -295,12 +296,12 @@ impl PipeScreen {
         }
     }
 
-    pub fn driver_name(&self) -> &CStr {
+    pub fn driver_name(&self) -> String {
         self.ldev.driver_name()
     }
 
-    pub fn name(&self) -> &CStr {
-        unsafe { CStr::from_ptr(self.screen().get_name.unwrap()(self.screen.as_ptr())) }
+    pub fn name(&self) -> String {
+        unsafe { c_string_to_string(self.screen().get_name.unwrap()(self.screen.as_ptr())) }
     }
 
     pub fn device_node_mask(&self) -> Option<u32> {
@@ -325,9 +326,9 @@ impl PipeScreen {
         Some(luid)
     }
 
-    pub fn device_vendor(&self) -> &CStr {
+    pub fn device_vendor(&self) -> String {
         unsafe {
-            CStr::from_ptr(self.screen().get_device_vendor.unwrap()(
+            c_string_to_string(self.screen().get_device_vendor.unwrap()(
                 self.screen.as_ptr(),
             ))
         }
@@ -357,7 +358,7 @@ impl PipeScreen {
                 });
             if ptr.is_null() {
                 // this string is good enough to pass the CTS
-                c"v0000-01-01-00"
+                CStr::from_bytes_with_nul(b"v0000-01-01-00\0").unwrap()
             } else {
                 CStr::from_ptr(ptr)
             }
@@ -414,15 +415,11 @@ impl PipeScreen {
         DiskCacheBorrowed::from_ptr(ptr)
     }
 
-    /// returns true if finalize_nir was called
-    pub fn finalize_nir(&self, nir: &NirShader) -> bool {
+    pub fn finalize_nir(&self, nir: &NirShader) {
         if let Some(func) = self.screen().finalize_nir {
             unsafe {
                 func(self.screen.as_ptr(), nir.get_nir().cast());
             }
-            true
-        } else {
-            false
         }
     }
 

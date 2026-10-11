@@ -25,10 +25,8 @@ actions:
     kernel:
       url: None/None
     nfsrootfs:
-      url: None
+      url: None/lava-rootfs.tar.zst
       compression: zstd
-      format: tar
-      overlays: {}
     dtb:
       url: None/my_dtb_filename.dtb
     namespace: dut
@@ -60,7 +58,6 @@ actions:
           steps:
           - |-
             echo test UBOOT
-            export CURRENT_SECTION=dut_boot
           - export -p > /dut-env-vars.sh
 - test:
     namespace: container
@@ -104,7 +101,10 @@ actions:
           - |-
             lava_ssh_test_case 'artifact_download' 'bash --' << EOF
             source /dut-env-vars.sh
-            set -e
+            set -ex
+            curl -L --retry 4 -f --retry-all-errors --retry-delay 60 None | tar -xz -C /
+            mkdir -p /ci/project/dir
+            curl -L --retry 4 -f --retry-all-errors --retry-delay 60 None | tar --zstd -x -C /ci/project/dir
             echo Could not find jwt file, disabling S3 requests...
             sed -i '/S3_RESULTS_UPLOAD/d' /set-job-env-vars.sh
             EOF

@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef BRW_RT_H
+#define BRW_RT_H
 
 #include <stdint.h>
 
@@ -287,3 +288,5 @@ brw_rt_ray_queries_shadow_stacks_size(const struct intel_device_info *devinfo,
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* BRW_RT_H */

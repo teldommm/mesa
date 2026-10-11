@@ -1,0 +1,130 @@
+name: Android NDK Build (Bionic Wrapper)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ wrapper ]
+
+jobs:
+  build-android-wrapper:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        build-type: [release]
+
+    env:
+      # leegao's SPIRV-Tools fork with the Mali/Adreno passes the wrapper links
+      # (MaliOptimizationBarrierPass, FixMaliSpecConstantComposite, RemoveClipCullDist).
+      SPIRV_TOOLS_REPO: https://github.com/leegao/SPIRV-Tools
+      SPIRV_TOOLS_REF: main
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Patch sources for NDK build
+        run: |
+          # SDK 30+ has native memfd_create in NDK
+          sed -i 's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' src/util/anon_file.c
+          sed -i "s/dep_libudev = dependency('libudev', required : false)/dep_libudev = null_dep/g" meson.build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mako PyYAML meson ninja packaging
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools gettext-base
+
+      - name: Cache SPIRV-Tools static libs
+        id: spvcache
+        uses: actions/cache@v4
+        with:
+          path: spirv-out
+          key: spirv-tools-${{ env.SPIRV_TOOLS_REF }}-${{ hashFiles('.github/workflows/build.yml') }}
+
+      - name: Build SPIRV-Tools fork (static, arm64-v8a)
+        if: steps.spvcache.outputs.cache-hit != 'true'
+        run: |
+          export ANDROID_NDK="$ANDROID_NDK_LATEST_HOME"
+          git clone --depth 1 -b "$SPIRV_TOOLS_REF" "$SPIRV_TOOLS_REPO" ../SPIRV-Tools
+          cd ../SPIRV-Tools
+          HEADERS_REV=$(sed -n "s/.*'spirv_headers_revision': '\([0-9a-f]*\)'.*/\1/p" DEPS)
+          git clone https://github.com/KhronosGroup/SPIRV-Headers external/spirv-headers
+          git -C external/spirv-headers checkout "$HEADERS_REV"
+          mkdir -p build/libs build/app
+          cd build
+          "$ANDROID_NDK/ndk-build" -j"$(nproc)" -C ../android_test \
+              NDK_PROJECT_PATH=. NDK_LIBS_OUT="$PWD/libs" NDK_APP_OUT="$PWD/app"
+          mkdir -p "$GITHUB_WORKSPACE/spirv-out/lib" "$GITHUB_WORKSPACE/spirv-out/include"
+          cp app/local/arm64-v8a/*.a "$GITHUB_WORKSPACE/spirv-out/lib/"
+          cp -r ../include "$GITHUB_WORKSPACE/spirv-out/include/spirv-tools"
+
+      - name: Install SPIRV-Tools into the wrapper tree
+        run: |
+          mkdir -p src/vulkan/wrapper/lib src/vulkan/wrapper/include
+          cp spirv-out/lib/*.a src/vulkan/wrapper/lib/
+          rm -rf src/vulkan/wrapper/include/spirv-tools
+          cp -r spirv-out/include/spirv-tools src/vulkan/wrapper/include/spirv-tools
+
+      - name: Generate Meson cross file for NDK
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          export MESON_WORKING_DIR="$GITHUB_WORKSPACE"
+          envsubst < android.toml > android-cross.toml
+
+      - name: Unpack shims
+        run: unzip -o shims.zip -d ./
+
+      - name: Configure Meson
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/shims
+        run: |
+          meson setup _build \
+            --cross-file android-cross.toml \
+            -Dbuildtype=${{ matrix.build-type }} \
+            -Dplatforms=x11 \
+            -Dandroid-stub=true \
+            -Dandroid-libbacktrace=disabled \
+            -Dplatform-sdk-version=30 \
+            -Dglx=disabled \
+            -Dgbm=disabled \
+            -Degl=disabled \
+            -Dopengl=false \
+            -Dgles1=disabled \
+            -Dgles2=disabled \
+            -Dglvnd=disabled \
+            -Dllvm=disabled \
+            -Dvalgrind=disabled \
+            -Dgallium-drivers= \
+            -Dshared-glapi=disabled \
+            -Dzstd=disabled \
+            -Dvulkan-drivers=wrapper
+
+      - name: Compile
+        run: meson compile -C _build
+
+      - name: Strip
+        run: |
+          STRIP="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          cp _build/src/vulkan/wrapper/libvulkan_wrapper.so libvulkan_wrapper.so.unstripped
+          "$STRIP" --strip-unneeded -o libvulkan_wrapper.so _build/src/vulkan/wrapper/libvulkan_wrapper.so
+
+      - name: Upload stripped libvulkan_wrapper.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvulkan_wrapper-bionic-aarch64-${{ matrix.build-type }}
+          path: libvulkan_wrapper.so
+          if-no-files-found: error
+
+      - name: Upload unstripped libvulkan_wrapper.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvulkan_wrapper-bionic-aarch64-${{ matrix.build-type }}-unstripped
+          path: libvulkan_wrapper.so.unstripped
+          if-no-files-found: error

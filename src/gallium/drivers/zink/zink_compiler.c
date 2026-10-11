@@ -22,7 +22,6 @@
  */
 
 #include "nir_opcodes.h"
-#include "shader_enums.h"
 #include "zink_context.h"
 #include "zink_compiler.h"
 #include "zink_descriptors.h"
@@ -1097,8 +1096,6 @@ zink_create_quads_emulation_gs(const nir_shader_compiler_options *options,
    /* Create input/output variables. */
    nir_foreach_shader_out_variable(var, prev_stage) {
       assert(!var->data.patch);
-      assert(var->data.location != VARYING_SLOT_PRIMITIVE_ID &&
-            "not a VS output");
 
       /* input vars can't be created for those */
       if (var->data.location == VARYING_SLOT_LAYER ||
@@ -1135,30 +1132,6 @@ zink_create_quads_emulation_gs(const nir_shader_compiler_options *options,
       out_vars[num_vars++] = out;
    }
 
-   /* When a geometry shader is not used, a fragment shader may read primitive
-    * ID and get an implicit value without the vertex shader writing an ID. This
-    * case needs to work even when we inject a GS internally.
-    *
-    * However, if a geometry shader precedes a fragment shader that reads
-    * primitive ID, Vulkan requires that the geometry shader write primitive ID.
-    * To handle this case correctly, we must write primitive ID, copying the
-    * fixed-function gl_PrimitiveIDIn input which matches what the fragment
-    * shader will expect.
-    *
-    * If the fragment shader doesn't read primitive ID, this copy will likely be
-    * optimized out at link-time by the Vulkan driver. Unless this is
-    * non-monolithic -- in which case we don't know whether the fragment shader
-    * will read primitive ID either. In both cases, the right thing for Zink
-    * to do is copy primitive ID unconditionally.
-    */
-   in_vars[num_vars] = nir_create_variable_with_location(
-         nir, nir_var_shader_in, VARYING_SLOT_PRIMITIVE_ID, glsl_int_type());
-
-   out_vars[num_vars] = nir_create_variable_with_location(
-         nir, nir_var_shader_out, VARYING_SLOT_PRIMITIVE_ID, glsl_int_type());
-
-   num_vars++;
-
    int mapping_first[] = {0, 1, 2, 0, 2, 3};
    int mapping_last[] = {0, 1, 3, 1, 2, 3};
    nir_def *last_pv_vert_def = nir_load_provoking_last(&b);
@@ -1173,12 +1146,7 @@ zink_create_quads_emulation_gs(const nir_shader_compiler_options *options,
          if (in_vars[j]->data.location == VARYING_SLOT_EDGE) {
             continue;
          }
-
-         /* gl_PrimitiveIDIn is not arrayed, all other inputs are */
-         nir_deref_instr *in_value = nir_build_deref_var(&b, in_vars[j]);
-         if (in_vars[j]->data.location != VARYING_SLOT_PRIMITIVE_ID)
-            in_value = nir_build_deref_array(&b, in_value, idx);
-
+         nir_deref_instr *in_value = nir_build_deref_array(&b, nir_build_deref_var(&b, in_vars[j]), idx);
          copy_vars(&b, nir_build_deref_var(&b, out_vars[j]), in_value);
       }
       nir_emit_vertex(&b, 0);
@@ -1265,12 +1233,112 @@ amd_varying_expression_max_cost(nir_shader *producer, nir_shader *consumer)
    }
 }
 
+/* from radeonsi */
+static unsigned
+amd_varying_estimate_instr_cost(nir_instr *instr)
+{
+   unsigned dst_bit_size, src_bit_size, num_dst_dwords;
+   nir_op alu_op;
+
+   /* This is a very loose approximation based on gfx10. */
+   switch (instr->type) {
+   case nir_instr_type_alu:
+      dst_bit_size = nir_instr_as_alu(instr)->def.bit_size;
+      src_bit_size = nir_instr_as_alu(instr)->src[0].src.ssa->bit_size;
+      alu_op = nir_instr_as_alu(instr)->op;
+      num_dst_dwords = DIV_ROUND_UP(dst_bit_size, 32);
+
+      switch (alu_op) {
+      case nir_op_mov:
+      case nir_op_vec2:
+      case nir_op_vec3:
+      case nir_op_vec4:
+      case nir_op_vec5:
+      case nir_op_vec8:
+      case nir_op_vec16:
+      case nir_op_fabs:
+      case nir_op_fneg:
+      case nir_op_fsat:
+         return 0;
+
+      case nir_op_imul:
+      case nir_op_umul_low:
+         return dst_bit_size <= 16 ? 1 : 4 * num_dst_dwords;
+
+      case nir_op_imul_high:
+      case nir_op_umul_high:
+      case nir_op_imul_2x32_64:
+      case nir_op_umul_2x32_64:
+         return 4;
+
+      case nir_op_fexp2:
+      case nir_op_flog2:
+      case nir_op_frcp:
+      case nir_op_frsq:
+      case nir_op_fsqrt:
+      case nir_op_fsin:
+      case nir_op_fcos:
+      case nir_op_fsin_amd:
+      case nir_op_fcos_amd:
+         return 4; /* FP16 & FP32. */
+
+      case nir_op_fpow:
+         return 4 + 1 + 4; /* log2 + mul + exp2 */
+
+      case nir_op_fsign:
+         return dst_bit_size == 64 ? 4 : 3; /* See ac_build_fsign. */
+
+      case nir_op_idiv:
+      case nir_op_udiv:
+      case nir_op_imod:
+      case nir_op_umod:
+      case nir_op_irem:
+         return dst_bit_size == 64 ? 80 : 40;
+
+      case nir_op_fdiv:
+         return dst_bit_size == 64 ? 80 : 5; /* FP16 & FP32: rcp + mul */
+
+      case nir_op_fmod:
+      case nir_op_frem:
+         return dst_bit_size == 64 ? 80 : 8;
+
+      default:
+         /* Double opcodes. Comparisons have always full performance. */
+         if ((dst_bit_size == 64 &&
+              nir_op_infos[alu_op].output_type & nir_type_float) ||
+             (dst_bit_size >= 8 && src_bit_size == 64 &&
+              nir_op_infos[alu_op].input_types[0] & nir_type_float))
+            return 16;
+
+         return DIV_ROUND_UP(MAX2(dst_bit_size, src_bit_size), 32);
+      }
+
+   case nir_instr_type_intrinsic:
+      dst_bit_size = nir_instr_as_intrinsic(instr)->def.bit_size;
+      num_dst_dwords = DIV_ROUND_UP(dst_bit_size, 32);
+
+      switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+      case nir_intrinsic_load_deref:
+         /* Uniform or UBO load.
+          * Set a low cost to balance the number of scalar loads and ALUs.
+          */
+         return 3 * num_dst_dwords;
+
+      default:
+         unreachable("unexpected intrinsic");
+      }
+
+   default:
+      unreachable("unexpected instr type");
+   }
+}
+
 void
 zink_screen_init_compiler(struct zink_screen *screen)
 {
    static const struct nir_shader_compiler_options
    default_options = {
-      .io_options = nir_io_has_intrinsics | nir_io_separate_clip_cull_distance_arrays,
+      .io_options = nir_io_glsl_lower_derefs,
       .lower_ffma16 = true,
       .lower_ffma32 = true,
       .lower_ffma64 = true,
@@ -1312,9 +1380,10 @@ zink_screen_init_compiler(struct zink_screen *screen)
       .has_isub = true,
       .lower_mul_2x32_64 = true,
       .support_16bit_alu = true, /* not quite what it sounds like */
-      .support_indirect_inputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_COMPUTE),
-      .support_indirect_outputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_COMPUTE),
+      .support_indirect_inputs = BITFIELD_MASK(MESA_SHADER_COMPUTE),
+      .support_indirect_outputs = BITFIELD_MASK(MESA_SHADER_COMPUTE),
       .max_unroll_iterations = 0,
+      .use_interpolated_input_intrinsics = true,
    };
 
    screen->nir_options = default_options;
@@ -1332,19 +1401,21 @@ zink_screen_init_compiler(struct zink_screen *screen)
       screen->nir_options.max_unroll_iterations_fp64 = 32;
    }
 
-   if (screen->driver_compiler_workarounds.io_opt) {
+   if (screen->driver_workarounds.io_opt) {
+      screen->nir_options.io_options |= nir_io_glsl_opt_varyings;
+
       switch (zink_driverid(screen)) {
       case VK_DRIVER_ID_MESA_RADV:
       case VK_DRIVER_ID_AMD_OPEN_SOURCE:
       case VK_DRIVER_ID_AMD_PROPRIETARY:
          screen->nir_options.varying_expression_max_cost = amd_varying_expression_max_cost;
+         screen->nir_options.varying_estimate_instr_cost = amd_varying_estimate_instr_cost;
          break;
       default:
          mesa_logw("zink: instruction costs not implemented for this implementation!");
          screen->nir_options.varying_expression_max_cost = amd_varying_expression_max_cost;
+         screen->nir_options.varying_estimate_instr_cost = amd_varying_estimate_instr_cost;
       }
-   } else {
-      screen->nir_options.io_options |= nir_io_dont_optimize;
    }
 
    /*
@@ -1364,9 +1435,6 @@ zink_screen_init_compiler(struct zink_screen *screen)
 
    if (screen->info.have_EXT_shader_demote_to_helper_invocation)
       screen->nir_options.discard_is_demote = true;
-
-   screen->nir_options.support_indirect_inputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES);
-   screen->nir_options.support_indirect_outputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES);
 }
 
 const void *
@@ -2933,7 +3001,7 @@ zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_sh
             nir_shader_instructions_pass(consumer, rewrite_read_as_0, nir_metadata_dominance, var_in);
          }
       }
-      if (consumer->info.stage == MESA_SHADER_FRAGMENT && screen->driver_compiler_workarounds.needs_sanitised_layer)
+      if (consumer->info.stage == MESA_SHADER_FRAGMENT && screen->driver_workarounds.needs_sanitised_layer)
          do_fixup |= clamp_layer_output(producer, consumer, &io.reserved);
    }
    nir_shader_gather_info(producer, nir_shader_get_entrypoint(producer));
@@ -3606,7 +3674,7 @@ lower_zs_swizzle_tex_instr(nir_builder *b, nir_instr *instr, void *data)
  * draw-time shader recompile to do so.
  *
  * We may also need to apply shader swizzles for
- * driver_compiler_workarounds.needs_zs_shader_swizzle.
+ * driver_workarounds.needs_zs_shader_swizzle.
  */
 static bool
 lower_zs_swizzle_tex(nir_shader *nir, const void *swizzle, bool shadow_only)
@@ -4828,8 +4896,11 @@ match_tex_dests(nir_shader *shader, struct zink_shader *zs, bool pre_mangle)
 }
 
 static bool
-split_bitfields_instr(nir_builder *b, nir_alu_instr *alu, void *data)
+split_bitfields_instr(nir_builder *b, nir_instr *in, void *data)
 {
+   if (in->type != nir_instr_type_alu)
+      return false;
+   nir_alu_instr *alu = nir_instr_as_alu(in);
    switch (alu->op) {
    case nir_op_ubitfield_extract:
    case nir_op_ibitfield_extract:
@@ -4841,7 +4912,7 @@ split_bitfields_instr(nir_builder *b, nir_alu_instr *alu, void *data)
    unsigned num_components = alu->def.num_components;
    if (num_components == 1)
       return false;
-   b->cursor = nir_before_instr(&alu->instr);
+   b->cursor = nir_before_instr(in);
    nir_def *dests[NIR_MAX_VEC_COMPONENTS];
    for (unsigned i = 0; i < num_components; i++) {
       if (alu->op == nir_op_bitfield_insert)
@@ -4862,8 +4933,8 @@ split_bitfields_instr(nir_builder *b, nir_alu_instr *alu, void *data)
                                           nir_channel(b, alu->src[2].src.ssa, alu->src[2].swizzle[i]));
    }
    nir_def *dest = nir_vec(b, dests, num_components);
-   nir_def_rewrite_uses_after(&alu->def, dest, &alu->instr);
-   nir_instr_remove(&alu->instr);
+   nir_def_rewrite_uses_after(&alu->def, dest, in);
+   nir_instr_remove(in);
    return true;
 }
 
@@ -4871,8 +4942,7 @@ split_bitfields_instr(nir_builder *b, nir_alu_instr *alu, void *data)
 static bool
 split_bitfields(nir_shader *shader)
 {
-   return nir_shader_alu_pass(shader, split_bitfields_instr,
-                              nir_metadata_dominance, NULL);
+   return nir_shader_instructions_pass(shader, split_bitfields_instr, nir_metadata_dominance, NULL);
 }
 
 static bool
@@ -5648,7 +5718,7 @@ static nir_mem_access_size_align
 mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
                          uint8_t bit_size, uint32_t align,
                          uint32_t align_offset, bool offset_is_const,
-                         enum gl_access_qualifier access, const void *cb_data)
+                         const void *cb_data)
 {
    align = nir_combined_align(align, align_offset);
 
@@ -5660,14 +5730,12 @@ mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
          .num_components = MIN2(bytes / align, 4),
          .bit_size = align * 8,
          .align = align,
-         .shift = nir_mem_access_shift_method_scalar,
       };
    } else {
       return (nir_mem_access_size_align){
          .num_components = MIN2(bytes / (bit_size / 8), 4),
          .bit_size = bit_size,
          .align = bit_size / 8,
-         .shift = nir_mem_access_shift_method_scalar,
       };
    }
 }
@@ -5676,7 +5744,7 @@ static nir_mem_access_size_align
 mem_access_scratch_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
                                  uint8_t bit_size, uint32_t align,
                                  uint32_t align_offset, bool offset_is_const,
-                                 enum gl_access_qualifier access, const void *cb_data)
+                                 const void *cb_data)
 {
    bit_size = *(const uint8_t *)cb_data;
    align = nir_combined_align(align, align_offset);
@@ -5687,7 +5755,6 @@ mem_access_scratch_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
       .num_components = MIN2(bytes / (bit_size / 8), 4),
       .bit_size = bit_size,
       .align = bit_size / 8,
-      .shift = nir_mem_access_shift_method_scalar,
    };
 }
 
@@ -6385,9 +6452,10 @@ zink_shader_init(struct zink_screen *screen, struct zink_shader *zs)
 }
 
 char *
-zink_shader_finalize(struct pipe_screen *pscreen, struct nir_shader *nir)
+zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr)
 {
    struct zink_screen *screen = zink_screen(pscreen);
+   nir_shader *nir = nirptr;
 
    nir_lower_tex_options tex_opts = {
       .lower_invalid_implicit_lod = true,

@@ -72,10 +72,8 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
 
    scanout = renderonly_scanout_for_resource(&scanout_templat,
                                              screen->ro, &handle);
-   if (!scanout) {
-      FREE(res);
+   if (!scanout)
       return NULL;
-   }
 
    res->base = *templat;
    res->base.screen = pscreen;

@@ -37,11 +37,6 @@ lower_ftrunc = [
         (('ftrunc', 'a'), ('fmul', ('fsign', 'a'), ('ffloor', ('fmax', 'a', ('fneg', 'a')))))
 ]
 
-# PP fuse clamp_positive. Shared with Midgard/Bifrost
-ppir_algebraic_late = [
-    (('fmax', 'a', 0.0), ('fclamp_pos', 'a')),
-]
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-p', '--import-path', required=True)
@@ -59,8 +54,6 @@ def run():
                                       scale_trig).render())
     print(nir_algebraic.AlgebraicPass("lima_nir_lower_ftrunc",
                                       lower_ftrunc).render())
-    print(nir_algebraic.AlgebraicPass("lima_nir_ppir_algebraic_late",
-                                      ppir_algebraic_late).render())
 
 if __name__ == '__main__':
     main()

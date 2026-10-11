@@ -5,8 +5,6 @@
 # First stage: very basic setup to bring up network and /dev etc
 /init-stage1.sh
 
-export CURRENT_SECTION=dut_boot
-
 # Second stage: run jobs
 test $? -eq 0 && /init-stage2.sh
 

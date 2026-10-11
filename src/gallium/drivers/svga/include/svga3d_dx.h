@@ -1,28 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /*
- * Copyright (c) 2012-2023 Broadcom. All Rights Reserved. The term
- * "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
+ * Copyright (c) 2012-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: GPL-2.0 OR MIT
  */
 
 /*
@@ -31,12 +11,22 @@
  *    SVGA 3d hardware definitions for DX10 support.
  */
 
+
+
+
+
 #ifndef _SVGA3D_DX_H_
 #define _SVGA3D_DX_H_
 
+
+
+
+
+
+#include "svga_reg.h"
 #include "svga3d_limits.h"
 #include "svga3d_types.h"
-#include "svga_reg.h"
+
 
 #define SVGA3D_INPUT_MIN               0
 #define SVGA3D_INPUT_PER_VERTEX_DATA   0
@@ -44,18 +34,34 @@
 #define SVGA3D_INPUT_MAX               2
 typedef uint32 SVGA3dInputClassification;
 
-#define SVGA3D_COLOR_WRITE_ENABLE_RED   (1 << 0)
-#define SVGA3D_COLOR_WRITE_ENABLE_GREEN (1 << 1)
-#define SVGA3D_COLOR_WRITE_ENABLE_BLUE  (1 << 2)
-#define SVGA3D_COLOR_WRITE_ENABLE_ALPHA (1 << 3)
-#define SVGA3D_COLOR_WRITE_ENABLE_ALL                                          \
-   (SVGA3D_COLOR_WRITE_ENABLE_RED | SVGA3D_COLOR_WRITE_ENABLE_GREEN |          \
-    SVGA3D_COLOR_WRITE_ENABLE_BLUE | SVGA3D_COLOR_WRITE_ENABLE_ALPHA)
+
+#define SVGA3D_RESOURCE_TYPE_MIN      1
+#define SVGA3D_RESOURCE_BUFFER        1
+#define SVGA3D_RESOURCE_TEXTURE1D     2
+#define SVGA3D_RESOURCE_TEXTURE2D     3
+#define SVGA3D_RESOURCE_TEXTURE3D     4
+#define SVGA3D_RESOURCE_TEXTURECUBE   5
+#define SVGA3D_RESOURCE_TYPE_DX10_MAX 6
+#define SVGA3D_RESOURCE_BUFFEREX      6
+#define SVGA3D_RESOURCE_TYPE_MAX      7
+typedef uint32 SVGA3dResourceType;
+
+
+#define SVGA3D_COLOR_WRITE_ENABLE_RED     (1 << 0)
+#define SVGA3D_COLOR_WRITE_ENABLE_GREEN   (1 << 1)
+#define SVGA3D_COLOR_WRITE_ENABLE_BLUE    (1 << 2)
+#define SVGA3D_COLOR_WRITE_ENABLE_ALPHA   (1 << 3)
+#define SVGA3D_COLOR_WRITE_ENABLE_ALL     (SVGA3D_COLOR_WRITE_ENABLE_RED |   \
+                                           SVGA3D_COLOR_WRITE_ENABLE_GREEN | \
+                                           SVGA3D_COLOR_WRITE_ENABLE_BLUE |  \
+                                           SVGA3D_COLOR_WRITE_ENABLE_ALPHA)
 typedef uint8 SVGA3dColorWriteEnable;
 
-#define SVGA3D_DEPTH_WRITE_MASK_ZERO 0
-#define SVGA3D_DEPTH_WRITE_MASK_ALL  1
+
+#define SVGA3D_DEPTH_WRITE_MASK_ZERO   0
+#define SVGA3D_DEPTH_WRITE_MASK_ALL    1
 typedef uint8 SVGA3dDepthWriteMask;
+
 
 #define SVGA3D_FILTER_MIP_LINEAR  (1 << 0)
 #define SVGA3D_FILTER_MAG_LINEAR  (1 << 2)
@@ -63,6 +69,7 @@ typedef uint8 SVGA3dDepthWriteMask;
 #define SVGA3D_FILTER_ANISOTROPIC (1 << 6)
 #define SVGA3D_FILTER_COMPARE     (1 << 7)
 typedef uint32 SVGA3dFilter;
+
 
 #define SVGA3D_CULL_INVALID 0
 #define SVGA3D_CULL_MIN     1
@@ -72,34 +79,36 @@ typedef uint32 SVGA3dFilter;
 #define SVGA3D_CULL_MAX     4
 typedef uint8 SVGA3dCullMode;
 
-#define SVGA3D_COMPARISON_INVALID       0
-#define SVGA3D_COMPARISON_MIN           1
-#define SVGA3D_COMPARISON_NEVER         1
-#define SVGA3D_COMPARISON_LESS          2
-#define SVGA3D_COMPARISON_EQUAL         3
-#define SVGA3D_COMPARISON_LESS_EQUAL    4
-#define SVGA3D_COMPARISON_GREATER       5
-#define SVGA3D_COMPARISON_NOT_EQUAL     6
-#define SVGA3D_COMPARISON_GREATER_EQUAL 7
-#define SVGA3D_COMPARISON_ALWAYS        8
-#define SVGA3D_COMPARISON_MAX           9
+
+#define SVGA3D_COMPARISON_INVALID         0
+#define SVGA3D_COMPARISON_MIN             1
+#define SVGA3D_COMPARISON_NEVER           1
+#define SVGA3D_COMPARISON_LESS            2
+#define SVGA3D_COMPARISON_EQUAL           3
+#define SVGA3D_COMPARISON_LESS_EQUAL      4
+#define SVGA3D_COMPARISON_GREATER         5
+#define SVGA3D_COMPARISON_NOT_EQUAL       6
+#define SVGA3D_COMPARISON_GREATER_EQUAL   7
+#define SVGA3D_COMPARISON_ALWAYS          8
+#define SVGA3D_COMPARISON_MAX             9
 typedef uint8 SVGA3dComparisonFunc;
 
-#define SVGA3D_MULTISAMPLE_RAST_DISABLE      0
-#define SVGA3D_MULTISAMPLE_RAST_ENABLE       1
-#define SVGA3D_MULTISAMPLE_RAST_DX_MAX       1
-#define SVGA3D_MULTISAMPLE_RAST_DISABLE_LINE 2
-#define SVGA3D_MULTISAMPLE_RAST_MAX          2
+
+#define SVGA3D_MULTISAMPLE_RAST_DISABLE        0
+#define SVGA3D_MULTISAMPLE_RAST_ENABLE         1
+#define SVGA3D_MULTISAMPLE_RAST_DX_MAX         1
+#define SVGA3D_MULTISAMPLE_RAST_DISABLE_LINE   2
+#define SVGA3D_MULTISAMPLE_RAST_MAX            2
 typedef uint8 SVGA3dMultisampleRastEnable;
 
-#define SVGA3D_DX_MAX_VERTEXBUFFERS             32
-#define SVGA3D_DX_MAX_VERTEXINPUTREGISTERS      16
+#define SVGA3D_DX_MAX_VERTEXBUFFERS 32
+#define SVGA3D_DX_MAX_VERTEXINPUTREGISTERS 16
 #define SVGA3D_DX_SM41_MAX_VERTEXINPUTREGISTERS 32
-#define SVGA3D_DX_MAX_SOTARGETS                 4
-#define SVGA3D_DX_MAX_SRVIEWS                   128
-#define SVGA3D_DX_MAX_CONSTBUFFERS              16
-#define SVGA3D_DX_MAX_SAMPLERS                  16
-#define SVGA3D_DX_MAX_CLASS_INSTANCES           253
+#define SVGA3D_DX_MAX_SOTARGETS 4
+#define SVGA3D_DX_MAX_SRVIEWS 128
+#define SVGA3D_DX_MAX_CONSTBUFFERS 16
+#define SVGA3D_DX_MAX_SAMPLERS 16
+#define SVGA3D_DX_MAX_CLASS_INSTANCES 253
 
 #define SVGA3D_DX_MAX_CONSTBUF_BINDING_SIZE (4096 * 4 * (uint32)sizeof(uint32))
 
@@ -119,6 +128,17 @@ typedef uint32 SVGA3dStreamOutputId;
 
 typedef union {
    struct {
+      float r;
+      float g;
+      float b;
+      float a;
+   };
+
+   float value[4];
+} SVGA3dRGBAFloat;
+
+typedef union {
+   struct {
       uint32 r;
       uint32 g;
       uint32 b;
@@ -128,69 +148,93 @@ typedef union {
    uint32 value[4];
 } SVGA3dRGBAUint32;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    uint32 cid;
    SVGAMobId mobid;
-} SVGAOTableDXContextEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGAOTableDXContextEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineContext {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineContext {
    uint32 cid;
-} SVGA3dCmdDXDefineContext;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineContext;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyContext {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyContext {
    uint32 cid;
-} SVGA3dCmdDXDestroyContext;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyContext;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBindContext {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBindContext {
    uint32 cid;
    SVGAMobId mobid;
    uint32 validContents;
-} SVGA3dCmdDXBindContext;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBindContext;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXReadbackContext {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXReadbackContext {
    uint32 cid;
-} SVGA3dCmdDXReadbackContext;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXReadbackContext;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXInvalidateContext {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXInvalidateContext {
    uint32 cid;
-} SVGA3dCmdDXInvalidateContext;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXInvalidateContext;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetSingleConstantBuffer {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetSingleConstantBuffer {
    uint32 slot;
    SVGA3dShaderType type;
    SVGA3dSurfaceId sid;
    uint32 offsetInBytes;
    uint32 sizeInBytes;
-} SVGA3dCmdDXSetSingleConstantBuffer;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetSingleConstantBuffer;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetShaderResources {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetShaderResources {
    uint32 startView;
    SVGA3dShaderType type;
 
-} SVGA3dCmdDXSetShaderResources;
-#pragma pack(pop)
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetShader {
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetShaderResources;
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetShader {
    SVGA3dShaderId shaderId;
    SVGA3dShaderType type;
-} SVGA3dCmdDXSetShader;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetShader;
+
 
 typedef union {
    struct {
@@ -203,392 +247,503 @@ typedef union {
    uint32 value;
 } SVGA3dIfaceData;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetShaderIface {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetShaderIface {
    SVGA3dShaderType type;
    uint32 numClassInstances;
    uint32 index;
    uint32 iface;
    SVGA3dIfaceData data;
-} SVGA3dCmdDXSetShaderIface;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetShaderIface;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBindShaderIface {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBindShaderIface {
    uint32 cid;
    SVGAMobId mobid;
    uint32 offsetInBytes;
-} SVGA3dCmdDXBindShaderIface;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBindShaderIface;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetSamplers {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetSamplers {
    uint32 startSampler;
    SVGA3dShaderType type;
 
-} SVGA3dCmdDXSetSamplers;
-#pragma pack(pop)
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDraw {
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetSamplers;
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDraw {
    uint32 vertexCount;
    uint32 startVertexLocation;
-} SVGA3dCmdDXDraw;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDraw;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDrawIndexed {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDrawIndexed {
    uint32 indexCount;
    uint32 startIndexLocation;
-   int32 baseVertexLocation;
-} SVGA3dCmdDXDrawIndexed;
-#pragma pack(pop)
+   int32  baseVertexLocation;
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDrawIndexed;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDrawInstanced {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDrawInstanced {
    uint32 vertexCountPerInstance;
    uint32 instanceCount;
    uint32 startVertexLocation;
    uint32 startInstanceLocation;
-} SVGA3dCmdDXDrawInstanced;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDrawInstanced;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDrawIndexedInstanced {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDrawIndexedInstanced {
    uint32 indexCountPerInstance;
    uint32 instanceCount;
    uint32 startIndexLocation;
-   int32 baseVertexLocation;
+   int32  baseVertexLocation;
    uint32 startInstanceLocation;
-} SVGA3dCmdDXDrawIndexedInstanced;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDrawIndexedInstanced;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDrawIndexedInstancedIndirect {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDrawIndexedInstancedIndirect {
    SVGA3dSurfaceId argsBufferSid;
    uint32 byteOffsetForArgs;
-} SVGA3dCmdDXDrawIndexedInstancedIndirect;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDrawIndexedInstancedIndirect;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDrawInstancedIndirect {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDrawInstancedIndirect {
    SVGA3dSurfaceId argsBufferSid;
    uint32 byteOffsetForArgs;
-} SVGA3dCmdDXDrawInstancedIndirect;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDrawInstancedIndirect;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDrawAuto {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDrawAuto {
    uint32 pad0;
-} SVGA3dCmdDXDrawAuto;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDrawAuto;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDispatch {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDispatch {
    uint32 threadGroupCountX;
    uint32 threadGroupCountY;
    uint32 threadGroupCountZ;
-} SVGA3dCmdDXDispatch;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDispatch;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDispatchIndirect {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDispatchIndirect {
    SVGA3dSurfaceId argsBufferSid;
    uint32 byteOffsetForArgs;
-} SVGA3dCmdDXDispatchIndirect;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDispatchIndirect;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetInputLayout {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetInputLayout {
    SVGA3dElementLayoutId elementLayoutId;
-} SVGA3dCmdDXSetInputLayout;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetInputLayout;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dVertexBuffer {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dVertexBuffer {
    SVGA3dSurfaceId sid;
    uint32 stride;
    uint32 offset;
-} SVGA3dVertexBuffer;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dVertexBuffer;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetVertexBuffers {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetVertexBuffers {
    uint32 startBuffer;
 
-} SVGA3dCmdDXSetVertexBuffers;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetVertexBuffers;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dVertexBuffer_v2 {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dVertexBuffer_v2 {
    SVGA3dSurfaceId sid;
    uint32 stride;
    uint32 offset;
    uint32 sizeInBytes;
-} SVGA3dVertexBuffer_v2;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dVertexBuffer_v2;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetVertexBuffers_v2 {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetVertexBuffers_v2 {
    uint32 startBuffer;
 
-} SVGA3dCmdDXSetVertexBuffers_v2;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetVertexBuffers_v2;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dVertexBufferOffsetAndSize {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dVertexBufferOffsetAndSize {
    uint32 stride;
    uint32 offset;
    uint32 sizeInBytes;
-} SVGA3dVertexBufferOffsetAndSize;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dVertexBufferOffsetAndSize;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetVertexBuffersOffsetAndSize {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetVertexBuffersOffsetAndSize {
    uint32 startBuffer;
 
-} SVGA3dCmdDXSetVertexBuffersOffsetAndSize;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetVertexBuffersOffsetAndSize;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetIndexBuffer {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetIndexBuffer {
    SVGA3dSurfaceId sid;
    SVGA3dSurfaceFormat format;
    uint32 offset;
-} SVGA3dCmdDXSetIndexBuffer;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetIndexBuffer;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetIndexBuffer_v2 {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetIndexBuffer_v2 {
    SVGA3dSurfaceId sid;
    SVGA3dSurfaceFormat format;
    uint32 offset;
    uint32 sizeInBytes;
-} SVGA3dCmdDXSetIndexBuffer_v2;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetIndexBuffer_v2;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetIndexBufferOffsetAndSize {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetIndexBufferOffsetAndSize {
    SVGA3dSurfaceFormat format;
    uint32 offset;
    uint32 sizeInBytes;
-} SVGA3dCmdDXSetIndexBufferOffsetAndSize;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetIndexBufferOffsetAndSize;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetTopology {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetTopology {
    SVGA3dPrimitiveType topology;
-} SVGA3dCmdDXSetTopology;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetTopology;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetRenderTargets {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetRenderTargets {
    SVGA3dDepthStencilViewId depthStencilViewId;
 
-} SVGA3dCmdDXSetRenderTargets;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetRenderTargets;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetBlendState {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetBlendState {
    SVGA3dBlendStateId blendId;
    float blendFactor[4];
    uint32 sampleMask;
-} SVGA3dCmdDXSetBlendState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetBlendState;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetDepthStencilState {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetDepthStencilState {
    SVGA3dDepthStencilStateId depthStencilId;
    uint32 stencilRef;
-} SVGA3dCmdDXSetDepthStencilState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetDepthStencilState;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetRasterizerState {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetRasterizerState {
    SVGA3dRasterizerStateId rasterizerId;
-} SVGA3dCmdDXSetRasterizerState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetRasterizerState;
+
 
 #define SVGA3D_DXQUERY_FLAG_PREDICATEHINT (1 << 0)
 typedef uint32 SVGA3dDXQueryFlags;
 
-#define SVGADX_QDSTATE_INVALID  ((uint8) - 1)
-#define SVGADX_QDSTATE_MIN      0
-#define SVGADX_QDSTATE_IDLE     0
-#define SVGADX_QDSTATE_ACTIVE   1
-#define SVGADX_QDSTATE_PENDING  2
-#define SVGADX_QDSTATE_FINISHED 3
-#define SVGADX_QDSTATE_MAX      4
+
+#define SVGADX_QDSTATE_INVALID   ((uint8)-1)
+#define SVGADX_QDSTATE_MIN       0
+#define SVGADX_QDSTATE_IDLE      0
+#define SVGADX_QDSTATE_ACTIVE    1
+#define SVGADX_QDSTATE_PENDING   2
+#define SVGADX_QDSTATE_FINISHED  3
+#define SVGADX_QDSTATE_MAX       4
 typedef uint8 SVGADXQueryDeviceState;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dQueryTypeUint8 type;
    uint16 pad0;
    SVGADXQueryDeviceState state;
    SVGA3dDXQueryFlags flags;
    SVGAMobId mobid;
    uint32 offset;
-} SVGACOTableDXQueryEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXQueryEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineQuery {
    SVGA3dQueryId queryId;
    SVGA3dQueryType type;
    SVGA3dDXQueryFlags flags;
-} SVGA3dCmdDXDefineQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyQuery {
    SVGA3dQueryId queryId;
-} SVGA3dCmdDXDestroyQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBindQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBindQuery {
    SVGA3dQueryId queryId;
    SVGAMobId mobid;
-} SVGA3dCmdDXBindQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBindQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetQueryOffset {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetQueryOffset {
    SVGA3dQueryId queryId;
    uint32 mobOffset;
-} SVGA3dCmdDXSetQueryOffset;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetQueryOffset;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBeginQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBeginQuery {
    SVGA3dQueryId queryId;
-} SVGA3dCmdDXBeginQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBeginQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXEndQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXEndQuery {
    SVGA3dQueryId queryId;
-} SVGA3dCmdDXEndQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXEndQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXReadbackQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXReadbackQuery {
    SVGA3dQueryId queryId;
-} SVGA3dCmdDXReadbackQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXReadbackQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXMoveQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXMoveQuery {
    SVGA3dQueryId queryId;
    SVGAMobId mobid;
    uint32 mobOffset;
-} SVGA3dCmdDXMoveQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXMoveQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBindAllQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBindAllQuery {
    uint32 cid;
    SVGAMobId mobid;
-} SVGA3dCmdDXBindAllQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBindAllQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXReadbackAllQuery {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXReadbackAllQuery {
    uint32 cid;
-} SVGA3dCmdDXReadbackAllQuery;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXReadbackAllQuery;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetPredication {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetPredication {
    SVGA3dQueryId queryId;
    uint32 predicateValue;
-} SVGA3dCmdDXSetPredication;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetPredication;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dDXSOState {
+typedef
+#include "vmware_pack_begin.h"
+struct MKS3dDXSOState {
    uint32 offset;
    uint32 intOffset;
-   uint32 dead1;
-   uint32 dead2;
-} SVGA3dDXSOState;
-#pragma pack(pop)
+   uint32 vertexCount;
+   uint32 dead;
+}
+#include "vmware_pack_end.h"
+SVGA3dDXSOState;
 
-#define SVGA3D_DX_SO_OFFSET_APPEND ((uint32)~0u)
 
-#pragma pack(push, 1)
-typedef struct SVGA3dSoTarget {
+#define SVGA3D_DX_SO_OFFSET_APPEND ((uint32) ~0u)
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dSoTarget {
    SVGA3dSurfaceId sid;
    uint32 offset;
    uint32 sizeInBytes;
-} SVGA3dSoTarget;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dSoTarget;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetSOTargets {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetSOTargets {
    uint32 pad0;
 
-} SVGA3dCmdDXSetSOTargets;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetSOTargets;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dViewport {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dViewport
+{
    float x;
    float y;
    float width;
    float height;
    float minDepth;
    float maxDepth;
-} SVGA3dViewport;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dViewport;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetViewports {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetViewports {
    uint32 pad0;
 
-} SVGA3dCmdDXSetViewports;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetViewports;
 
-#define SVGA3D_DX_MAX_VIEWPORTS 16
+#define SVGA3D_DX_MAX_VIEWPORTS  16
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetScissorRects {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetScissorRects {
    uint32 pad0;
 
-} SVGA3dCmdDXSetScissorRects;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetScissorRects;
 
-#define SVGA3D_DX_MAX_SCISSORRECTS 16
+#define SVGA3D_DX_MAX_SCISSORRECTS  16
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXClearRenderTargetView {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXClearRenderTargetView {
    SVGA3dRenderTargetViewId renderTargetViewId;
    SVGA3dRGBAFloat rgba;
-} SVGA3dCmdDXClearRenderTargetView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXClearRenderTargetView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXClearDepthStencilView {
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXClearDepthStencilView {
    uint16 flags;
    uint16 stencil;
    SVGA3dDepthStencilViewId depthStencilViewId;
    float depth;
-} SVGA3dCmdDXClearDepthStencilView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXClearDepthStencilView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredCopyRegion {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredCopyRegion {
    SVGA3dSurfaceId dstSid;
    uint32 dstSubResource;
    SVGA3dSurfaceId srcSid;
    uint32 srcSubResource;
    SVGA3dCopyBox box;
-} SVGA3dCmdDXPredCopyRegion;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredCopyRegion;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredStagingCopyRegion {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredStagingCopyRegion {
    SVGA3dSurfaceId dstSid;
    uint32 dstSubResource;
    SVGA3dSurfaceId srcSid;
@@ -597,29 +752,36 @@ typedef struct SVGA3dCmdDXPredStagingCopyRegion {
    uint8 readback;
    uint8 unsynchronized;
    uint8 mustBeZero[2];
-} SVGA3dCmdDXPredStagingCopyRegion;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredStagingCopyRegion;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredCopy {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredCopy {
    SVGA3dSurfaceId dstSid;
    SVGA3dSurfaceId srcSid;
-} SVGA3dCmdDXPredCopy;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredCopy;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredConvertRegion {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredConvertRegion {
    SVGA3dSurfaceId dstSid;
    uint32 dstSubResource;
    SVGA3dBox destBox;
    SVGA3dSurfaceId srcSid;
    uint32 srcSubResource;
    SVGA3dBox srcBox;
-} SVGA3dCmdDXPredConvertRegion;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredConvertRegion;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredStagingConvertRegion {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredStagingConvertRegion {
    SVGA3dSurfaceId dstSid;
    uint32 dstSubResource;
    SVGA3dBox destBox;
@@ -629,38 +791,48 @@ typedef struct SVGA3dCmdDXPredStagingConvertRegion {
    uint8 readback;
    uint8 unsynchronized;
    uint8 mustBeZero[2];
-} SVGA3dCmdDXPredStagingConvertRegion;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredStagingConvertRegion;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredConvert {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredConvert {
    SVGA3dSurfaceId dstSid;
    SVGA3dSurfaceId srcSid;
-} SVGA3dCmdDXPredConvert;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredConvert;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredStagingConvert {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredStagingConvert {
    SVGA3dSurfaceId dstSid;
    SVGA3dSurfaceId srcSid;
    uint8 readback;
    uint8 unsynchronized;
    uint8 mustBeZero[2];
-} SVGA3dCmdDXPredStagingConvert;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredStagingConvert;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBufferCopy {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBufferCopy {
    SVGA3dSurfaceId dest;
    SVGA3dSurfaceId src;
    uint32 destX;
    uint32 srcX;
    uint32 width;
-} SVGA3dCmdDXBufferCopy;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBufferCopy;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXStagingBufferCopy {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXStagingBufferCopy {
    SVGA3dSurfaceId dest;
    SVGA3dSurfaceId src;
    uint32 destX;
@@ -669,28 +841,36 @@ typedef struct SVGA3dCmdDXStagingBufferCopy {
    uint8 readback;
    uint8 unsynchronized;
    uint8 mustBeZero[2];
-} SVGA3dCmdDXStagingBufferCopy;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXStagingBufferCopy;
 
-#pragma pack(push, 1)
-typedef struct {
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dSurfaceId dstSid;
    uint32 dstSubResource;
    SVGA3dSurfaceId srcSid;
    uint32 srcSubResource;
    SVGA3dSurfaceFormat copyFormat;
-} SVGA3dCmdDXResolveCopy;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXResolveCopy;
 
-#pragma pack(push, 1)
-typedef struct {
+
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dSurfaceId dstSid;
    uint32 dstSubResource;
    SVGA3dSurfaceId srcSid;
    uint32 srcSubResource;
    SVGA3dSurfaceFormat copyFormat;
-} SVGA3dCmdDXPredResolveCopy;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredResolveCopy;
 
 typedef uint32 SVGA3dDXPresentBltMode;
 #define SVGADX_PRESENTBLT_LINEAR           (1 << 0)
@@ -698,8 +878,9 @@ typedef uint32 SVGA3dDXPresentBltMode;
 #define SVGADX_PRESENTBLT_FORCE_SRC_XRBIAS (1 << 2)
 #define SVGADX_PRESENTBLT_MODE_MAX         (1 << 3)
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPresentBlt {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPresentBlt {
    SVGA3dSurfaceId srcSid;
    uint32 srcSubResource;
    SVGA3dSurfaceId dstSid;
@@ -707,39 +888,54 @@ typedef struct SVGA3dCmdDXPresentBlt {
    SVGA3dBox boxSrc;
    SVGA3dBox boxDest;
    SVGA3dDXPresentBltMode mode;
-} SVGA3dCmdDXPresentBlt;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPresentBlt;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXGenMips {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXGenMips {
    SVGA3dShaderResourceViewId shaderResourceViewId;
-} SVGA3dCmdDXGenMips;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXGenMips;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXUpdateSubResource {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXUpdateSubResource {
    SVGA3dSurfaceId sid;
    uint32 subResource;
    SVGA3dBox box;
-} SVGA3dCmdDXUpdateSubResource;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXUpdateSubResource;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXReadbackSubResource {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXReadbackSubResource {
    SVGA3dSurfaceId sid;
    uint32 subResource;
-} SVGA3dCmdDXReadbackSubResource;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXReadbackSubResource;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXInvalidateSubResource {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXInvalidateSubResource {
    SVGA3dSurfaceId sid;
    uint32 subResource;
-} SVGA3dCmdDXInvalidateSubResource;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXInvalidateSubResource;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXTransferFromBuffer {
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXTransferFromBuffer {
    SVGA3dSurfaceId srcSid;
    uint32 srcOffset;
    uint32 srcPitch;
@@ -747,15 +943,19 @@ typedef struct SVGA3dCmdDXTransferFromBuffer {
    SVGA3dSurfaceId destSid;
    uint32 destSubResource;
    SVGA3dBox destBox;
-} SVGA3dCmdDXTransferFromBuffer;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXTransferFromBuffer;
+
 
 #define SVGA3D_TRANSFER_TO_BUFFER_READBACK   (1 << 0)
 #define SVGA3D_TRANSFER_TO_BUFFER_FLAGS_MASK (1 << 0)
 typedef uint32 SVGA3dTransferToBufferFlags;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXTransferToBuffer {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXTransferToBuffer {
    SVGA3dSurfaceId srcSid;
    uint32 srcSubResource;
    SVGA3dBox srcBox;
@@ -764,11 +964,15 @@ typedef struct SVGA3dCmdDXTransferToBuffer {
    uint32 destPitch;
    uint32 destSlicePitch;
    SVGA3dTransferToBufferFlags flags;
-} SVGA3dCmdDXTransferToBuffer;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXTransferToBuffer;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredTransferFromBuffer {
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredTransferFromBuffer {
    SVGA3dSurfaceId srcSid;
    uint32 srcOffset;
    uint32 srcPitch;
@@ -776,81 +980,109 @@ typedef struct SVGA3dCmdDXPredTransferFromBuffer {
    SVGA3dSurfaceId destSid;
    uint32 destSubResource;
    SVGA3dBox destBox;
-} SVGA3dCmdDXPredTransferFromBuffer;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredTransferFromBuffer;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSurfaceCopyAndReadback {
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSurfaceCopyAndReadback {
    SVGA3dSurfaceId srcSid;
    SVGA3dSurfaceId destSid;
    SVGA3dCopyBox box;
-} SVGA3dCmdDXSurfaceCopyAndReadback;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSurfaceCopyAndReadback;
+
+
 
 typedef uint32 SVGADXHintId;
-#define SVGA_DX_HINT_NONE             0
-#define SVGA_DX_HINT_PREFETCH_OBJECT  1
-#define SVGA_DX_HINT_PREEVICT_OBJECT  2
-#define SVGA_DX_HINT_PREFETCH_COBJECT 3
-#define SVGA_DX_HINT_PREEVICT_COBJECT 4
-#define SVGA_DX_HINT_MAX              5
+#define SVGA_DX_HINT_NONE              0
+#define SVGA_DX_HINT_PREFETCH_OBJECT   1
+#define SVGA_DX_HINT_PREEVICT_OBJECT   2
+#define SVGA_DX_HINT_PREFETCH_COBJECT  3
+#define SVGA_DX_HINT_PREEVICT_COBJECT  4
+#define SVGA_DX_HINT_MAX               5
 
-#pragma pack(push, 1)
-typedef struct SVGAObjectRef {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGAObjectRef {
    SVGAOTableType type;
    uint32 id;
-} SVGAObjectRef;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGAObjectRef;
 
-#pragma pack(push, 1)
-typedef struct SVGACObjectRef {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGACObjectRef {
    SVGACOTableType type;
    uint32 cid;
    uint32 id;
-} SVGACObjectRef;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACObjectRef;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXHint {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXHint {
    SVGADXHintId hintId;
 
-} SVGA3dCmdDXHint;
-#pragma pack(pop)
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBufferUpdate {
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXHint;
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBufferUpdate {
    SVGA3dSurfaceId sid;
    uint32 x;
    uint32 width;
-} SVGA3dCmdDXBufferUpdate;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBufferUpdate;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetConstantBufferOffset {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetConstantBufferOffset {
    uint32 slot;
    uint32 offsetInBytes;
-} SVGA3dCmdDXSetConstantBufferOffset;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetConstantBufferOffset;
 
 typedef SVGA3dCmdDXSetConstantBufferOffset SVGA3dCmdDXSetVSConstantBufferOffset;
 
+
 typedef SVGA3dCmdDXSetConstantBufferOffset SVGA3dCmdDXSetPSConstantBufferOffset;
+
 
 typedef SVGA3dCmdDXSetConstantBufferOffset SVGA3dCmdDXSetGSConstantBufferOffset;
 
+
 typedef SVGA3dCmdDXSetConstantBufferOffset SVGA3dCmdDXSetHSConstantBufferOffset;
+
 
 typedef SVGA3dCmdDXSetConstantBufferOffset SVGA3dCmdDXSetDSConstantBufferOffset;
 
+
 typedef SVGA3dCmdDXSetConstantBufferOffset SVGA3dCmdDXSetCSConstantBufferOffset;
+
+
 
 #define SVGA3D_BUFFEREX_SRV_RAW        (1 << 0)
 #define SVGA3D_BUFFEREX_SRV_FLAGS_MAX  (1 << 1)
 #define SVGA3D_BUFFEREX_SRV_FLAGS_MASK (SVGA3D_BUFFEREX_SRV_FLAGS_MAX - 1)
 typedef uint32 SVGA3dBufferExFlags;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    union {
       struct {
          uint32 firstElement;
@@ -871,21 +1103,25 @@ typedef struct {
          uint32 pad0;
       } bufferex;
    };
-} SVGA3dShaderResourceViewDesc;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dShaderResourceViewDesc;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dSurfaceId sid;
    SVGA3dSurfaceFormat format;
    SVGA3dResourceType resourceDimension;
    SVGA3dShaderResourceViewDesc desc;
    uint32 pad;
-} SVGACOTableDXSRViewEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXSRViewEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineShaderResourceView {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineShaderResourceView {
    SVGA3dShaderResourceViewId shaderResourceViewId;
 
    SVGA3dSurfaceId sid;
@@ -893,17 +1129,23 @@ typedef struct SVGA3dCmdDXDefineShaderResourceView {
    SVGA3dResourceType resourceDimension;
 
    SVGA3dShaderResourceViewDesc desc;
-} SVGA3dCmdDXDefineShaderResourceView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineShaderResourceView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyShaderResourceView {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyShaderResourceView {
    SVGA3dShaderResourceViewId shaderResourceViewId;
-} SVGA3dCmdDXDestroyShaderResourceView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyShaderResourceView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dRenderTargetViewDesc {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dRenderTargetViewDesc {
    union {
       struct {
          uint32 firstElement;
@@ -921,21 +1163,25 @@ typedef struct SVGA3dRenderTargetViewDesc {
          uint32 wSize;
       } tex3D;
    };
-} SVGA3dRenderTargetViewDesc;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dRenderTargetViewDesc;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dSurfaceId sid;
    SVGA3dSurfaceFormat format;
    SVGA3dResourceType resourceDimension;
    SVGA3dRenderTargetViewDesc desc;
    uint32 pad[2];
-} SVGACOTableDXRTViewEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXRTViewEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineRenderTargetView {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineRenderTargetView {
    SVGA3dRenderTargetViewId renderTargetViewId;
 
    SVGA3dSurfaceId sid;
@@ -943,22 +1189,29 @@ typedef struct SVGA3dCmdDXDefineRenderTargetView {
    SVGA3dResourceType resourceDimension;
 
    SVGA3dRenderTargetViewDesc desc;
-} SVGA3dCmdDXDefineRenderTargetView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineRenderTargetView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyRenderTargetView {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyRenderTargetView {
    SVGA3dRenderTargetViewId renderTargetViewId;
-} SVGA3dCmdDXDestroyRenderTargetView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyRenderTargetView;
+
+
 
 #define SVGA3D_DXDSVIEW_CREATE_READ_ONLY_DEPTH   0x01
 #define SVGA3D_DXDSVIEW_CREATE_READ_ONLY_STENCIL 0x02
 #define SVGA3D_DXDSVIEW_CREATE_FLAG_MASK         0x03
 typedef uint8 SVGA3DCreateDSViewFlags;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dSurfaceId sid;
    SVGA3dSurfaceFormat format;
    SVGA3dResourceType resourceDimension;
@@ -969,11 +1222,13 @@ typedef struct {
    uint8 pad0;
    uint16 pad1;
    uint32 pad2;
-} SVGACOTableDXDSViewEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXDSViewEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineDepthStencilView {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineDepthStencilView {
    SVGA3dDepthStencilViewId depthStencilViewId;
 
    SVGA3dSurfaceId sid;
@@ -985,11 +1240,15 @@ typedef struct SVGA3dCmdDXDefineDepthStencilView {
    SVGA3DCreateDSViewFlags flags;
    uint8 pad0;
    uint16 pad1;
-} SVGA3dCmdDXDefineDepthStencilView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineDepthStencilView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineDepthStencilView_v2 {
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineDepthStencilView_v2 {
    SVGA3dDepthStencilViewId depthStencilViewId;
 
    SVGA3dSurfaceId sid;
@@ -1001,22 +1260,29 @@ typedef struct SVGA3dCmdDXDefineDepthStencilView_v2 {
    SVGA3DCreateDSViewFlags flags;
    uint8 pad0;
    uint16 pad1;
-} SVGA3dCmdDXDefineDepthStencilView_v2;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineDepthStencilView_v2;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyDepthStencilView {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyDepthStencilView {
    SVGA3dDepthStencilViewId depthStencilViewId;
-} SVGA3dCmdDXDestroyDepthStencilView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyDepthStencilView;
+
+
 
 #define SVGA3D_UABUFFER_RAW     (1 << 0)
 #define SVGA3D_UABUFFER_APPEND  (1 << 1)
 #define SVGA3D_UABUFFER_COUNTER (1 << 2)
 typedef uint32 SVGA3dUABufferFlags;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    union {
       struct {
          uint32 firstElement;
@@ -1040,22 +1306,26 @@ typedef struct {
          uint32 padding1;
       } tex3D;
    };
-} SVGA3dUAViewDesc;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dUAViewDesc;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dSurfaceId sid;
    SVGA3dSurfaceFormat format;
    SVGA3dResourceType resourceDimension;
    SVGA3dUAViewDesc desc;
    uint32 structureCount;
    uint32 pad[7];
-} SVGACOTableDXUAViewEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXUAViewEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineUAView {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineUAView {
    SVGA3dUAViewId uaViewId;
 
    SVGA3dSurfaceId sid;
@@ -1063,137 +1333,181 @@ typedef struct SVGA3dCmdDXDefineUAView {
    SVGA3dResourceType resourceDimension;
 
    SVGA3dUAViewDesc desc;
-} SVGA3dCmdDXDefineUAView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineUAView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyUAView {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyUAView {
    SVGA3dUAViewId uaViewId;
-} SVGA3dCmdDXDestroyUAView;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyUAView;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXClearUAViewUint {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXClearUAViewUint {
    SVGA3dUAViewId uaViewId;
    SVGA3dRGBAUint32 value;
-} SVGA3dCmdDXClearUAViewUint;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXClearUAViewUint;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXClearUAViewFloat {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXClearUAViewFloat {
    SVGA3dUAViewId uaViewId;
    SVGA3dRGBAFloat value;
-} SVGA3dCmdDXClearUAViewFloat;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXClearUAViewFloat;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXCopyStructureCount {
+
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXCopyStructureCount {
    SVGA3dUAViewId srcUAViewId;
    SVGA3dSurfaceId destSid;
    uint32 destByteOffset;
-} SVGA3dCmdDXCopyStructureCount;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXCopyStructureCount;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetStructureCount {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetStructureCount {
    SVGA3dUAViewId uaViewId;
    uint32 structureCount;
-} SVGA3dCmdDXSetStructureCount;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetStructureCount;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetUAViews {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetUAViews {
    uint32 uavSpliceIndex;
 
-} SVGA3dCmdDXSetUAViews;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetUAViews;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetCSUAViews {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetCSUAViews {
    uint32 startIndex;
 
-} SVGA3dCmdDXSetCSUAViews;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetCSUAViews;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dInputElementDesc {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dInputElementDesc {
    uint32 inputSlot;
    uint32 alignedByteOffset;
    SVGA3dSurfaceFormat format;
    SVGA3dInputClassification inputSlotClass;
    uint32 instanceDataStepRate;
    uint32 inputRegister;
-} SVGA3dInputElementDesc;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dInputElementDesc;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    uint32 elid;
    uint32 numDescs;
    SVGA3dInputElementDesc descs[32];
    uint32 pad[62];
-} SVGACOTableDXElementLayoutEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXElementLayoutEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineElementLayout {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineElementLayout {
    SVGA3dElementLayoutId elementLayoutId;
 
-} SVGA3dCmdDXDefineElementLayout;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineElementLayout;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyElementLayout {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyElementLayout {
    SVGA3dElementLayoutId elementLayoutId;
-} SVGA3dCmdDXDestroyElementLayout;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyElementLayout;
+
+
 
 #define SVGA3D_DX_MAX_RENDER_TARGETS 8
 
-#pragma pack(push, 1)
-typedef struct SVGA3dDXBlendStatePerRT {
-   uint8 blendEnable;
-   uint8 srcBlend;
-   uint8 destBlend;
-   uint8 blendOp;
-   uint8 srcBlendAlpha;
-   uint8 destBlendAlpha;
-   uint8 blendOpAlpha;
-   SVGA3dColorWriteEnable renderTargetWriteMask;
-   uint8 logicOpEnable;
-   uint8 logicOp;
-   uint16 pad0;
-} SVGA3dDXBlendStatePerRT;
-#pragma pack(pop)
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dDXBlendStatePerRT {
+      uint8 blendEnable;
+      uint8 srcBlend;
+      uint8 destBlend;
+      uint8 blendOp;
+      uint8 srcBlendAlpha;
+      uint8 destBlendAlpha;
+      uint8 blendOpAlpha;
+      SVGA3dColorWriteEnable renderTargetWriteMask;
+      uint8 logicOpEnable;
+      uint8 logicOp;
+      uint16 pad0;
+}
+#include "vmware_pack_end.h"
+SVGA3dDXBlendStatePerRT;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    uint8 alphaToCoverageEnable;
    uint8 independentBlendEnable;
    uint16 pad0;
-   SVGA3dDXBlendStatePerRT perRT[SVGA3D_DX_MAX_RENDER_TARGETS];
+   SVGA3dDXBlendStatePerRT perRT[SVGA3D_MAX_RENDER_TARGETS];
    uint32 pad1[7];
-} SVGACOTableDXBlendStateEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXBlendStateEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineBlendState {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineBlendState {
    SVGA3dBlendStateId blendId;
    uint8 alphaToCoverageEnable;
    uint8 independentBlendEnable;
    uint16 pad0;
-   SVGA3dDXBlendStatePerRT perRT[SVGA3D_DX_MAX_RENDER_TARGETS];
-} SVGA3dCmdDXDefineBlendState;
-#pragma pack(pop)
+   SVGA3dDXBlendStatePerRT perRT[SVGA3D_MAX_RENDER_TARGETS];
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineBlendState;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyBlendState {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyBlendState {
    SVGA3dBlendStateId blendId;
-} SVGA3dCmdDXDestroyBlendState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyBlendState;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    uint8 depthEnable;
    SVGA3dDepthWriteMask depthWriteMask;
    SVGA3dComparisonFunc depthFunc;
@@ -1212,11 +1526,14 @@ typedef struct {
    uint8 backStencilDepthFailOp;
    uint8 backStencilPassOp;
    SVGA3dComparisonFunc backStencilFunc;
-} SVGACOTableDXDepthStencilEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXDepthStencilEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineDepthStencilState {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineDepthStencilState {
    SVGA3dDepthStencilStateId depthStencilId;
 
    uint8 depthEnable;
@@ -1237,17 +1554,23 @@ typedef struct SVGA3dCmdDXDefineDepthStencilState {
    uint8 backStencilDepthFailOp;
    uint8 backStencilPassOp;
    SVGA3dComparisonFunc backStencilFunc;
-} SVGA3dCmdDXDefineDepthStencilState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineDepthStencilState;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyDepthStencilState {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyDepthStencilState {
    SVGA3dDepthStencilStateId depthStencilId;
-} SVGA3dCmdDXDestroyDepthStencilState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyDepthStencilState;
 
-#pragma pack(push, 1)
-typedef struct {
+
+typedef
+#include "vmware_pack_begin.h"
+struct {
    uint8 fillMode;
    SVGA3dCullMode cullMode;
    uint8 frontCounterClockwise;
@@ -1265,11 +1588,14 @@ typedef struct {
    uint16 lineStipplePattern;
    uint8 forcedSampleCount;
    uint8 mustBeZero[3];
-} SVGACOTableDXRasterizerStateEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXRasterizerStateEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineRasterizerState {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineRasterizerState {
    SVGA3dRasterizerStateId rasterizerId;
 
    uint8 fillMode;
@@ -1287,11 +1613,15 @@ typedef struct SVGA3dCmdDXDefineRasterizerState {
    uint8 lineStippleEnable;
    uint8 lineStippleFactor;
    uint16 lineStipplePattern;
-} SVGA3dCmdDXDefineRasterizerState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineRasterizerState;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineRasterizerState_v2 {
+
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineRasterizerState_v2 {
    SVGA3dRasterizerStateId rasterizerId;
 
    uint8 fillMode;
@@ -1310,17 +1640,23 @@ typedef struct SVGA3dCmdDXDefineRasterizerState_v2 {
    uint8 lineStippleFactor;
    uint16 lineStipplePattern;
    uint32 forcedSampleCount;
-} SVGA3dCmdDXDefineRasterizerState_v2;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineRasterizerState_v2;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyRasterizerState {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyRasterizerState {
    SVGA3dRasterizerStateId rasterizerId;
-} SVGA3dCmdDXDestroyRasterizerState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyRasterizerState;
 
-#pragma pack(push, 1)
-typedef struct {
+
+typedef
+#include "vmware_pack_begin.h"
+struct {
    SVGA3dFilter filter;
    uint8 addressU;
    uint8 addressV;
@@ -1334,11 +1670,14 @@ typedef struct {
    float minLOD;
    float maxLOD;
    uint32 pad2[6];
-} SVGACOTableDXSamplerEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXSamplerEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineSamplerState {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineSamplerState {
    SVGA3dSamplerId samplerId;
    SVGA3dFilter filter;
    uint8 addressU;
@@ -1352,135 +1691,157 @@ typedef struct SVGA3dCmdDXDefineSamplerState {
    SVGA3dRGBAFloat borderColor;
    float minLOD;
    float maxLOD;
-} SVGA3dCmdDXDefineSamplerState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineSamplerState;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroySamplerState {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroySamplerState {
    SVGA3dSamplerId samplerId;
-} SVGA3dCmdDXDestroySamplerState;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroySamplerState;
 
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_UNDEFINED                         0
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_POSITION                          1
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_CLIP_DISTANCE                     2
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_CULL_DISTANCE                     3
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_RENDER_TARGET_ARRAY_INDEX         4
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_VIEWPORT_ARRAY_INDEX              5
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_VERTEX_ID                         6
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_PRIMITIVE_ID                      7
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_INSTANCE_ID                       8
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_IS_FRONT_FACE                     9
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_SAMPLE_INDEX                      10
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_U_EQ_0_EDGE_TESSFACTOR 11
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_V_EQ_0_EDGE_TESSFACTOR 12
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_U_EQ_1_EDGE_TESSFACTOR 13
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_V_EQ_1_EDGE_TESSFACTOR 14
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_U_INSIDE_TESSFACTOR    15
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_V_INSIDE_TESSFACTOR    16
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_U_EQ_0_EDGE_TESSFACTOR  17
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_V_EQ_0_EDGE_TESSFACTOR  18
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_W_EQ_0_EDGE_TESSFACTOR  19
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_INSIDE_TESSFACTOR       20
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_LINE_DETAIL_TESSFACTOR      21
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_LINE_DENSITY_TESSFACTOR     22
-#define SVGADX_SIGNATURE_SEMANTIC_NAME_MAX                               23
+
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_UNDEFINED                          0
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_POSITION                           1
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_CLIP_DISTANCE                      2
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_CULL_DISTANCE                      3
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_RENDER_TARGET_ARRAY_INDEX          4
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_VIEWPORT_ARRAY_INDEX               5
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_VERTEX_ID                          6
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_PRIMITIVE_ID                       7
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_INSTANCE_ID                        8
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_IS_FRONT_FACE                      9
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_SAMPLE_INDEX                       10
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_U_EQ_0_EDGE_TESSFACTOR  11
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_V_EQ_0_EDGE_TESSFACTOR  12
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_U_EQ_1_EDGE_TESSFACTOR  13
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_V_EQ_1_EDGE_TESSFACTOR  14
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_U_INSIDE_TESSFACTOR     15
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_QUAD_V_INSIDE_TESSFACTOR     16
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_U_EQ_0_EDGE_TESSFACTOR   17
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_V_EQ_0_EDGE_TESSFACTOR   18
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_W_EQ_0_EDGE_TESSFACTOR   19
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_TRI_INSIDE_TESSFACTOR        20
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_LINE_DETAIL_TESSFACTOR       21
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_FINAL_LINE_DENSITY_TESSFACTOR      22
+#define SVGADX_SIGNATURE_SEMANTIC_NAME_MAX                                23
 typedef uint32 SVGA3dDXSignatureSemanticName;
 
 #define SVGADX_SIGNATURE_REGISTER_COMPONENT_UNKNOWN 0
-#define SVGADX_SIGNATURE_REGISTER_COMPONENT_UINT32  1
-#define SVGADX_SIGNATURE_REGISTER_COMPONENT_INT32   2
-#define SVGADX_SIGNATURE_REGISTER_COMPONENT_FLOAT   3
 typedef uint32 SVGA3dDXSignatureRegisterComponentType;
 
 #define SVGADX_SIGNATURE_MIN_PRECISION_DEFAULT 0
 typedef uint32 SVGA3dDXSignatureMinPrecision;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dDXSignatureEntry {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dDXSignatureEntry {
    uint32 registerIndex;
    SVGA3dDXSignatureSemanticName semanticName;
    uint32 mask;
    SVGA3dDXSignatureRegisterComponentType componentType;
    SVGA3dDXSignatureMinPrecision minPrecision;
-} SVGA3dDXShaderSignatureEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dDXShaderSignatureEntry;
 
 #define SVGADX_SIGNATURE_HEADER_VERSION_0 0x08a92d12
 
-#pragma pack(push, 1)
-typedef struct SVGA3dDXSignatureHeader {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dDXSignatureHeader {
    uint32 headerVersion;
    uint32 numInputSignatures;
    uint32 numOutputSignatures;
    uint32 numPatchConstantSignatures;
-} SVGA3dDXShaderSignatureHeader;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dDXShaderSignatureHeader;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineShader {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineShader {
    SVGA3dShaderId shaderId;
    SVGA3dShaderType type;
    uint32 sizeInBytes;
-} SVGA3dCmdDXDefineShader;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineShader;
 
-#pragma pack(push, 1)
-typedef struct SVGACOTableDXShaderEntry {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGACOTableDXShaderEntry {
    SVGA3dShaderType type;
    uint32 sizeInBytes;
    uint32 offsetInBytes;
    SVGAMobId mobid;
    uint32 pad[4];
-} SVGACOTableDXShaderEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXShaderEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyShader {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyShader {
    SVGA3dShaderId shaderId;
-} SVGA3dCmdDXDestroyShader;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyShader;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBindShader {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBindShader {
    uint32 cid;
    uint32 shid;
    SVGAMobId mobid;
    uint32 offsetInBytes;
-} SVGA3dCmdDXBindShader;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBindShader;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBindAllShader {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBindAllShader {
    uint32 cid;
    SVGAMobId mobid;
-} SVGA3dCmdDXBindAllShader;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBindAllShader;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXCondBindAllShader {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXCondBindAllShader {
    uint32 cid;
    SVGAMobId testMobid;
    SVGAMobId mobid;
-} SVGA3dCmdDXCondBindAllShader;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXCondBindAllShader;
+
 
 #define SVGA3D_MAX_DX10_STREAMOUT_DECLS 64
-#define SVGA3D_MAX_STREAMOUT_DECLS      512
+#define SVGA3D_MAX_STREAMOUT_DECLS 512
 
-#pragma pack(push, 1)
-typedef struct SVGA3dStreamOutputDeclarationEntry {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dStreamOutputDeclarationEntry {
    uint32 outputSlot;
    uint32 registerIndex;
-   uint8 registerMask;
-   uint8 pad0;
+   uint8  registerMask;
+   uint8  pad0;
    uint16 pad1;
    uint32 stream;
-} SVGA3dStreamOutputDeclarationEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dStreamOutputDeclarationEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGAOTableStreamOutputEntry {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGAOTableStreamOutputEntry {
    uint32 numOutputStreamEntries;
    SVGA3dStreamOutputDeclarationEntry decl[SVGA3D_MAX_DX10_STREAMOUT_DECLS];
    uint32 streamOutputStrideInBytes[SVGA3D_DX_MAX_SOTARGETS];
@@ -1492,146 +1853,177 @@ typedef struct SVGAOTableStreamOutputEntry {
    uint8 pad0;
    uint16 pad1;
    uint32 pad2[246];
-} SVGACOTableDXStreamOutputEntry;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGACOTableDXStreamOutputEntry;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineStreamOutput {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineStreamOutput {
    SVGA3dStreamOutputId soid;
    uint32 numOutputStreamEntries;
    SVGA3dStreamOutputDeclarationEntry decl[SVGA3D_MAX_DX10_STREAMOUT_DECLS];
    uint32 streamOutputStrideInBytes[SVGA3D_DX_MAX_SOTARGETS];
    uint32 rasterizedStream;
-} SVGA3dCmdDXDefineStreamOutput;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineStreamOutput;
+
+
 
 #define SVGA3D_DX_SO_NO_RASTERIZED_STREAM 0xFFFFFFFF
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDefineStreamOutputWithMob {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDefineStreamOutputWithMob {
    SVGA3dStreamOutputId soid;
    uint32 numOutputStreamEntries;
    uint32 numOutputStreamStrides;
    uint32 streamOutputStrideInBytes[SVGA3D_DX_MAX_SOTARGETS];
    uint32 rasterizedStream;
-} SVGA3dCmdDXDefineStreamOutputWithMob;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDefineStreamOutputWithMob;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXBindStreamOutput {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXBindStreamOutput {
    SVGA3dStreamOutputId soid;
    uint32 mobid;
    uint32 offsetInBytes;
    uint32 sizeInBytes;
-} SVGA3dCmdDXBindStreamOutput;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXBindStreamOutput;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXDestroyStreamOutput {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXDestroyStreamOutput {
    SVGA3dStreamOutputId soid;
-} SVGA3dCmdDXDestroyStreamOutput;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXDestroyStreamOutput;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetStreamOutput {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetStreamOutput {
    SVGA3dStreamOutputId soid;
-} SVGA3dCmdDXSetStreamOutput;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetStreamOutput;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetMinLOD {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetMinLOD {
    SVGA3dSurfaceId sid;
    float minLOD;
-} SVGA3dCmdDXSetMinLOD;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetMinLOD;
 
-#pragma pack(push, 1)
-typedef struct {
+typedef
+#include "vmware_pack_begin.h"
+struct {
    uint64 value;
    uint32 mobId;
    uint32 mobOffset;
-} SVGA3dCmdDXMobFence64;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXMobFence64;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXSetCOTable {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXSetCOTable {
    uint32 cid;
    uint32 mobid;
    SVGACOTableType type;
    uint32 validSizeInBytes;
-} SVGA3dCmdDXSetCOTable;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXSetCOTable;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXGrowCOTable {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXGrowCOTable {
    uint32 cid;
    uint32 mobid;
    SVGACOTableType type;
    uint32 validSizeInBytes;
-} SVGA3dCmdDXGrowCOTable;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXGrowCOTable;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXReadbackCOTable {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXReadbackCOTable {
    uint32 cid;
    SVGACOTableType type;
-} SVGA3dCmdDXReadbackCOTable;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXReadbackCOTable;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXCopyCOTableIntoMob {
-   uint32 cid;
-   SVGACOTableType type;
-   uint32 mobid;
-} SVGA3dCmdDXCopyCOTableIntoMob;
-#pragma pack(pop)
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXPredStagingCopy {
+
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXPredStagingCopy {
    SVGA3dSurfaceId dstSid;
    SVGA3dSurfaceId srcSid;
    uint8 readback;
    uint8 unsynchronized;
    uint8 mustBeZero[2];
 
-} SVGA3dCmdDXPredStagingCopy;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXPredStagingCopy;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCmdDXStagingCopy {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCmdDXStagingCopy {
    SVGA3dSurfaceId dstSid;
    SVGA3dSurfaceId srcSid;
    uint8 readback;
    uint8 unsynchronized;
    uint8 mustBeZero[2];
 
-} SVGA3dCmdDXStagingCopy;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCmdDXStagingCopy;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dCOTableData {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dCOTableData {
    uint32 mobid;
-} SVGA3dCOTableData;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dCOTableData;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dBufferBinding {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dBufferBinding {
    uint32 bufferId;
    uint32 stride;
    uint32 offset;
-} SVGA3dBufferBinding;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dBufferBinding;
 
-#pragma pack(push, 1)
-typedef struct SVGA3dConstantBufferBinding {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGA3dConstantBufferBinding {
    uint32 sid;
    uint32 offsetInBytes;
    uint32 sizeInBytes;
-} SVGA3dConstantBufferBinding;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGA3dConstantBufferBinding;
 
-#pragma pack(push, 1)
-typedef struct SVGADXInputAssemblyMobFormat {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGADXInputAssemblyMobFormat {
    uint32 layoutId;
    SVGA3dBufferBinding vertexBuffers[SVGA3D_DX_MAX_VERTEXBUFFERS];
    uint32 indexBufferSid;
@@ -1639,11 +2031,13 @@ typedef struct SVGADXInputAssemblyMobFormat {
    uint32 indexBufferOffset;
    uint32 indexBufferFormat;
    uint32 topology;
-} SVGADXInputAssemblyMobFormat;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGADXInputAssemblyMobFormat;
 
-#pragma pack(push, 1)
-typedef struct SVGADXContextMobFormat {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGADXContextMobFormat {
    SVGADXInputAssemblyMobFormat inputAssembly;
 
    struct {
@@ -1654,7 +2048,7 @@ typedef struct SVGADXContextMobFormat {
       uint32 stencilRef;
       uint32 rasterizerStateId;
       uint32 depthStencilViewId;
-      uint32 renderTargetViewIds[SVGA3D_DX_MAX_RENDER_TARGETS];
+      uint32 renderTargetViewIds[SVGA3D_MAX_SIMULTANEOUS_RENDER_TARGETS];
    } renderState;
 
    uint32 pad0[8];
@@ -1705,13 +2099,16 @@ typedef struct SVGADXContextMobFormat {
    uint32 csuaViewIds[SVGA3D_DX11_1_MAX_UAVIEWS];
 
    uint32 pad8[188];
-} SVGADXContextMobFormat;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGADXContextMobFormat;
+
 
 #define SVGA3D_DX_MAX_CLASS_INSTANCES_PADDED 256
 
-#pragma pack(push, 1)
-typedef struct SVGADXShaderIfaceMobFormat {
+typedef
+#include "vmware_pack_begin.h"
+struct SVGADXShaderIfaceMobFormat {
    struct {
       uint32 numClassInstances;
       uint32 iface[SVGA3D_DX_MAX_CLASS_INSTANCES_PADDED];
@@ -1719,20 +2116,8 @@ typedef struct SVGADXShaderIfaceMobFormat {
    } shaderIfaceState[SVGA3D_NUM_SHADERTYPE];
 
    uint32 pad0[1018];
-} SVGADXShaderIfaceMobFormat;
-#pragma pack(pop)
-
-#define SVGA_MOB_FENCE_FLAG_IRQ (1 << 0)
-#define SVGA_MOB_FENCE_MASK     (SVGA_MOB_FENCE_FLAG_IRQ)
-typedef uint32 SVGAMobFenceFlags;
-
-#pragma pack(push, 1)
-typedef struct {
-   uint64 value;
-   uint32 mobId;
-   uint32 mobOffset;
-   uint32 flags;
-} SVGA3dCmdDXMobFenceWithFlags;
-#pragma pack(pop)
+}
+#include "vmware_pack_end.h"
+SVGADXShaderIfaceMobFormat;
 
 #endif

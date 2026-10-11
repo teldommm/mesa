@@ -40,7 +40,6 @@
 #include "drm-uapi/v3d_drm.h"
 #include "v3d_screen.h"
 #include "broadcom/common/v3d_limits.h"
-#include "broadcom/common/v3d_util.h"
 
 #include "broadcom/simulator/v3d_simulator.h"
 #include "broadcom/compiler/v3d_compiler.h"
@@ -52,6 +51,12 @@ void v3d_job_add_bo(struct v3d_job *job, struct v3d_bo *bo);
 #include "v3d_bufmgr.h"
 #include "v3d_resource.h"
 #include "v3d_cl.h"
+
+#ifdef USE_V3D_SIMULATOR
+#define using_v3d_simulator true
+#else
+#define using_v3d_simulator false
+#endif
 
 #define V3D_DIRTY_BLEND               (1ull <<  0)
 #define V3D_DIRTY_RASTERIZER          (1ull <<  1)
@@ -146,20 +151,6 @@ enum v3d_flush_cond {
         V3D_FLUSH_NOT_CURRENT_JOB,
 };
 
-/* bitmask */
-enum v3d_blitter_op {
-        V3D_SAVE_TEXTURES         = (1u << 1),
-        V3D_SAVE_FRAMEBUFFER      = (1u << 2),
-        V3D_DISABLE_RENDER_COND   = (1u << 3),
-
-        V3D_BLIT          = V3D_SAVE_FRAMEBUFFER | V3D_SAVE_TEXTURES,
-        V3D_BLIT_COND     = V3D_BLIT | V3D_DISABLE_RENDER_COND,
-        V3D_CLEAR         = 0,
-        V3D_CLEAR_COND    = V3D_CLEAR | V3D_DISABLE_RENDER_COND,
-        V3D_CLEAR_SURFACE = V3D_SAVE_FRAMEBUFFER,
-        V3D_CLEAR_SURFACE_COND = V3D_CLEAR_SURFACE | V3D_DISABLE_RENDER_COND
-};
-
 struct v3d_sampler_view {
         struct pipe_sampler_view base;
         uint32_t p0;
@@ -233,7 +224,6 @@ struct v3d_uncompiled_shader {
 struct v3d_compiled_shader {
         struct pipe_resource *resource;
         uint32_t offset;
-        uint32_t qpu_size;
 
         union {
                 struct v3d_prog_data *base;
@@ -380,14 +370,11 @@ struct v3d_job {
          * Surfaces to submit rendering for.
          * For blit operations, bbuf is the source surface, and cbufs[0] is
          * the destination surface.
-         * For blit operations straight from the job's tile buffer, dbuf is the
-         * blit destination surface.
          */
         uint32_t nr_cbufs;
         struct pipe_surface *cbufs[V3D_MAX_DRAW_BUFFERS];
         struct pipe_surface *zsbuf;
         struct pipe_surface *bbuf;
-        struct pipe_surface *dbuf;
         /** @} */
         /** @{
          * Bounding box of the scissor across all queued drawing.
@@ -429,13 +416,11 @@ struct v3d_job {
 
         /** @} */
         /** @{ Tile information, depending on MSAA and float color buffer. */
-        struct {
-                uint32_t draw_x; /** @< Number of tiles wide for framebuffer. */
-                uint32_t draw_y; /** @< Number of tiles high for framebuffer. */
-                uint32_t width;  /** @< Width of a tile. */
-                uint32_t height; /** @< Height of a tile. */
-        } tile_desc;
+        uint32_t draw_tiles_x; /** @< Number of tiles wide for framebuffer. */
+        uint32_t draw_tiles_y; /** @< Number of tiles high for framebuffer. */
 
+        uint32_t tile_width; /** @< Width of a tile. */
+        uint32_t tile_height; /** @< Height of a tile. */
         /** maximum internal_bpp of all color render targets. */
         uint32_t internal_bpp;
 
@@ -452,10 +437,6 @@ struct v3d_job {
          * clear.
          */
         uint32_t clear_draw;
-        /* Bitmask of PIPE_CLEAR_* of attached buffers that were invalidated
-         * by glInvalidateFramebuffer so we can avoid loading them.
-         */
-        uint32_t invalidated_load;
         /* Bitmask of PIPE_CLEAR_* of buffers that have been read by a draw
          * call without having been cleared first.
          */
@@ -464,27 +445,12 @@ struct v3d_job {
          * (either clears or draws) and should be stored.
          */
         uint32_t store;
-        /* Bitmask of PIPE_CLEAR_* of buffers that need to be blitted into
-         * a destination buffer other than the jobs RT. Used to implement
-         * blits from jobs that have not yet been flushed, including MSAA
-         * resolve.
-         */
-        uint32_t blit_tlb;
-
         uint32_t clear_color[V3D_MAX_DRAW_BUFFERS][4];
         float clear_z;
         uint8_t clear_s;
 
-        /* If we found anything in the job that is not compatible with
-         * double-buffer mode
-         */
-        bool can_use_double_buffer;
-
         /* If TLB double-buffering is enabled for this job */
         bool double_buffer;
-
-        /* Tracks score for double-buffer mode heuristic */
-        struct v3d_double_buffer_score double_buffer_score;
 
         /**
          * Set if some drawing (triangles, blits, or just a glClear()) has
@@ -545,13 +511,6 @@ struct v3d_job {
          * the current job during active transform feedback.
          */
         uint32_t tf_draw_calls_queued;
-
-
-        /* A pointer to the location of the TILE_BINNING_MODE_CFG packet so we
-         * can rewrite it to enable double-buffer mode by the time we have
-         * enough info about the job to make that decision.
-         */
-        struct v3d_cl_out *bcl_tile_binning_mode_ptr;
 
         struct v3d_job_key key;
 };
@@ -765,6 +724,15 @@ void v3d_program_init(struct pipe_context *pctx);
 void v3d_program_fini(struct pipe_context *pctx);
 void v3d_query_init(struct pipe_context *pctx);
 
+static inline int
+v3d_ioctl(int fd, unsigned long request, void *arg)
+{
+        if (using_v3d_simulator)
+                return v3d_simulator_ioctl(fd, request, arg);
+        else
+                return drmIoctl(fd, request, arg);
+}
+
 static inline bool
 v3d_transform_feedback_enabled(struct v3d_context *v3d)
 {
@@ -822,7 +790,7 @@ bool v3d_format_supports_tlb_msaa_resolve(const struct v3d_device_info *devinfo,
 
 void v3d_init_query_functions(struct v3d_context *v3d);
 void v3d_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info);
-void v3d_blitter_save(struct v3d_context *v3d, enum v3d_blitter_op op);
+void v3d_blitter_save(struct v3d_context *v3d, bool op_blit,  bool render_cond);
 bool v3d_generate_mipmap(struct pipe_context *pctx,
                          struct pipe_resource *prsc,
                          enum pipe_format format,
@@ -878,6 +846,22 @@ void v3d_disk_cache_store(struct v3d_context *v3d,
                           uint64_t *qpu_insts,
                           uint32_t qpu_size);
 #endif /* ENABLE_SHADER_CACHE */
+
+/* Helper to call hw ver specific functions */
+#define v3d_X(devinfo, thing) ({                                \
+        __typeof(&v3d42_##thing) v3d_X_thing;                   \
+        switch (devinfo->ver) {                                 \
+        case 42:                                                \
+                v3d_X_thing = &v3d42_##thing;                   \
+                break;                                          \
+        case 71:                                                \
+                v3d_X_thing = &v3d71_##thing;                   \
+                break;                                          \
+        default:                                                \
+                unreachable("Unsupported hardware generation"); \
+        }                                                       \
+        v3d_X_thing;                                            \
+})
 
 #ifdef v3dX
 #  include "v3dx_context.h"

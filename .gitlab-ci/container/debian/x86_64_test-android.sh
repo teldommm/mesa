@@ -3,9 +3,6 @@
 # shellcheck disable=SC1091
 
 set -e
-
-. .gitlab-ci/setup-test-env.sh
-
 set -o xtrace
 
 export DEBIAN_FRONTEND=noninteractive
@@ -53,11 +50,6 @@ rm -rf /root/.rustup
 
 ############### Build dEQP GL
 
-DEQP_API=tools \
-DEQP_TARGET="android" \
-EXTRA_CMAKE_ARGS="-DDEQP_ANDROID_EXE=ON -DDEQP_TARGET_TOOLCHAIN=ndk-modern -DANDROID_NDK_PATH=/$ndk -DANDROID_ABI=x86_64 -DDE_ANDROID_API=28" \
-. .gitlab-ci/container/build-deqp.sh
-
 DEQP_API=GL \
 DEQP_TARGET="android" \
 EXTRA_CMAKE_ARGS="-DDEQP_TARGET_TOOLCHAIN=ndk-modern -DANDROID_NDK_PATH=/$ndk -DANDROID_ABI=x86_64 -DDE_ANDROID_API=28" \
@@ -67,8 +59,6 @@ DEQP_API=GLES \
 DEQP_TARGET="android" \
 EXTRA_CMAKE_ARGS="-DDEQP_TARGET_TOOLCHAIN=ndk-modern -DANDROID_NDK_PATH=/$ndk -DANDROID_ABI=x86_64 -DDE_ANDROID_API=28" \
 . .gitlab-ci/container/build-deqp.sh
-
-rm -rf /VK-GL-CTS
 
 ############### Downloading Cuttlefish resources ...
 
@@ -118,5 +108,3 @@ rm -rf "/${ndk:?}"
 apt-get purge -y "${EPHEMERAL[@]}"
 
 . .gitlab-ci/container/container_post_build.sh
-
-. .gitlab-ci/container/strip-rootfs.sh

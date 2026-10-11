@@ -15,8 +15,6 @@
 #include "driver_trace/tr_public.h"
 #include "driver_noop/noop_public.h"
 
-#include "pipe/p_screen.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif

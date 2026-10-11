@@ -70,7 +70,3 @@ if with_gallium
   subdir('glsl')
 endif
 subdir('isaspec')
-
-if with_nouveau_vk
-  subdir('rust')
-endif

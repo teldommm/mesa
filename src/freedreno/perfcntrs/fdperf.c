@@ -1,11 +1,28 @@
 /*
- * Copyright © 2016 Rob Clark <robclark@freedesktop.org>
+ * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
  * All Rights Reserved.
- * SPDX-License-Identifier: MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include <assert.h>
-#include <ctype.h>
 #include <curses.h>
 #include <err.h>
 #include <inttypes.h>
@@ -830,20 +847,6 @@ static config_t cfg;
 static config_setting_t *setting;
 
 static void
-config_sanitize_device_name(char *name)
-{
-   /* libconfig names allow alphanumeric characters, dashes, underscores and
-    * asterisks. Anything else in the device name (most commonly spaces and
-    * plus characters) should be converted to underscores.
-    */
-   for (char *s = name; *s; ++s) {
-      if (isalnum(*s) || *s == '-' || *s == '_' || *s == '*')
-         continue;
-      *s = '_';
-   }
-}
-
-static void
 config_save(void)
 {
    for (unsigned i = 0; i < dev.ngroups; i++) {
@@ -881,7 +884,6 @@ config_restore(void)
    /* per device settings: */
    char device_name[64];
    snprintf(device_name, sizeof(device_name), "%s", fd_dev_name(dev.dev_id));
-   config_sanitize_device_name(device_name);
    setting = config_setting_get_member(root, device_name);
    if (!setting)
       setting = config_setting_add(root, device_name, CONFIG_TYPE_GROUP);

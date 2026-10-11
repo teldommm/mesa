@@ -80,7 +80,6 @@ __pandecode_fetch_gpu_mem(struct pandecode_context *ctx, uint64_t gpu_va,
    if (!mem) {
       fprintf(stderr, "Access to unknown memory %" PRIx64 " in %s:%d\n", gpu_va,
               filename, line);
-      fflush(ctx->dump_stream);
       assert(0);
    }
 
@@ -130,12 +129,8 @@ void pandecode_abort_on_fault_v7(struct pandecode_context *ctx,
 void pandecode_abort_on_fault_v9(struct pandecode_context *ctx,
                                  mali_ptr jc_gpu_va);
 
-void pandecode_interpret_cs_v10(struct pandecode_context *ctx, mali_ptr queue,
-                                uint32_t size, unsigned gpu_id, uint32_t *regs);
-void pandecode_cs_binary_v10(struct pandecode_context *ctx, mali_ptr bin,
-                             uint32_t bin_size, unsigned gpu_id);
-void pandecode_cs_trace_v10(struct pandecode_context *ctx, mali_ptr trace,
-                            uint32_t trace_size, unsigned gpu_id);
+void pandecode_cs_v10(struct pandecode_context *ctx, mali_ptr queue,
+                      uint32_t size, unsigned gpu_id, uint32_t *regs);
 
 /* Logging infrastructure */
 static void
@@ -154,20 +149,6 @@ static inline void PRINTFLIKE(2, 3)
    va_start(ap, format);
    vfprintf(ctx->dump_stream, format, ap);
    va_end(ap);
-}
-
-static inline void PRINTFLIKE(2, 3)
-   pandecode_user_msg(struct pandecode_context *ctx, const char *format, ...)
-{
-   va_list ap;
-
-   simple_mtx_lock(&ctx->lock);
-   pandecode_dump_file_open(ctx);
-   pandecode_make_indent(ctx);
-   va_start(ap, format);
-   vfprintf(ctx->dump_stream, format, ap);
-   va_end(ap);
-   simple_mtx_unlock(&ctx->lock);
 }
 
 static inline void

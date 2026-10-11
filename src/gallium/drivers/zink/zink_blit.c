@@ -31,7 +31,6 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info, bool *
        util_format_get_mask(info->src.format) != info->mask ||
        util_format_is_depth_or_stencil(info->dst.format) ||
        info->scissor_enable ||
-       info->swizzle_enable ||
        info->alpha_blend)
       return false;
 
@@ -146,7 +145,6 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *n
    if (util_format_get_mask(info->dst.format) != info->mask ||
        util_format_get_mask(info->src.format) != info->mask ||
        info->scissor_enable ||
-       info->swizzle_enable ||
        info->alpha_blend)
       return false;
 

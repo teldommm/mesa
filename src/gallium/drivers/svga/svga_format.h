@@ -11,6 +11,7 @@
 
 #include "util/format/u_formats.h"
 #include "svga_context.h"
+#include "svga_types.h"
 #include "svga_reg.h"
 #include "svga3d_reg.h"
 

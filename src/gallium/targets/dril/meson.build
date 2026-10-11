@@ -59,7 +59,7 @@ dril_dri = shared_library(
   # Will be deleted during installation, see install_megadrivers.py
   install : true,
   install_dir : dri_drivers_path,
-  name_suffix : libname_suffix,
+  name_suffix : 'so',
 )
 
 foreach d : [[with_gallium_kmsro, [
@@ -143,7 +143,7 @@ endif
 
 if dril_drivers.length() > 0
   meson.add_install_script(
-    install_megadrivers,
+    install_megadrivers_py.full_path(),
     dril_dri.full_path(),
     dri_drivers_path,
     dril_drivers,

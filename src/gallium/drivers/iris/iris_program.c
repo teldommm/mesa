@@ -150,7 +150,6 @@ iris_apply_brw_cs_prog_data(struct iris_compiled_shader *shader,
    iris->generate_local_id = brw->generate_local_id;
    iris->walk_order        = brw->walk_order;
    iris->uses_barrier      = brw->uses_barrier;
-   iris->uses_sampler      = brw->uses_sampler;
    iris->prog_mask         = brw->prog_mask;
 
    iris->first_param_is_builtin_subgroup_id =
@@ -564,10 +563,10 @@ iris_to_brw_fs_key(const struct iris_screen *screen,
       .nr_color_regions = key->nr_color_regions,
       .flat_shade = key->flat_shade,
       .alpha_test_replicate_alpha = key->alpha_test_replicate_alpha,
-      .alpha_to_coverage = key->alpha_to_coverage ? INTEL_ALWAYS : INTEL_NEVER,
+      .alpha_to_coverage = key->alpha_to_coverage ? BRW_ALWAYS : BRW_NEVER,
       .clamp_fragment_color = key->clamp_fragment_color,
-      .persample_interp = key->persample_interp ? INTEL_ALWAYS : INTEL_NEVER,
-      .multisample_fbo = key->multisample_fbo ? INTEL_ALWAYS : INTEL_NEVER,
+      .persample_interp = key->persample_interp ? BRW_ALWAYS : BRW_NEVER,
+      .multisample_fbo = key->multisample_fbo ? BRW_ALWAYS : BRW_NEVER,
       .force_dual_color_blend = key->force_dual_color_blend,
       .coherent_fb_fetch = key->coherent_fb_fetch,
       .color_outputs_valid = key->color_outputs_valid,
@@ -3236,12 +3235,23 @@ iris_create_compute_state(struct pipe_context *ctx,
    struct iris_context *ice = (void *) ctx;
    struct iris_screen *screen = (void *) ctx->screen;
    struct u_upload_mgr *uploader = ice->shaders.uploader_unsync;
+   const nir_shader_compiler_options *options =
+      screen->brw ? screen->brw->nir_options[MESA_SHADER_COMPUTE]
+                  : screen->elk->nir_options[MESA_SHADER_COMPUTE];
 
    nir_shader *nir;
    switch (state->ir_type) {
    case PIPE_SHADER_IR_NIR:
       nir = (void *)state->prog;
       break;
+
+   case PIPE_SHADER_IR_NIR_SERIALIZED: {
+      struct blob_reader reader;
+      const struct pipe_binary_program_header *hdr = state->prog;
+      blob_reader_init(&reader, hdr->blob, hdr->num_bytes);
+      nir = nir_deserialize(NULL, options, &reader);
+      break;
+   }
 
    default:
       unreachable("Unsupported IR");
@@ -3701,9 +3711,10 @@ iris_bind_cs_state(struct pipe_context *ctx, void *state)
 }
 
 static char *
-iris_finalize_nir(struct pipe_screen *_screen, struct nir_shader *nir)
+iris_finalize_nir(struct pipe_screen *_screen, void *nirptr)
 {
    struct iris_screen *screen = (struct iris_screen *)_screen;
+   struct nir_shader *nir = (struct nir_shader *) nirptr;
    const struct intel_device_info *devinfo = screen->devinfo;
 
    NIR_PASS_V(nir, iris_fix_edge_flags);
@@ -3869,12 +3880,7 @@ iris_use_tcs_multi_patch(struct iris_screen *screen)
 bool
 iris_indirect_ubos_use_sampler(struct iris_screen *screen)
 {
-   if (screen->brw) {
-      return screen->brw->indirect_ubos_use_sampler;
-   } else {
-      assert(screen->elk);
-      return screen->elk->indirect_ubos_use_sampler;
-   }
+   return screen->devinfo->ver < 12;
 }
 
 static void
@@ -3936,10 +3942,12 @@ iris_compiler_init(struct iris_screen *screen)
       screen->brw = brw_compiler_create(screen, screen->devinfo);
       screen->brw->shader_debug_log = iris_shader_debug_log;
       screen->brw->shader_perf_log = iris_shader_perf_log;
+      screen->brw->indirect_ubos_use_sampler = iris_indirect_ubos_use_sampler(screen);
    } else {
       screen->elk = elk_compiler_create(screen, screen->devinfo);
       screen->elk->shader_debug_log = iris_shader_debug_log;
       screen->elk->shader_perf_log = iris_shader_perf_log;
       screen->elk->supports_shader_constants = true;
+      screen->elk->indirect_ubos_use_sampler = iris_indirect_ubos_use_sampler(screen);
    }
 }

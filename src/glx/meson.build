@@ -16,6 +16,7 @@ files_libglx = files(
   'dri_common.c',
   'dri_common.h',
   'dri_common_query_renderer.c',
+  'dri_common_interop.c',
   'drisw_glx.c',
   'drisw_priv.h',
   'eval.c',
@@ -60,7 +61,7 @@ extra_deps_libgl = []
 extra_ld_args_libgl = []
 
 # dri2
-if with_x11_dri2
+if (with_dri_platform == 'drm' and dep_libdrm.found()) or with_dri_platform == 'apple'
   files_libglx += files(
     'dri2.c',
     'dri2_glx.c',
@@ -69,7 +70,7 @@ if with_x11_dri2
   )
 endif
 
-if with_dri_platform == 'drm'
+if with_dri3
   files_libglx += files('dri3_glx.c', 'dri3_priv.h')
 endif
 
@@ -104,7 +105,7 @@ else
   )
 endif
 
-glx_gallium_link = [libpipe_loader_dynamic]
+glx_gallium_link = []
 if with_dri
   glx_gallium_link += libgallium_dri
 endif
@@ -114,14 +115,13 @@ endif
 libglx = static_library(
   'glx',
   [files_libglx, glx_generated],
-  include_directories : [inc_include, inc_src, inc_glapi, inc_loader, inc_loader_x11,
-                         inc_gallium, inc_mesa, inc_st_dri, inc_gallium_aux],
+  include_directories : [inc_include, inc_src, inc_glapi, inc_loader, inc_gallium],
   c_args : [
     '-DGL_LIB_NAME="lib@0@.so.@1@"'.format(gl_lib_name, gl_lib_version.split('.')[0]),
   ],
   gnu_symbol_visibility : 'hidden',
   link_with : [
-    libloader, libloader_x11,
+    libloader, libloader_dri3_helper,
     extra_libs_libglx, glx_gallium_link
   ],
   dependencies : [
@@ -145,3 +145,7 @@ libgl = shared_library(
   darwin_versions : '4.0.0',
   install : true,
 )
+
+if with_tests
+  subdir('tests')
+endif

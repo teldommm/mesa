@@ -123,25 +123,17 @@ llvmpipe_get_name(struct pipe_screen *screen)
 static int
 llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
 {
-#ifdef HAVE_LIBDRM
+#if defined(HAVE_LIBDRM) && defined(HAVE_LINUX_UDMABUF_H)
    struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
 #endif
+
    switch (param) {
+#if defined(HAVE_LIBDRM) && defined(HAVE_LINUX_UDMABUF_H)
    case PIPE_CAP_DMABUF:
-#ifdef HAVE_LIBDRM
-      if (lscreen->winsys->get_fd)
-         return DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
-#ifdef HAVE_LINUX_UDMABUF_H
       if (lscreen->udmabuf_fd != -1)
          return DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
       else
          return DRM_PRIME_CAP_IMPORT;
-#endif
-#endif
-      return 0;
-#if defined(HAVE_LIBDRM) && defined(HAVE_LINUX_UDMABUF_H)
-   case PIPE_CAP_NATIVE_FENCE_FD:
-      return lscreen->dummy_sync_fd != -1;
 #endif
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
@@ -151,8 +143,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
       return 1;
-   case PIPE_CAP_MULTIVIEW:
-      return 2;
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
       return 1;
    case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
@@ -390,8 +380,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return LLVM_VERSION_MAJOR >= 15;
    case PIPE_CAP_NIR_IMAGES_AS_DEREF:
       return 0;
-   case PIPE_CAP_ALPHA_TO_COVERAGE_DITHER_CONTROL:
-      return 1;
    default:
       return u_pipe_screen_get_param_defaults(screen, param);
    }
@@ -408,7 +396,8 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
    case PIPE_SHADER_COMPUTE:
       if ((lscreen->allow_cl) && param == PIPE_SHADER_CAP_SUPPORTED_IRS)
          return ((1 << PIPE_SHADER_IR_TGSI) |
-                 (1 << PIPE_SHADER_IR_NIR));
+                 (1 << PIPE_SHADER_IR_NIR) |
+                 (1 << PIPE_SHADER_IR_NIR_SERIALIZED));
       FALLTHROUGH;
    case PIPE_SHADER_MESH:
    case PIPE_SHADER_TASK:
@@ -663,6 +652,7 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_int64_options = nir_lower_imul_2x32_64,
    .lower_doubles_options = nir_lower_dround_even,
    .max_unroll_iterations = 32,
+   .use_interpolated_input_intrinsics = true,
    .lower_to_scalar = true,
    .lower_uniforms_to_ubo = true,
    .lower_vector_cmp = true,
@@ -670,18 +660,15 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .support_16bit_alu = true,
    .lower_fisnormal = true,
    .lower_fquantize2f16 = true,
-   .lower_fminmax_signed_zero = true,
    .driver_functions = true,
-   .scalarize_ddx = true,
-   .support_indirect_inputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES),
-   .support_indirect_outputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES),
 };
 
 
 static char *
 llvmpipe_finalize_nir(struct pipe_screen *screen,
-                      struct nir_shader *nir)
+                      void *nirptr)
 {
+   struct nir_shader *nir = (struct nir_shader *)nirptr;
    lp_build_opt_nir(nir);
    return NULL;
 }
@@ -939,9 +926,8 @@ llvmpipe_destroy_screen(struct pipe_screen *_screen)
 
    glsl_type_singleton_decref();
 
-#if defined(HAVE_LIBDRM) && defined(HAVE_LINUX_UDMABUF_H)
-   if (screen->udmabuf_fd != -1)
-      close(screen->udmabuf_fd);
+#ifdef HAVE_LIBDRM
+   close(screen->udmabuf_fd);
 #endif
 
 #if DETECT_OS_LINUX
@@ -1189,7 +1175,6 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
 
 #if defined(HAVE_LIBDRM) && defined(HAVE_LINUX_UDMABUF_H)
    screen->udmabuf_fd = open("/dev/udmabuf", O_RDWR);
-   llvmpipe_init_screen_fence_funcs(&screen->base);
 #endif
 
    uint64_t alignment;

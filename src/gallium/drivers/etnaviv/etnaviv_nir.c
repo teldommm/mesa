@@ -26,18 +26,6 @@
 
 #include "etnaviv_nir.h"
 
-static inline int
-color_index_for_location(unsigned location)
-{
-   assert(location != FRAG_RESULT_COLOR &&
-          "gl_FragColor must be lowered before nir_lower_blend");
-
-   if (location < FRAG_RESULT_DATA0)
-      return -1;
-   else
-      return location - FRAG_RESULT_DATA0;
-}
-
 /* io related lowering
  * run after lower_int_to_float because it adds i2f/f2i ops
  */
@@ -76,12 +64,9 @@ etna_lower_io(nir_shader *shader, struct etna_shader_variant *v)
 
                   assert(deref->deref_type == nir_deref_type_var);
 
-                  int rt = color_index_for_location(deref->var->data.location);
-                  if (rt == -1)
-                     break;
-
-                  if (!(v->key.frag_rb_swap & (1 << rt)))
-                     break;
+                  if (deref->var->data.location != FRAG_RESULT_COLOR &&
+                      deref->var->data.location != FRAG_RESULT_DATA0)
+                      break;
 
                   b.cursor = nir_before_instr(instr);
 
@@ -134,7 +119,7 @@ etna_lower_io(nir_shader *shader, struct etna_shader_variant *v)
 
             /* pre HALTI5 needs texture sources in a single source */
 
-            if (!src1 || v->shader->info->halti >= 5)
+            if (!src1 || v->shader->specs->halti >= 5)
                continue;
 
             assert(coord && src1 && tex->coord_components < 4);

@@ -23,6 +23,7 @@
 
 #include "nir.h"
 #include "gl_nir_linker.h"
+#include "compiler/glsl/ir_uniform.h" /* for gl_uniform_storage */
 #include "main/shader_types.h"
 #include "main/consts_exts.h"
 

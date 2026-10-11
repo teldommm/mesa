@@ -51,9 +51,9 @@ ir3_asm_assemble(struct ir3_compiler *c, FILE *in)
 
    unsigned sz = v->info.size;
 
-   v->bo = fd_bo_new(c->dev, sz, FD_BO_NOMAP, "%s", ir3_shader_stage(v));
+   v->bo = fd_bo_new(c->dev, sz, 0, "%s", ir3_shader_stage(v));
 
-   fd_bo_upload(v->bo, kernel->bin, 0, sz);
+   memcpy(fd_bo_map(v->bo), kernel->bin, sz);
 
    /* Always include shaders in kernel crash dumps. */
    fd_bo_mark_for_dump(v->bo);

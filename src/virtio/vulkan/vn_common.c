@@ -333,8 +333,7 @@ vn_tls_get_ring(struct vn_instance *instance)
    struct vn_ring_layout layout;
    vn_ring_get_layout(buf_size, extra_size, &layout);
 
-   tls_ring->ring =
-      vn_ring_create(instance, &layout, direct_order, true /* is_tls_ring */);
+   tls_ring->ring = vn_ring_create(instance, &layout, direct_order);
    if (!tls_ring->ring) {
       free(tls_ring);
       return NULL;

@@ -21,10 +21,7 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-import sys
-from valhall import valhall_parse_isa
-
-(_, _, enums, _, safe_name) = valhall_parse_isa()
+from valhall import safe_name, enums
 
 print("#ifndef __VALHALL_ENUMS_H_")
 print("#define __VALHALL_ENUMS_H_")

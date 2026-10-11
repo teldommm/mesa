@@ -53,13 +53,13 @@ libgallium_dri = shared_library(
   link_args : [ld_args_build_id, ld_args_gc_sections, gallium_dri_ld_args],
   link_depends : gallium_dri_link_depends,
   link_with : [
-    libmesa, libgalliumvl,
+    libdri, libmesa, libgalliumvl,
     libgallium, libglapi, libpipe_loader_static, libws_null, libwsw, libswdri,
     libswkmsdri, gallium_dri_link_with
   ],
-  link_whole : [libdri, gallium_dri_link_whole],
+  link_whole : [gallium_dri_link_whole],
   dependencies : [
-    dep_libdrm, dep_llvm, dep_thread, idep_xmlconfig, idep_mesautil,
+    dep_selinux, dep_libdrm, dep_llvm, dep_thread, idep_xmlconfig, idep_mesautil,
     driver_swrast, driver_r300, driver_r600, driver_radeonsi, driver_nouveau,
     driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
     driver_tegra, driver_i915, driver_svga, driver_virgl,
@@ -67,7 +67,7 @@ libgallium_dri = shared_library(
     driver_asahi, driver_crocus
   ],
   install : true,
-  name_suffix : libname_suffix,
+  name_suffix : 'so',
 )
 
 if with_gallium_va or with_gallium_vdpau
@@ -90,22 +90,22 @@ if with_gallium_va or with_gallium_vdpau
 
   if va_drivers.length() > 0
     meson.add_install_script(
-      install_megadrivers,
+      install_megadrivers_py.full_path(),
       libgallium_dri.full_path(),
       va_drivers_path,
       va_drivers,
-      '--megadriver-libdir', get_option('libdir'),
+      '--megadriver_libdir', get_option('libdir'),
       install_tag : 'runtime',
     )
   endif
 
   if vdpau_drivers.length() > 0
     meson.add_install_script(
-      install_megadrivers,
+      install_megadrivers_py.full_path(),
       libgallium_dri.full_path(),
       vdpau_drivers_path,
       vdpau_drivers,
-      '--megadriver-libdir', get_option('libdir'),
+      '--megadriver_libdir', get_option('libdir'),
       install_tag : 'runtime',
     )
   endif

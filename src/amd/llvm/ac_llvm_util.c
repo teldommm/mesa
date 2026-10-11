@@ -178,9 +178,13 @@ bool ac_init_llvm_compiler(struct ac_llvm_compiler *compiler, enum radeon_family
          goto fail;
    }
 
-   compiler->meo =
-      ac_create_midend_optimizer(compiler->tm, tm_options & AC_TM_CHECK_IR);
-   if (!compiler->meo)
+   compiler->target_library_info = ac_create_target_library_info(triple);
+   if (!compiler->target_library_info)
+      goto fail;
+
+   compiler->passmgr =
+      ac_create_passmgr(compiler->target_library_info, tm_options & AC_TM_CHECK_IR);
+   if (!compiler->passmgr)
       goto fail;
 
    return true;
@@ -191,14 +195,13 @@ fail:
 
 void ac_destroy_llvm_compiler(struct ac_llvm_compiler *compiler)
 {
-   /* delete the codegen pass managers */
-   ac_destroy_backend_optimizer(compiler->beo);
-   ac_destroy_backend_optimizer(compiler->low_opt_beo);
+   ac_destroy_llvm_passes(compiler->passes);
+   ac_destroy_llvm_passes(compiler->low_opt_passes);
 
-   /* delete optimizer pass manager */
-   if (compiler->meo)
-      ac_destroy_midend_optimiser(compiler->meo);
-
+   if (compiler->passmgr)
+      LLVMDisposePassManager(compiler->passmgr);
+   if (compiler->target_library_info)
+      ac_dispose_target_library_info(compiler->target_library_info);
    if (compiler->low_opt_tm)
       LLVMDisposeTargetMachine(compiler->low_opt_tm);
    if (compiler->tm)

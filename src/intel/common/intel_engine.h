@@ -28,10 +28,6 @@
 #include "intel/dev/intel_device_info.h"
 #include "intel/dev/intel_kmd.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 struct intel_engine_class_instance {
    enum intel_engine_class engine_class;
    uint16_t engine_instance;
@@ -57,7 +53,3 @@ int
 intel_engines_supported_count(int fd, const struct intel_device_info *info,
                               const struct intel_query_engine_info *engine_info,
                               enum intel_engine_class engine_class);
-
-#ifdef __cplusplus
-}
-#endif

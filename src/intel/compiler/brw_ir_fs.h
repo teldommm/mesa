@@ -22,7 +22,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef BRW_IR_FS_H
+#define BRW_IR_FS_H
 
 #include "brw_ir.h"
 #include "brw_ir_allocator.h"
@@ -69,7 +70,6 @@ public:
    bool is_control_flow_end() const;
    bool is_control_flow() const;
    bool is_commutative() const;
-   bool is_raw_move() const;
    bool can_do_saturate() const;
    bool reads_accumulator_implicitly() const;
    bool writes_accumulator_implicitly(const struct intel_device_info *devinfo) const;
@@ -121,6 +121,13 @@ public:
     * data.
     */
    bool has_sampler_residency() const;
+
+   /** @{
+    * Annotation for the generated IR.  One of the two can be set.
+    */
+   const void *ir;
+   const char *annotation;
+   /** @} */
 
    uint8_t sources; /**< Number of brw_reg sources. */
 
@@ -218,14 +225,6 @@ public:
    brw_reg dst;
    brw_reg *src;
    brw_reg builtin_src[4];
-
-#ifndef NDEBUG
-   /** @{
-    * Annotation for the generated IR.
-    */
-   const char *annotation;
-   /** @} */
-#endif
 };
 
 /**
@@ -444,12 +443,8 @@ has_subdword_integer_region_restriction(const intel_device_info *devinfo,
             brw_type_size_bytes(inst->dst.type)) < 4) {
       for (unsigned i = 0; i < num_srcs; i++) {
          if (brw_type_is_int(srcs[i].type) &&
-             ((brw_type_size_bytes(srcs[i].type) < 4 &&
-               byte_stride(srcs[i]) >= 4) ||
-              (MAX2(byte_stride(inst->dst),
-                   brw_type_size_bytes(inst->dst.type)) == 1 &&
-               brw_type_size_bytes(srcs[i].type) == 1 &&
-               byte_stride(srcs[i]) >= 2)))
+             brw_type_size_bytes(srcs[i].type) < 4 &&
+             byte_stride(srcs[i]) >= 4)
             return true;
       }
    }
@@ -598,3 +593,5 @@ brw_fs_flag_mask(const brw_reg &r, unsigned sz)
       return 0;
    }
 }
+
+#endif

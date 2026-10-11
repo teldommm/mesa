@@ -602,7 +602,7 @@ static const void *noop_get_compiler_options(struct pipe_screen *pscreen,
    return screen->get_compiler_options(screen, ir, shader);
 }
 
-static char *noop_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir)
+static char *noop_finalize_nir(struct pipe_screen *pscreen, void *nir)
 {
    struct pipe_screen *screen = ((struct noop_pipe_screen*)pscreen)->oscreen;
 
@@ -681,6 +681,18 @@ static void noop_query_compression_modifiers(struct pipe_screen *screen,
    *count = 0;
    if (oscreen->query_compression_modifiers)
       oscreen->query_compression_modifiers(oscreen, fmt, rate, max, mods, count);
+}
+
+static bool noop_is_compression_modifier(struct pipe_screen *screen,
+                                         enum pipe_format format, uint64_t modifier,
+                                         uint32_t *rate)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+
+   if (oscreen->is_compression_modifier)
+      return oscreen->is_compression_modifier(oscreen, format, modifier, rate);
+   return false;
 }
 
 static void noop_get_driver_uuid(struct pipe_screen *screen, char *uuid)
@@ -776,15 +788,6 @@ static void noop_set_fence_timeline_value(struct pipe_screen *screen,
    oscreen->set_fence_timeline_value(oscreen, fence, value);
 }
 
-static struct pipe_screen * noop_get_driver_pipe_screen(struct pipe_screen *_screen)
-{
-   struct pipe_screen * screen = ((struct noop_pipe_screen*)_screen)->oscreen;
-
-   if (screen->get_driver_pipe_screen)
-      return screen->get_driver_pipe_screen(screen);
-   return screen;
-}
-
 struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
 {
    struct noop_pipe_screen *noop_screen;
@@ -846,7 +849,7 @@ struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
       screen->set_fence_timeline_value = noop_set_fence_timeline_value;
    screen->query_compression_rates = noop_query_compression_rates;
    screen->query_compression_modifiers = noop_query_compression_modifiers;
-   screen->get_driver_pipe_screen = noop_get_driver_pipe_screen;
+   screen->is_compression_modifier = noop_is_compression_modifier;
 
    slab_create_parent(&noop_screen->pool_transfers,
                       sizeof(struct pipe_transfer), 64);

@@ -343,8 +343,8 @@ panfrost_bo_mmap(struct panfrost_bo *bo)
                                   PROT_READ | PROT_WRITE, MAP_SHARED, NULL);
    if (bo->ptr.cpu == MAP_FAILED) {
       bo->ptr.cpu = NULL;
-      mesa_loge("mmap failed: result=%p size=0x%llx\n", bo->ptr.cpu,
-                (long long)panfrost_bo_size(bo));
+      fprintf(stderr, "mmap failed: result=%p size=0x%llx\n", bo->ptr.cpu,
+              (long long)panfrost_bo_size(bo));
    }
 }
 
@@ -355,7 +355,7 @@ panfrost_bo_munmap(struct panfrost_bo *bo)
       return;
 
    if (os_munmap((void *)(uintptr_t)bo->ptr.cpu, panfrost_bo_size(bo))) {
-      mesa_loge("munmap failed: %s", strerror(errno));
+      perror("munmap");
       abort();
    }
 
@@ -368,14 +368,6 @@ panfrost_bo_create(struct panfrost_device *dev, size_t size, uint32_t flags,
 {
    struct panfrost_bo *bo;
 
-   if (dev->debug & PAN_DBG_DUMP) {
-      /* Make sure to CPU-map all BOs except growable ones, so that
-         we can dump them when PAN_MESA_DEBUG=dump. */
-      if (!(flags & PAN_BO_GROWABLE)) {
-         flags &= ~PAN_BO_INVISIBLE;
-      }
-      flags &= ~PAN_BO_DELAY_MMAP;
-   }
    /* Kernel will fail (confusingly) with EPERM otherwise */
    assert(size > 0);
 
@@ -507,10 +499,6 @@ panfrost_bo_import(struct panfrost_device *dev, int fd)
       bo->ptr.gpu = vm_op.va.start;
       bo->flags = PAN_BO_SHARED;
       p_atomic_set(&bo->refcnt, 1);
-
-      /* mmap imported BOs when PAN_MESA_DEBUG=dump */
-      if (dev->debug & PAN_DBG_DUMP)
-         panfrost_bo_mmap(bo);
    } else {
       /* bo->refcnt == 0 can happen if the BO
        * was being released but panfrost_bo_import() acquired the

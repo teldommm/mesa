@@ -65,9 +65,6 @@ u_memstream_get(const struct u_memstream *mem)
    return mem->f;
 }
 
-int
-u_memstream_flush(struct u_memstream *mem);
-
 #ifdef __cplusplus
 }
 #endif

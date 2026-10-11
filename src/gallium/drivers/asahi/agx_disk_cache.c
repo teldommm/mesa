@@ -20,7 +20,7 @@
 #include "agx_state.h"
 
 /* Flags that are allowed and do not disable the disk cache */
-#define ALLOWED_FLAGS (AGX_DBG_NO16)
+#define ALLOWED_FLAGS (AGX_DBG_NO16 | AGX_DBG_COMPBLIT)
 
 /**
  * Compute a disk cache key for the given uncompiled shader and shader key.
@@ -59,12 +59,13 @@ static void
 write_shader(struct blob *blob, const struct agx_compiled_shader *binary,
              bool is_root_gs)
 {
-   blob_write_bytes(blob, &binary->b.info, sizeof(binary->b.info));
+   blob_write_uint32(blob, binary->b.binary_size);
 
-   if (binary->b.info.binary_size) {
-      blob_write_bytes(blob, binary->b.binary, binary->b.info.binary_size);
+   if (binary->b.binary_size) {
+      blob_write_bytes(blob, binary->b.binary, binary->b.binary_size);
    }
 
+   blob_write_bytes(blob, &binary->b.info, sizeof(binary->b.info));
    blob_write_bytes(blob, &binary->uvs, sizeof(binary->uvs));
    blob_write_bytes(blob, &binary->attrib_components_read,
                     sizeof(binary->attrib_components_read));
@@ -96,27 +97,27 @@ read_shader(struct agx_screen *screen, struct blob_reader *blob,
    binary->stage = uncompiled->type;
    binary->so = uncompiled;
 
-   blob_copy_bytes(blob, &binary->b.info, sizeof(binary->b.info));
-   size_t size = binary->b.info.binary_size;
+   size_t size = blob_read_uint32(blob);
 
    if (uncompiled->type == PIPE_SHADER_VERTEX ||
        uncompiled->type == PIPE_SHADER_TESS_EVAL ||
        uncompiled->type == PIPE_SHADER_FRAGMENT) {
-
-      binary->b.binary = malloc(size);
-      blob_copy_bytes(blob, binary->b.binary, size);
+      binary->b.binary_size = size;
+      binary->b.binary = malloc(binary->b.binary_size);
+      blob_copy_bytes(blob, binary->b.binary, binary->b.binary_size);
 
       if (size) {
-         binary->bo = agx_bo_create(&screen->dev, size, 0,
+         binary->bo = agx_bo_create(&screen->dev, size,
                                     AGX_BO_EXEC | AGX_BO_LOW_VA, "Executable");
-         memcpy(agx_bo_map(binary->bo), binary->b.binary, size);
+         memcpy(binary->bo->ptr.cpu, binary->b.binary, size);
       }
    } else if (size) {
-      binary->bo = agx_bo_create(&screen->dev, size, 0,
+      binary->bo = agx_bo_create(&screen->dev, size,
                                  AGX_BO_EXEC | AGX_BO_LOW_VA, "Executable");
-      blob_copy_bytes(blob, agx_bo_map(binary->bo), size);
+      blob_copy_bytes(blob, binary->bo->ptr.cpu, size);
    }
 
+   blob_copy_bytes(blob, &binary->b.info, sizeof(binary->b.info));
    blob_copy_bytes(blob, &binary->uvs, sizeof(binary->uvs));
    blob_copy_bytes(blob, &binary->attrib_components_read,
                    sizeof(binary->attrib_components_read));

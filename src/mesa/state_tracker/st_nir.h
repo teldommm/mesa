@@ -43,10 +43,11 @@ bool st_nir_lower_wpos_ytransform(struct nir_shader *nir,
                                   struct gl_program *prog,
                                   struct pipe_screen *pscreen);
 
-void st_finalize_nir(struct st_context *st, struct gl_program *prog,
-                     struct gl_shader_program *shader_program,
-                     struct nir_shader *nir, bool is_before_variants,
-                     bool is_draw_shader);
+char *st_finalize_nir(struct st_context *st, struct gl_program *prog,
+                      struct gl_shader_program *shader_program,
+                      struct nir_shader *nir, bool finalize_by_driver,
+                      bool is_before_variants,
+                      bool is_draw_shader);
 
 void st_nir_assign_vs_in_locations(struct nir_shader *nir);
 void st_nir_assign_varying_locations(struct st_context *st,
@@ -59,11 +60,11 @@ void st_nir_lower_uniforms(struct st_context *st, struct nir_shader *nir);
 
 void
 st_nir_finish_builtin_nir(struct st_context *st, struct nir_shader *nir);
-void *
+struct pipe_shader_state *
 st_nir_finish_builtin_shader(struct st_context *st,
                              struct nir_shader *nir);
 
-void *
+struct pipe_shader_state *
 st_nir_make_passthrough_shader(struct st_context *st,
                                const char *shader_name,
                                gl_shader_stage stage,
@@ -73,7 +74,7 @@ st_nir_make_passthrough_shader(struct st_context *st,
                                unsigned *interpolation_modes,
                                unsigned sysval_mask);
 
-void *
+struct pipe_shader_state *
 st_nir_make_clearcolor_shader(struct st_context *st);
 
 struct nir_variable *

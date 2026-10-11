@@ -59,7 +59,6 @@ vk_pipeline_shader_stage_has_identifier(const VkPipelineShaderStageCreateInfo *i
 
 VkResult
 vk_pipeline_shader_stage_to_nir(struct vk_device *device,
-                                VkPipelineCreateFlags2KHR pipeline_flags,
                                 const VkPipelineShaderStageCreateInfo *info,
                                 const struct spirv_to_nir_options *spirv_options,
                                 const struct nir_shader_compiler_options *nir_options,
@@ -93,8 +92,7 @@ struct vk_pipeline_robustness_state {
  * vk_shader_module object.
  */
 void
-vk_pipeline_hash_shader_stage(VkPipelineCreateFlags2KHR pipeline_flags,
-                              const VkPipelineShaderStageCreateInfo *info,
+vk_pipeline_hash_shader_stage(const VkPipelineShaderStageCreateInfo *info,
                               const struct vk_pipeline_robustness_state *rstate,
                               unsigned char *stage_sha1);
 
@@ -163,7 +161,6 @@ struct vk_pipeline {
 
    VkPipelineBindPoint bind_point;
    VkPipelineCreateFlags2KHR flags;
-   VkShaderStageFlags stages;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_pipeline, base, VkPipeline,
@@ -194,9 +191,6 @@ struct vk_pipeline_ops {
 
    void (*cmd_bind)(struct vk_command_buffer *cmd_buffer,
                     struct vk_pipeline *pipeline);
-
-   struct vk_shader *(*get_shader)(struct vk_pipeline *pipeline,
-                                   gl_shader_stage stage);
 };
 
 void *vk_pipeline_zalloc(struct vk_device *device,
@@ -209,16 +203,6 @@ void *vk_pipeline_zalloc(struct vk_device *device,
 void vk_pipeline_free(struct vk_device *device,
                       const VkAllocationCallbacks *alloc,
                       struct vk_pipeline *pipeline);
-
-static inline struct vk_shader *
-vk_pipeline_get_shader(struct vk_pipeline *pipeline,
-                       gl_shader_stage stage)
-{
-   if (pipeline->ops->get_shader == NULL)
-      return NULL;
-
-   return pipeline->ops->get_shader(pipeline, stage);
-}
 
 void
 vk_cmd_unbind_pipelines_for_stages(struct vk_command_buffer *cmd_buffer,

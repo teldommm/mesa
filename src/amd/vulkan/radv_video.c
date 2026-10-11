@@ -35,8 +35,6 @@
 /* Not 100% sure this isn't too much but works */
 #define VID_DEFAULT_ALIGNMENT 256
 
-static void set_reg(struct radv_cmd_buffer *cmd_buffer, unsigned reg, uint32_t val);
-
 static bool
 radv_enable_tier2(struct radv_physical_device *pdev)
 {
@@ -63,26 +61,20 @@ radv_vid_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer, unsigned size, 
 
 /* vcn unified queue (sq) ib header */
 void
-radv_vcn_sq_header(struct radeon_cmdbuf *cs, struct rvcn_sq_var *sq, unsigned type, bool skip_signature)
+radv_vcn_sq_header(struct radeon_cmdbuf *cs, struct rvcn_sq_var *sq, bool enc)
 {
-   if (!skip_signature) {
-      /* vcn ib signature */
-      radeon_emit(cs, RADEON_VCN_SIGNATURE_SIZE);
-      radeon_emit(cs, RADEON_VCN_SIGNATURE);
-      sq->signature_ib_checksum = &cs->buf[cs->cdw];
-      radeon_emit(cs, 0);
-      sq->signature_ib_total_size_in_dw = &cs->buf[cs->cdw];
-      radeon_emit(cs, 0);
-   } else {
-      sq->signature_ib_checksum = NULL;
-      sq->signature_ib_total_size_in_dw = NULL;
-   }
+   /* vcn ib signature */
+   radeon_emit(cs, RADEON_VCN_SIGNATURE_SIZE);
+   radeon_emit(cs, RADEON_VCN_SIGNATURE);
+   sq->ib_checksum = &cs->buf[cs->cdw];
+   radeon_emit(cs, 0);
+   sq->ib_total_size_in_dw = &cs->buf[cs->cdw];
+   radeon_emit(cs, 0);
 
    /* vcn ib engine info */
    radeon_emit(cs, RADEON_VCN_ENGINE_INFO_SIZE);
    radeon_emit(cs, RADEON_VCN_ENGINE_INFO);
-   radeon_emit(cs, type);
-   sq->engine_ib_size_of_packages = &cs->buf[cs->cdw];
+   radeon_emit(cs, enc ? RADEON_VCN_ENGINE_TYPE_ENCODE : RADEON_VCN_ENGINE_TYPE_DECODE);
    radeon_emit(cs, 0);
 }
 
@@ -93,62 +85,18 @@ radv_vcn_sq_tail(struct radeon_cmdbuf *cs, struct rvcn_sq_var *sq)
    uint32_t size_in_dw;
    uint32_t checksum = 0;
 
-   end = &cs->buf[cs->cdw];
-
-   if (sq->signature_ib_checksum == NULL && sq->signature_ib_total_size_in_dw == NULL) {
-      if (sq->engine_ib_size_of_packages == NULL)
-         return;
-
-      size_in_dw = end - sq->engine_ib_size_of_packages + 3; /* package_size, package_type, engine_type */
-      *sq->engine_ib_size_of_packages = size_in_dw * sizeof(uint32_t);
-   } else {
-      size_in_dw = end - sq->signature_ib_total_size_in_dw - 1;
-      *sq->signature_ib_total_size_in_dw = size_in_dw;
-      *sq->engine_ib_size_of_packages = size_in_dw * sizeof(uint32_t);
-
-      for (int i = 0; i < size_in_dw; i++)
-         checksum += *(sq->signature_ib_checksum + 2 + i);
-
-      *sq->signature_ib_checksum = checksum;
-   }
-}
-
-void
-radv_vcn_write_event(struct radv_cmd_buffer *cmd_buffer, struct radv_event *event, unsigned value)
-{
-   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
-   struct radv_physical_device *pdev = radv_device_physical(device);
-   struct rvcn_sq_var sq;
-   struct radeon_cmdbuf *cs = cmd_buffer->cs;
-
-   radv_cs_add_buffer(device->ws, cs, event->bo);
-   uint64_t va = radv_buffer_get_va(event->bo);
-
-   bool separate_queue = pdev->vid_decode_ip != AMD_IP_VCN_UNIFIED;
-   if (cmd_buffer->qf == RADV_QUEUE_VIDEO_DEC && separate_queue && pdev->vid_dec_reg.data2) {
-      radeon_check_space(device->ws, cmd_buffer->cs, 8);
-      set_reg(cmd_buffer, pdev->vid_dec_reg.data0, va & 0xffffffff);
-      set_reg(cmd_buffer, pdev->vid_dec_reg.data1, va >> 32);
-      set_reg(cmd_buffer, pdev->vid_dec_reg.data2, value);
-      set_reg(cmd_buffer, pdev->vid_dec_reg.cmd, RDECODE_CMD_WRITE_MEMORY << 1);
+   if (sq->ib_checksum == NULL || sq->ib_total_size_in_dw == NULL)
       return;
-   }
 
-   radeon_check_space(device->ws, cs, 256);
-   radv_vcn_sq_header(cs, &sq, RADEON_VCN_ENGINE_TYPE_COMMON, separate_queue);
-   struct rvcn_cmn_engine_ib_package *ib_header = (struct rvcn_cmn_engine_ib_package *)&(cs->buf[cs->cdw]);
-   ib_header->package_size = sizeof(struct rvcn_cmn_engine_ib_package) + sizeof(struct rvcn_cmn_engine_op_writememory);
-   cs->cdw++;
-   ib_header->package_type = RADEON_VCN_IB_COMMON_OP_WRITEMEMORY;
-   cs->cdw++;
+   end = &cs->buf[cs->cdw];
+   size_in_dw = end - sq->ib_total_size_in_dw - 1;
+   *sq->ib_total_size_in_dw = size_in_dw;
+   *(sq->ib_total_size_in_dw + 4) = size_in_dw * sizeof(uint32_t);
 
-   struct rvcn_cmn_engine_op_writememory *write_memory = (struct rvcn_cmn_engine_op_writememory *)&(cs->buf[cs->cdw]);
-   write_memory->dest_addr_lo = va & 0xffffffff;
-   write_memory->dest_addr_hi = va >> 32;
-   write_memory->data = value;
+   for (int i = 0; i < size_in_dw; i++)
+      checksum += *(sq->ib_checksum + 2 + i);
 
-   cs->cdw += sizeof(*write_memory) / 4;
-   radv_vcn_sq_tail(cs, &sq);
+   *sq->ib_checksum = checksum;
 }
 
 static void
@@ -157,7 +105,7 @@ radv_vcn_sq_start(struct radv_cmd_buffer *cmd_buffer)
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radeon_check_space(device->ws, cmd_buffer->cs, 256);
-   radv_vcn_sq_header(cmd_buffer->cs, &cmd_buffer->video.sq, RADEON_VCN_ENGINE_TYPE_DECODE, false);
+   radv_vcn_sq_header(cmd_buffer->cs, &cmd_buffer->video.sq, false);
    rvcn_decode_ib_package_t *ib_header = (rvcn_decode_ib_package_t *)&(cmd_buffer->cs->buf[cmd_buffer->cs->cdw]);
    ib_header->package_size = sizeof(struct rvcn_decode_buffer_s) + sizeof(struct rvcn_decode_ib_package_s);
    cmd_buffer->cs->cdw++;
@@ -211,7 +159,6 @@ init_vcn_decoder(struct radv_physical_device *pdev)
    case VCN_2_2_0:
       pdev->vid_dec_reg.data0 = RDECODE_VCN2_GPCOM_VCPU_DATA0;
       pdev->vid_dec_reg.data1 = RDECODE_VCN2_GPCOM_VCPU_DATA1;
-      pdev->vid_dec_reg.data2 = RDECODE_VCN2_GPCOM_VCPU_DATA2;
       pdev->vid_dec_reg.cmd = RDECODE_VCN2_GPCOM_VCPU_CMD;
       pdev->vid_dec_reg.cntl = RDECODE_VCN2_ENGINE_CNTL;
       break;
@@ -225,7 +172,6 @@ init_vcn_decoder(struct radv_physical_device *pdev)
    case VCN_3_1_2:
       pdev->vid_dec_reg.data0 = RDECODE_VCN2_5_GPCOM_VCPU_DATA0;
       pdev->vid_dec_reg.data1 = RDECODE_VCN2_5_GPCOM_VCPU_DATA1;
-      pdev->vid_dec_reg.data2 = RDECODE_VCN2_5_GPCOM_VCPU_DATA2;
       pdev->vid_dec_reg.cmd = RDECODE_VCN2_5_GPCOM_VCPU_CMD;
       pdev->vid_dec_reg.cntl = RDECODE_VCN2_5_ENGINE_CNTL;
       break;
@@ -270,38 +216,6 @@ radv_init_physical_device_decoder(struct radv_physical_device *pdev)
       init_vcn_decoder(pdev);
 }
 
-void
-radv_probe_video_decode(struct radv_physical_device *pdev)
-{
-   const struct radv_instance *instance = radv_physical_device_instance(pdev);
-
-   pdev->video_decode_enabled = false;
-
-   /* The support for decode events are available at the same time as encode */
-   if (pdev->info.vcn_ip_version >= VCN_4_0_0) {
-      if (pdev->info.vcn_enc_major_version > 1)
-         pdev->video_decode_enabled = true;
-      /* VCN 4 FW 1.22 has all the necessary pieces to pass CTS */
-      if (pdev->info.vcn_enc_major_version == 1 && pdev->info.vcn_enc_minor_version >= 22)
-         pdev->video_decode_enabled = true;
-   } else if (pdev->info.vcn_ip_version >= VCN_3_0_0) {
-      if (pdev->info.vcn_enc_major_version > 1)
-         pdev->video_decode_enabled = true;
-      /* VCN 3 FW 1.33 has all the necessary pieces to pass CTS */
-      if (pdev->info.vcn_enc_major_version == 1 && pdev->info.vcn_enc_minor_version >= 33)
-         pdev->video_decode_enabled = true;
-   } else if (pdev->info.vcn_ip_version >= VCN_2_0_0) {
-      if (pdev->info.vcn_enc_major_version > 1)
-         pdev->video_decode_enabled = true;
-      /* VCN 2 FW 1.24 has all the necessary pieces to pass CTS */
-      if (pdev->info.vcn_enc_major_version == 1 && pdev->info.vcn_enc_minor_version >= 24)
-         pdev->video_decode_enabled = true;
-   }
-   if (instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE) {
-      pdev->video_decode_enabled = true;
-   }
-}
-
 static bool
 have_it(struct radv_video_session *vid)
 {
@@ -318,14 +232,14 @@ static unsigned
 calc_ctx_size_h264_perf(struct radv_video_session *vid)
 {
    unsigned width_in_mb, height_in_mb, ctx_size;
-   unsigned width = align(vid->vk.max_coded.width, VK_VIDEO_H264_MACROBLOCK_WIDTH);
-   unsigned height = align(vid->vk.max_coded.height, VK_VIDEO_H264_MACROBLOCK_HEIGHT);
+   unsigned width = align(vid->vk.max_coded.width, VL_MACROBLOCK_WIDTH);
+   unsigned height = align(vid->vk.max_coded.height, VL_MACROBLOCK_HEIGHT);
 
    unsigned max_references = vid->vk.max_dpb_slots + 1;
 
    /* picture width & height in 16 pixel units */
-   width_in_mb = width / VK_VIDEO_H264_MACROBLOCK_WIDTH;
-   height_in_mb = align(height / VK_VIDEO_H264_MACROBLOCK_HEIGHT, 2);
+   width_in_mb = width / VL_MACROBLOCK_WIDTH;
+   height_in_mb = align(height / VL_MACROBLOCK_HEIGHT, 2);
 
    ctx_size = max_references * align(width_in_mb * height_in_mb * 192, 256);
 
@@ -335,9 +249,8 @@ calc_ctx_size_h264_perf(struct radv_video_session *vid)
 static unsigned
 calc_ctx_size_h265_main(struct radv_video_session *vid)
 {
-   /* this is taken from radeonsi and seems correct for h265 */
-   unsigned width = align(vid->vk.max_coded.width, VK_VIDEO_H264_MACROBLOCK_WIDTH);
-   unsigned height = align(vid->vk.max_coded.height, VK_VIDEO_H264_MACROBLOCK_HEIGHT);
+   unsigned width = align(vid->vk.max_coded.width, VL_MACROBLOCK_WIDTH);
+   unsigned height = align(vid->vk.max_coded.height, VL_MACROBLOCK_HEIGHT);
 
    unsigned max_references = vid->vk.max_dpb_slots + 1;
 
@@ -358,9 +271,8 @@ calc_ctx_size_h265_main10(struct radv_video_session *vid)
    unsigned context_buffer_size_per_ctb_row, cm_buffer_size, max_mb_address, db_left_tile_pxl_size;
    unsigned db_left_tile_ctx_size = 4096 / 16 * (32 + 16 * 4);
 
-   /* this is taken from radeonsi and seems correct for h265 */
-   unsigned width = align(vid->vk.max_coded.width, VK_VIDEO_H264_MACROBLOCK_WIDTH);
-   unsigned height = align(vid->vk.max_coded.height, VK_VIDEO_H264_MACROBLOCK_HEIGHT);
+   unsigned width = align(vid->vk.max_coded.width, VL_MACROBLOCK_WIDTH);
+   unsigned height = align(vid->vk.max_coded.height, VL_MACROBLOCK_HEIGHT);
    unsigned coeff_10bit = 2;
 
    unsigned max_references = vid->vk.max_dpb_slots + 1;
@@ -599,10 +511,10 @@ radv_GetPhysicalDeviceVideoCapabilitiesKHR(VkPhysicalDevice physicalDevice, cons
       cap = NULL;
 
    pCapabilities->flags = 0;
-   pCapabilities->pictureAccessGranularity.width = VK_VIDEO_H264_MACROBLOCK_WIDTH;
-   pCapabilities->pictureAccessGranularity.height = VK_VIDEO_H264_MACROBLOCK_HEIGHT;
-   pCapabilities->minCodedExtent.width = VK_VIDEO_H264_MACROBLOCK_WIDTH;
-   pCapabilities->minCodedExtent.height = VK_VIDEO_H264_MACROBLOCK_HEIGHT;
+   pCapabilities->pictureAccessGranularity.width = VL_MACROBLOCK_WIDTH;
+   pCapabilities->pictureAccessGranularity.height = VL_MACROBLOCK_HEIGHT;
+   pCapabilities->minCodedExtent.width = VL_MACROBLOCK_WIDTH;
+   pCapabilities->minCodedExtent.height = VL_MACROBLOCK_HEIGHT;
 
    struct VkVideoDecodeCapabilitiesKHR *dec_caps = NULL;
    struct VkVideoEncodeCapabilitiesKHR *enc_caps = NULL;
@@ -625,7 +537,8 @@ radv_GetPhysicalDeviceVideoCapabilitiesKHR(VkPhysicalDevice physicalDevice, cons
          enc_caps->maxRateControlLayers = RADV_ENC_MAX_RATE_LAYER;
          enc_caps->maxBitrate = 1000000000;
          enc_caps->maxQualityLevels = 2;
-         enc_caps->encodeInputPictureGranularity = pCapabilities->pictureAccessGranularity;
+         enc_caps->encodeInputPictureGranularity.width = 1;
+         enc_caps->encodeInputPictureGranularity.height = 1;
          enc_caps->supportedEncodeFeedbackFlags = VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BUFFER_OFFSET_BIT_KHR |
                                                   VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BYTES_WRITTEN_BIT_KHR;
       }
@@ -697,8 +610,6 @@ radv_GetPhysicalDeviceVideoCapabilitiesKHR(VkPhysicalDevice physicalDevice, cons
       break;
    }
    case VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR: {
-      const bool have_12bit = pdev->info.vcn_ip_version >= VCN_5_0_0 ||
-                              pdev->info.vcn_ip_version == VCN_4_0_0;
       /* Monochrome sampling implies an undefined chroma bit depth, and is supported in profile MAIN for AV1. */
       if (pVideoProfile->chromaSubsampling != VK_VIDEO_CHROMA_SUBSAMPLING_MONOCHROME_BIT_KHR &&
           pVideoProfile->lumaBitDepth != pVideoProfile->chromaBitDepth)
@@ -709,13 +620,11 @@ radv_GetPhysicalDeviceVideoCapabilitiesKHR(VkPhysicalDevice physicalDevice, cons
       const struct VkVideoDecodeAV1ProfileInfoKHR *av1_profile =
          vk_find_struct_const(pVideoProfile->pNext, VIDEO_DECODE_AV1_PROFILE_INFO_KHR);
 
-      if (av1_profile->stdProfile != STD_VIDEO_AV1_PROFILE_MAIN &&
-          (!have_12bit || av1_profile->stdProfile != STD_VIDEO_AV1_PROFILE_PROFESSIONAL))
+      if (av1_profile->stdProfile != STD_VIDEO_AV1_PROFILE_MAIN)
          return VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR;
 
       if (pVideoProfile->lumaBitDepth != VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR &&
-          pVideoProfile->lumaBitDepth != VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR &&
-          (!have_12bit || pVideoProfile->lumaBitDepth != VK_VIDEO_COMPONENT_BIT_DEPTH_12_BIT_KHR))
+          pVideoProfile->lumaBitDepth != VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR)
          return VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR;
 
       pCapabilities->maxDpbSlots = 9;
@@ -746,7 +655,7 @@ radv_GetPhysicalDeviceVideoCapabilitiesKHR(VkPhysicalDevice physicalDevice, cons
       ext->flags = VK_VIDEO_ENCODE_H264_CAPABILITY_HRD_COMPLIANCE_BIT_KHR |
                    VK_VIDEO_ENCODE_H264_CAPABILITY_PER_PICTURE_TYPE_MIN_MAX_QP_BIT_KHR;
       ext->maxLevelIdc = cap ? cap->max_level : 0;
-      ext->maxSliceCount = 1;
+      ext->maxSliceCount = 128;
       ext->maxPPictureL0ReferenceCount = 1;
       ext->maxBPictureL0ReferenceCount = 0;
       ext->maxL1ReferenceCount = 0;
@@ -784,14 +693,13 @@ radv_GetPhysicalDeviceVideoCapabilitiesKHR(VkPhysicalDevice physicalDevice, cons
          return VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR;
 
       pCapabilities->pictureAccessGranularity.width = VK_VIDEO_H265_CTU_MAX_WIDTH;
-      if (enc_caps)
-         enc_caps->encodeInputPictureGranularity = pCapabilities->pictureAccessGranularity;
+      pCapabilities->pictureAccessGranularity.height = VK_VIDEO_H265_CTU_MAX_HEIGHT;
 
       pCapabilities->maxDpbSlots = NUM_H2645_REFS;
       pCapabilities->maxActiveReferencePictures = NUM_H2645_REFS;
       ext->flags = VK_VIDEO_ENCODE_H265_CAPABILITY_PER_PICTURE_TYPE_MIN_MAX_QP_BIT_KHR;
       ext->maxLevelIdc = cap ? cap->max_level : 0;
-      ext->maxSliceSegmentCount = 1;
+      ext->maxSliceSegmentCount = 128;
       ext->maxTiles.width = 1;
       ext->maxTiles.height = 1;
       ext->ctbSizes = VK_VIDEO_ENCODE_H265_CTB_SIZE_64_BIT_KHR;
@@ -871,7 +779,6 @@ radv_GetPhysicalDeviceVideoFormatPropertiesKHR(VkPhysicalDevice physicalDevice,
 
    bool need_8bit = true;
    bool need_10bit = false;
-   bool need_12bit = false;
    const struct VkVideoProfileListInfoKHR *prof_list =
       (struct VkVideoProfileListInfoKHR *)vk_find_struct_const(pVideoFormatInfo->pNext, VIDEO_PROFILE_LIST_INFO_KHR);
    if (prof_list) {
@@ -879,30 +786,6 @@ radv_GetPhysicalDeviceVideoFormatPropertiesKHR(VkPhysicalDevice physicalDevice,
          const VkVideoProfileInfoKHR *profile = &prof_list->pProfiles[i];
          if (profile->lumaBitDepth & VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR)
             need_10bit = true;
-         else if (profile->lumaBitDepth & VK_VIDEO_COMPONENT_BIT_DEPTH_12_BIT_KHR)
-            need_12bit = true;
-      }
-   }
-
-   if (need_12bit) {
-      vk_outarray_append_typed(VkVideoFormatPropertiesKHR, &out, p)
-      {
-         p->format = VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16;
-         p->componentMapping.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-         p->componentMapping.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-         p->componentMapping.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-         p->componentMapping.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-         p->imageCreateFlags = 0;
-         if (pVideoFormatInfo->imageUsage & (VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR | VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR))
-            p->imageCreateFlags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
-         p->imageType = VK_IMAGE_TYPE_2D;
-         p->imageTiling = VK_IMAGE_TILING_OPTIMAL;
-         p->imageUsageFlags = pVideoFormatInfo->imageUsage;
-      }
-
-      if (pVideoFormatInfo->imageUsage & (VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR)) {
-         need_8bit = false;
-         need_10bit = false;
       }
    }
 
@@ -1796,7 +1679,7 @@ get_av1_msg(struct radv_device *device, struct radv_video_session *vid, struct r
 
    if (seq_hdr->pColorConfig->BitDepth > 8) {
       if (vid->vk.picture_format == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ||
-          vid->vk.picture_format == VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16) {
+          vid->vk.picture_format == VK_FORMAT_G16_B16R16_2PLANE_420_UNORM) {
          result.p010_mode = 1;
          result.msb_mode = 1;
       } else {
@@ -2007,9 +1890,9 @@ rvcn_dec_message_decode(struct radv_cmd_buffer *cmd_buffer, struct radv_video_se
    *slice_offset = 0;
 
    /* Intra-only decoding will only work without a setup slot for AV1
-    * (non-filmgrain) currently, other codecs require the application to pass a
+    * currently, other codecs require the application to pass a
     * setup slot for this use-case, since the FW is not able to skip write-out
-    * for H26X. In order to fix that properly, additional scratch space will
+    * for H26X.  In order to fix that properly, additional scratch space will
     * be needed in the video session just for intra-only DPB targets.
     */
    int dpb_update_required = 1;
@@ -2049,10 +1932,10 @@ rvcn_dec_message_decode(struct radv_cmd_buffer *cmd_buffer, struct radv_video_se
       assert(frame_info->pSetupReferenceSlot != NULL);
 
    struct radv_image_view *dpb_iv =
-      frame_info->pSetupReferenceSlot
+      dpb_update_required
          ? radv_image_view_from_handle(frame_info->pSetupReferenceSlot->pPictureResource->imageViewBinding)
          : NULL;
-   struct radv_image *dpb = dpb_iv ? dpb_iv->image : img;
+   struct radv_image *dpb = dpb_update_required ? dpb_iv->image : img;
 
    int dpb_array_idx = 0;
    if (dpb_update_required) {
@@ -2804,18 +2687,14 @@ radv_video_get_profile_alignments(struct radv_physical_device *pdev, const VkVid
 {
    vk_video_get_profile_alignments(profile_list, width_align_out, height_align_out);
    bool is_h265_main_10 = false;
-
-   if (profile_list) {
-      for (unsigned i = 0; i < profile_list->profileCount; i++) {
-         if (profile_list->pProfiles[i].videoCodecOperation == VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR) {
-            const struct VkVideoDecodeH265ProfileInfoKHR *h265_profile =
-               vk_find_struct_const(profile_list->pProfiles[i].pNext, VIDEO_DECODE_H265_PROFILE_INFO_KHR);
-            if (h265_profile->stdProfileIdc == STD_VIDEO_H265_PROFILE_IDC_MAIN_10)
-               is_h265_main_10 = true;
-         }
+   for (unsigned i = 0; i < profile_list->profileCount; i++) {
+      if (profile_list->pProfiles[i].videoCodecOperation == VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR) {
+         const struct VkVideoDecodeH265ProfileInfoKHR *h265_profile =
+            vk_find_struct_const(profile_list->pProfiles[i].pNext, VIDEO_DECODE_H265_PROFILE_INFO_KHR);
+         if (h265_profile->stdProfileIdc == STD_VIDEO_H265_PROFILE_IDC_MAIN_10)
+            is_h265_main_10 = true;
       }
-   } else
-      is_h265_main_10 = true;
+   }
 
    uint32_t db_alignment = radv_video_get_db_alignment(pdev, 64, is_h265_main_10);
    *width_align_out = MAX2(*width_align_out, db_alignment);

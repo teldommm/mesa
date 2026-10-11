@@ -518,7 +518,7 @@ v3dv_job_start_frame(struct v3dv_job *job,
          return;
    }
 
-   v3d_X((&job->device->devinfo), job_emit_binning_prolog)(job, tiling,
+   v3dv_X(job->device, job_emit_binning_prolog)(job, tiling,
       allocate_tile_state_for_all_layers ? tiling->layers : 1);
 
    job->ez_state = V3D_EZ_UNDECIDED;
@@ -532,7 +532,15 @@ job_should_enable_double_buffer(struct v3dv_job *job)
    if (!job->can_use_double_buffer)
       return false;
 
-   return v3d_double_buffer_score_ok(&job->double_buffer_score);
+   /* Too much geometry processing */
+   if (job->double_buffer_score.geom > 2000000)
+      return false;
+
+   /* Too little rendering to make up for tile store latency */
+   if (job->double_buffer_score.render < 100000)
+      return false;
+
+   return true;
 }
 
 static void
@@ -561,7 +569,7 @@ cmd_buffer_end_render_pass_frame(struct v3dv_cmd_buffer *cmd_buffer)
                                   job->frame_tiling.msaa,
                                   true);
 
-         v3d_X((&job->device->devinfo), job_emit_enable_double_buffer)(job);
+         v3dv_X(job->device, job_emit_enable_double_buffer)(job);
       }
 
       /* At this point we have decided whether we want to use double-buffer or
@@ -570,12 +578,12 @@ cmd_buffer_end_render_pass_frame(struct v3dv_cmd_buffer *cmd_buffer)
        */
       v3dv_job_allocate_tile_state(job);
 
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_render_pass_rcl)(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_render_pass_rcl)(cmd_buffer);
    }
 
    /* Only emit the binning flush for the last job in resume/suspend chain */
    if (!job->suspending)
-      v3d_X((&cmd_buffer->device->devinfo), job_emit_binning_flush)(job);
+      v3dv_X(cmd_buffer->device, job_emit_binning_flush)(job);
 }
 
 struct v3dv_job *
@@ -699,7 +707,7 @@ v3dv_cmd_buffer_finish_job(struct v3dv_cmd_buffer *cmd_buffer)
          cmd_buffer_end_render_pass_frame(cmd_buffer);
       } else {
          assert(job->type == V3DV_JOB_TYPE_GPU_CL_INCOMPLETE);
-         v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_end_render_pass_secondary)(cmd_buffer);
+         v3dv_X(cmd_buffer->device, cmd_buffer_end_render_pass_secondary)(cmd_buffer);
       }
    }
 
@@ -873,7 +881,7 @@ v3dv_cmd_buffer_start_job(struct v3dv_cmd_buffer *cmd_buffer,
                                     VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
 
    if (!job) {
-      mesa_loge("Error: failed to allocate CPU memory for job\n");
+      fprintf(stderr, "Error: failed to allocate CPU memory for job\n");
       v3dv_flag_oom(cmd_buffer, NULL);
       return NULL;
    }
@@ -1216,11 +1224,11 @@ cmd_buffer_state_set_attachment_clear_color(struct v3dv_cmd_buffer *cmd_buffer,
 
    uint32_t internal_type, internal_bpp;
    const struct v3dv_format *format =
-      v3d_X((&cmd_buffer->device->devinfo), get_format)(attachment->desc.format);
+      v3dv_X(cmd_buffer->device, get_format)(attachment->desc.format);
    /* We don't allow multi-planar formats for render pass attachments */
    assert(format->plane_count == 1);
 
-   v3d_X((&cmd_buffer->device->devinfo), get_internal_type_bpp_for_output_format)
+   v3dv_X(cmd_buffer->device, get_internal_type_bpp_for_output_format)
       (format->planes[0].rt_type, &internal_type, &internal_bpp);
 
    uint32_t internal_size = 4 << internal_bpp;
@@ -1228,7 +1236,7 @@ cmd_buffer_state_set_attachment_clear_color(struct v3dv_cmd_buffer *cmd_buffer,
    struct v3dv_cmd_buffer_attachment_state *attachment_state =
       &cmd_buffer->state.attachments[attachment_idx];
 
-   v3d_X((&cmd_buffer->device->devinfo), get_hw_clear_color)
+   v3dv_X(cmd_buffer->device, get_hw_clear_color)
       (color, internal_type, internal_size, &attachment_state->clear_value.color[0]);
 
    attachment_state->vk_clear_value.color = *color;
@@ -1753,7 +1761,7 @@ cmd_buffer_subpass_create_job(struct v3dv_cmd_buffer *cmd_buffer,
 
       uint8_t max_internal_bpp, total_color_bpp;
       bool msaa;
-      v3d_X((&job->device->devinfo), framebuffer_compute_internal_bpp_msaa)
+      v3dv_X(job->device, framebuffer_compute_internal_bpp_msaa)
          (framebuffer, state->attachments, subpass,
           &max_internal_bpp, &total_color_bpp, &msaa);
 
@@ -2084,7 +2092,7 @@ v3dv_CmdExecuteCommands(VkCommandBuffer commandBuffer,
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, primary, commandBuffer);
 
    if (primary->state.pass != NULL) {
-      v3d_X((&primary->device->devinfo), cmd_buffer_execute_inside_pass)
+      v3dv_X(primary->device, cmd_buffer_execute_inside_pass)
          (primary, commandBufferCount, pCommandBuffers);
    } else {
       cmd_buffer_execute_outside_pass(primary,
@@ -2258,7 +2266,7 @@ v3dv_CmdSetViewport(VkCommandBuffer commandBuffer,
                                      pViewports);
 
    for (uint32_t i = firstViewport; i < total_count; i++) {
-      v3d_X((&cmd_buffer->device->devinfo), viewport_compute_xform)
+      v3dv_X(cmd_buffer->device, viewport_compute_xform)
          (&dyn->vp.viewports[i], v3dv_dyn->viewport.scale[i],
           v3dv_dyn->viewport.translate[i]);
    }
@@ -2368,7 +2376,7 @@ emit_scissor(struct v3dv_cmd_buffer *cmd_buffer)
    cmd_buffer->state.clip_window.extent.width = maxx - minx;
    cmd_buffer->state.clip_window.extent.height = maxy - miny;
 
-   v3d_X((&cmd_buffer->device->devinfo), job_emit_clip_window)
+   v3dv_X(cmd_buffer->device, job_emit_clip_window)
       (cmd_buffer->state.job, &cmd_buffer->state.clip_window);
 
    BITSET_CLEAR(vk_dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSORS);
@@ -2908,18 +2916,34 @@ job_update_double_buffer_score(struct v3dv_job *job,
       return;
    }
 
+   /* Keep track of vertex processing: too much geometry processing would not
+    * be good for double-buffer.
+    */
+   struct v3dv_shader_variant *vs_bin =
+      pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX_BIN];
+   assert(vs_bin);
+   uint32_t geom_score = vertex_count * compute_prog_score(vs_bin);
+
    struct v3dv_shader_variant *vs =
       pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX];
    assert(vs);
+   uint32_t vs_score = vertex_count * compute_prog_score(vs);
+   geom_score += vs_score;
 
+   job->double_buffer_score.geom += geom_score;
+
+   /* Compute pixel rendering cost.
+    *
+    * We estimate that on average a draw would render 0.2% of the pixels in
+    * the render area. That would be a 64x64 region in a 1920x1080 area.
+    */
    struct v3dv_shader_variant *fs =
       pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT];
    assert(fs);
+   uint32_t pixel_count = 0.002f * render_area->width * render_area->height;
+   uint32_t render_score = vs_score + pixel_count * compute_prog_score(fs);
 
-   v3d_update_double_buffer_score(vertex_count,
-                                  vs->qpu_insts_size, fs->qpu_insts_size,
-                                  vs->prog_data.base, fs->prog_data.base,
-                                  &job->double_buffer_score);
+   job->double_buffer_score.render += render_score;
 }
 
 void
@@ -2981,7 +3005,7 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
    struct v3dv_device *device = cmd_buffer->device;
 
    if (dirty_uniform_state || (*dirty & V3DV_CMD_DIRTY_VERTEX_BUFFER))
-      v3d_X((&device->devinfo), cmd_buffer_emit_gl_shader_state)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_gl_shader_state)(cmd_buffer);
 
    if (*dirty & (V3DV_CMD_DIRTY_PIPELINE) ||
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_CULL_MODE) ||
@@ -2990,11 +3014,11 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_DS_DEPTH_BOUNDS_TEST_ENABLE) ||
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_DEPTH_BIAS_ENABLE) ||
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE)) {
-      v3d_X((&device->devinfo), cmd_buffer_emit_configuration_bits)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_configuration_bits)(cmd_buffer);
    }
 
    if (*dirty & (V3DV_CMD_DIRTY_PIPELINE)) {
-      v3d_X((&device->devinfo), cmd_buffer_emit_varyings_state)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_varyings_state)(cmd_buffer);
    }
 
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSORS) ||
@@ -3003,10 +3027,10 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
    }
 
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_VIEWPORTS))
-      v3d_X((&device->devinfo), cmd_buffer_emit_viewport)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_viewport)(cmd_buffer);
 
    if (*dirty & V3DV_CMD_DIRTY_INDEX_BUFFER)
-      v3d_X((&device->devinfo), cmd_buffer_emit_index_buffer)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_index_buffer)(cmd_buffer);
 
    bool any_dynamic_stencil_dirty =
       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_DS_STENCIL_COMPARE_MASK) ||
@@ -3015,38 +3039,38 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_DS_STENCIL_OP);
 
    if (*dirty & V3DV_CMD_DIRTY_PIPELINE || any_dynamic_stencil_dirty)
-      v3d_X((&device->devinfo), cmd_buffer_emit_stencil)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_stencil)(cmd_buffer);
 
    if (*dirty & V3DV_CMD_DIRTY_PIPELINE ||
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_DEPTH_BIAS_FACTORS)) {
-      v3d_X((&device->devinfo), cmd_buffer_emit_depth_bias)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_depth_bias)(cmd_buffer);
    }
 
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_DS_DEPTH_BOUNDS_TEST_BOUNDS))
-      v3d_X((&device->devinfo), cmd_buffer_emit_depth_bounds)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_depth_bounds)(cmd_buffer);
 
    if (*dirty & V3DV_CMD_DIRTY_PIPELINE ||
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_CB_BLEND_CONSTANTS)) {
-      v3d_X((&device->devinfo), cmd_buffer_emit_blend)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_blend)(cmd_buffer);
    }
 
    if (*dirty & V3DV_CMD_DIRTY_OCCLUSION_QUERY)
-      v3d_X((&device->devinfo), cmd_buffer_emit_occlusion_query)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_occlusion_query)(cmd_buffer);
 
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_LINE_WIDTH))
-      v3d_X((&device->devinfo), cmd_buffer_emit_line_width)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_line_width)(cmd_buffer);
 
    if (dyn->ia.primitive_topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST &&
        !job->emitted_default_point_size) {
-      v3d_X((&device->devinfo), cmd_buffer_emit_default_point_size)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_default_point_size)(cmd_buffer);
    }
 
    if (*dirty & V3DV_CMD_DIRTY_PIPELINE)
-      v3d_X((&device->devinfo), cmd_buffer_emit_sample_state)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_sample_state)(cmd_buffer);
 
    if (*dirty & V3DV_CMD_DIRTY_PIPELINE ||
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES)) {
-      v3d_X((&device->devinfo), cmd_buffer_emit_color_write_mask)(cmd_buffer);
+      v3dv_X(device, cmd_buffer_emit_color_write_mask)(cmd_buffer);
    }
 
    /* We disable double-buffer mode if indirect draws are used because in that
@@ -3083,7 +3107,7 @@ cmd_buffer_draw(struct v3dv_cmd_buffer *cmd_buffer,
    if (likely(!pass->multiview_enabled)) {
       cmd_buffer_set_view_index(cmd_buffer, 0);
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, false, vertex_count);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw)(cmd_buffer, info);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw)(cmd_buffer, info);
       return;
    }
 
@@ -3091,7 +3115,7 @@ cmd_buffer_draw(struct v3dv_cmd_buffer *cmd_buffer,
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, false, vertex_count);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw)(cmd_buffer, info);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw)(cmd_buffer, info);
    }
 }
 
@@ -3163,7 +3187,7 @@ v3dv_CmdDrawIndexed(VkCommandBuffer commandBuffer,
    if (likely(!pass->multiview_enabled)) {
       cmd_buffer_set_view_index(cmd_buffer, 0);
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, false, vertex_count);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw_indexed)
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
          (cmd_buffer, indexCount, instanceCount,
           firstIndex, vertexOffset, firstInstance);
       return;
@@ -3173,7 +3197,7 @@ v3dv_CmdDrawIndexed(VkCommandBuffer commandBuffer,
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, false, vertex_count);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw_indexed)
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
          (cmd_buffer, indexCount, instanceCount,
           firstIndex, vertexOffset, firstInstance);
    }
@@ -3205,7 +3229,7 @@ v3dv_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer,
       if (likely(!pass->multiview_enabled)) {
          cmd_buffer_set_view_index(cmd_buffer, 0);
          v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, false, vertex_count);
-         v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw_indexed)
+         v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
             (cmd_buffer, draw->indexCount, instanceCount,
              draw->firstIndex, vertexOffset, firstInstance);
          continue;
@@ -3214,7 +3238,7 @@ v3dv_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer,
       while (view_mask) {
          cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
          v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, false, vertex_count);
-         v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw_indexed)
+         v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
             (cmd_buffer, draw->indexCount, instanceCount,
              draw->firstIndex, vertexOffset, firstInstance);
       }
@@ -3239,7 +3263,7 @@ v3dv_CmdDrawIndirect(VkCommandBuffer commandBuffer,
    if (likely(!pass->multiview_enabled)) {
       cmd_buffer_set_view_index(cmd_buffer, 0);
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, true, 0);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw_indirect)
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
       return;
    }
@@ -3248,7 +3272,7 @@ v3dv_CmdDrawIndirect(VkCommandBuffer commandBuffer,
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, true, 0);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_draw_indirect)
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
    }
 }
@@ -3271,7 +3295,7 @@ v3dv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
    if (likely(!pass->multiview_enabled)) {
       cmd_buffer_set_view_index(cmd_buffer, 0);
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, true, 0);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_indexed_indirect)
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_indexed_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
       return;
    }
@@ -3280,7 +3304,7 @@ v3dv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
       v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, true, 0);
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_emit_indexed_indirect)
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_indexed_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
    }
 }
@@ -3557,8 +3581,8 @@ handle_sample_from_linear_image(struct v3dv_cmd_buffer *cmd_buffer,
       if (view->vk.view_type != VK_IMAGE_VIEW_TYPE_2D ||
           view->vk.level_count != 1 || view->vk.layer_count != 1 ||
           blayout->array_size != 1) {
-         mesa_loge("Sampling from linear image is not supported. "
-                   "Expect corruption.\n");
+         fprintf(stderr, "Sampling from linear image is not supported. "
+                 "Expect corruption.\n");
          continue;
       }
 
@@ -3605,8 +3629,8 @@ handle_sample_from_linear_image(struct v3dv_cmd_buffer *cmd_buffer,
          result = v3dv_CreateImage(vk_device, &image_info,
                                    &device->vk.alloc, &tiled_image);
          if (result != VK_SUCCESS) {
-            mesa_loge("Failed to copy linear 2D image for sampling."
-                      "Expect corruption.\n");
+            fprintf(stderr, "Failed to copy linear 2D image for sampling."
+                    "Expect corruption.\n");
             mtx_unlock(&device->meta.mtx);
             continue;
          }
@@ -3641,8 +3665,8 @@ handle_sample_from_linear_image(struct v3dv_cmd_buffer *cmd_buffer,
             result = v3dv_AllocateMemory(vk_device, &alloc_info,
                                          &device->vk.alloc, &mem);
             if (result != VK_SUCCESS) {
-               mesa_loge("Failed to copy linear 2D image for sampling."
-                         "Expect corruption.\n");
+               fprintf(stderr, "Failed to copy linear 2D image for sampling."
+                       "Expect corruption.\n");
                v3dv_DestroyImage(vk_device, tiled_image, &device->vk.alloc);
                mtx_unlock(&device->meta.mtx);
                continue;
@@ -3662,8 +3686,8 @@ handle_sample_from_linear_image(struct v3dv_cmd_buffer *cmd_buffer,
                bind_info.pNext = &plane_bind_info;
             result = v3dv_BindImageMemory2(vk_device, 1, &bind_info);
             if (result != VK_SUCCESS) {
-               mesa_loge("Failed to copy linear 2D image for sampling."
-                         "Expect corruption.\n");
+               fprintf(stderr, "Failed to copy linear 2D image for sampling."
+                       "Expect corruption.\n");
                v3dv_DestroyImage(vk_device, tiled_image, &device->vk.alloc);
                v3dv_FreeMemory(vk_device, mem, &device->vk.alloc);
                mtx_unlock(&device->meta.mtx);
@@ -3696,8 +3720,8 @@ handle_sample_from_linear_image(struct v3dv_cmd_buffer *cmd_buffer,
          };
          result = v3dv_create_image_view(device, &view_info, &tiled_view);
          if (result != VK_SUCCESS) {
-            mesa_loge("Failed to copy linear 2D image for sampling."
-                      "Expect corruption.\n");
+            fprintf(stderr, "Failed to copy linear 2D image for sampling."
+                    "Expect corruption.\n");
             mtx_unlock(&device->meta.mtx);
             continue;
          }
@@ -3806,8 +3830,8 @@ handle_sample_from_linear_image(struct v3dv_cmd_buffer *cmd_buffer,
                }
             }
          } else {
-            mesa_loge("Failed to copy linear 2D image for sampling."
-                      "TFU doesn't support copy. Expect corruption.\n");
+            fprintf(stderr, "Failed to copy linear 2D image for sampling."
+                    "TFU doesn't support copy. Expect corruption.\n");
          }
       }
    }
@@ -3920,7 +3944,7 @@ v3dv_cmd_buffer_ensure_array_state(struct v3dv_cmd_buffer *cmd_buffer,
       *ptr = vk_alloc(&cmd_buffer->device->vk.alloc, bytes, 8,
                       VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
       if (*ptr == NULL) {
-         mesa_loge("Error: failed to allocate CPU buffer for query.\n");
+         fprintf(stderr, "Error: failed to allocate CPU buffer for query.\n");
          v3dv_flag_oom(cmd_buffer, NULL);
          return;
       }
@@ -4590,7 +4614,7 @@ v3dv_CmdEndRenderingKHR(VkCommandBuffer commandBuffer)
     * we will patch the branch address when we know the resuming job.
     */
    if (state->suspending)
-      v3d_X((&cmd_buffer->device->devinfo), cmd_buffer_suspend)(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_suspend)(cmd_buffer);
 
    v3dv_cmd_buffer_subpass_finish(cmd_buffer);
    v3dv_cmd_buffer_finish_job(cmd_buffer);

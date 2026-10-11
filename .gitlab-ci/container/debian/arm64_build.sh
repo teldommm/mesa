@@ -2,9 +2,6 @@
 # shellcheck disable=SC2086 # we want word splitting
 
 set -e
-
-. .gitlab-ci/setup-test-env.sh
-
 set -o xtrace
 
 export LLVM_VERSION="${LLVM_VERSION:=15}"

@@ -69,23 +69,15 @@ struct pan_fb_zs_attachment {
 };
 
 struct pan_tiler_context {
+   /* Sum of vertex counts (for non-indexed draws), index counts (for
+    * indexed draws on Valhall as a best effort), or ~0 if any indirect
+    * draws are used. Helps tune hierarchy masks.
+    */
+   uint32_t vertex_count;
+
    union {
+      mali_ptr bifrost;
       struct {
-         mali_ptr desc;
-         /* A tiler descriptor can only handle a limited amount of layers.
-          * If the number of layers is bigger than this, several tiler
-          * descriptors will be issued, each with a different layer_offset.
-          */
-         uint8_t layer_offset;
-      } valhall;
-      struct {
-         mali_ptr desc;
-      } bifrost;
-      struct {
-         /* Sum of vertex counts (for non-indexed draws), index counts, or ~0 if
-          * any indirect draws are used. Helps tune hierarchy masks.
-          */
-         uint32_t vertex_count;
          bool disable;
          bool no_hierarchical_tiling;
          mali_ptr polygon_list;
@@ -140,8 +132,6 @@ struct pan_fb_info {
 
    /* Optimal tile buffer size. */
    unsigned tile_buf_budget;
-   unsigned tile_size;
-   unsigned cbuf_allocation;
 
    /* Sample position array. */
    mali_ptr sample_positions;
@@ -184,8 +174,6 @@ pan_sample_pattern(unsigned samples)
    }
 }
 #endif
-
-void GENX(pan_select_tile_size)(struct pan_fb_info *fb);
 
 void GENX(pan_emit_tls)(const struct pan_tls_info *info, void *out);
 

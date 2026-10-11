@@ -12,6 +12,7 @@
 #include "radeon_compiler.h"
 #include "radeon_program.h"
 
+
 extern void r300BuildFragmentProgramHwCode(struct radeon_compiler *c, void *user);
 
 extern void r300FragmentProgramDump(struct radeon_compiler *c, void *user);

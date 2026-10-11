@@ -10,7 +10,6 @@
 
 #include "amdgpu_bo.h"
 #include "util/u_memory.h"
-#include "ac_linux_drm.h"
 #include "drm-uapi/amdgpu_drm.h"
 
 #ifdef __cplusplus
@@ -25,10 +24,9 @@ extern "C" {
 
 struct amdgpu_ctx {
    struct pipe_reference reference;
-   uint32_t ctx_handle;
    struct amdgpu_winsys *aws;
+   amdgpu_context_handle ctx;
    amdgpu_bo_handle user_fence_bo;
-   uint32_t user_fence_bo_kms_handle;
    uint64_t *user_fence_cpu_address_base;
 
    /* If true, report lost contexts and skip command submission.
@@ -193,7 +191,7 @@ static inline void amdgpu_ctx_reference(struct amdgpu_ctx **dst, struct amdgpu_c
 
    if (pipe_reference(old_dst ? &old_dst->reference : NULL,
                       src ? &src->reference : NULL)) {
-      ac_drm_cs_ctx_free(old_dst->aws->fd, old_dst->ctx_handle);
+      amdgpu_cs_ctx_free(old_dst->ctx);
       amdgpu_bo_cpu_unmap(old_dst->user_fence_bo);
       amdgpu_bo_free(old_dst->user_fence_bo);
       FREE(old_dst);

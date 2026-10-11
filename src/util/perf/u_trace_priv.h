@@ -43,15 +43,8 @@ extern "C" {
  * Tracepoint descriptor.
  */
 struct u_tracepoint {
+   unsigned payload_sz;
    const char *name;
-   /**
-    * Size of the CPU data associated with this tracepoint.
-    */
-   uint16_t payload_sz;
-   /**
-    * Size of the GPU data associated with this tracepoint.
-    */
-   uint16_t indirect_sz;
    /**
     * A bitfield of driver agnostic flags
     */
@@ -63,8 +56,8 @@ struct u_tracepoint {
     * to event->set_stage_iid().
     */
    uint16_t tp_idx;
-   void (*print)(FILE *out, const void *payload, const void *indirect);
-   void (*print_json)(FILE *out, const void *payload, const void *indirect);
+   void (*print)(FILE *out, const void *payload);
+   void (*print_json)(FILE *out, const void *payload);
 #ifdef HAVE_PERFETTO
    /**
     * Callback to emit a perfetto event, such as render-stage trace
@@ -73,8 +66,7 @@ struct u_tracepoint {
                     uint64_t ts_ns,
                     uint16_t tp_idx,
                     const void *flush_data,
-                    const void *payload,
-                    const void *indirect);
+                    const void *payload);
 #endif
 };
 
@@ -85,10 +77,7 @@ struct u_tracepoint {
 void *u_trace_appendv(struct u_trace *ut,
                       void *cs,
                       const struct u_tracepoint *tp,
-                      unsigned variable_sz,
-                      unsigned n_indirects,
-                      const struct u_trace_address *addresses,
-                      const uint8_t *indirect_sizes_B);
+                      unsigned variable_sz);
 
 /**
  * Append a trace event, returning pointer to buffer of tp->payload_sz
@@ -98,7 +87,7 @@ void *u_trace_appendv(struct u_trace *ut,
 static inline void *
 u_trace_append(struct u_trace *ut, void *cs, const struct u_tracepoint *tp)
 {
-   return u_trace_appendv(ut, cs, tp, 0, 0, NULL, NULL);
+   return u_trace_appendv(ut, cs, tp, 0);
 }
 
 #ifdef __cplusplus

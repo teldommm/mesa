@@ -51,6 +51,7 @@ enum llvmpipe_memory_fd_type
    LLVMPIPE_MEMORY_FD_TYPE_DMA_BUF,
 };
 
+
 struct pipe_context;
 struct pipe_screen;
 struct pipe_memory_object;

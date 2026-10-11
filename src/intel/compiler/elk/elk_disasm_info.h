@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_DISASM_INFO_H
+#define ELK_DISASM_INFO_H
 
 #include "compiler/glsl/list.h"
 
@@ -85,3 +86,5 @@ elk_disasm_insert_error(struct elk_disasm_info *disasm, unsigned offset,
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
+#endif /* ELK_DISASM_INFO_H */

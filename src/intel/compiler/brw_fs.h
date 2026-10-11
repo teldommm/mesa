@@ -25,7 +25,8 @@
  *
  */
 
-#pragma once
+#ifndef BRW_FS_H
+#define BRW_FS_H
 
 #include "brw_cfg.h"
 #include "brw_compiler.h"
@@ -96,7 +97,6 @@ namespace brw {
       }
 
       unsigned count() const { return def_count; }
-      unsigned ssa_count() const;
 
       void print_stats(const fs_visitor *) const;
 
@@ -142,13 +142,12 @@ namespace brw {
 class fs_builder;
 }
 
-struct brw_shader_stats {
+struct shader_stats {
    const char *scheduler_mode;
    unsigned promoted_constants;
    unsigned spill_count;
    unsigned fill_count;
    unsigned max_register_pressure;
-   unsigned non_ssa_registers_after_nir;
 };
 
 /** Register numbers for thread payload fields. */
@@ -205,7 +204,7 @@ struct fs_thread_payload : public thread_payload {
    uint8_t dest_depth_reg[2];
    uint8_t sample_pos_reg[2];
    uint8_t sample_mask_in_reg[2];
-   uint8_t barycentric_coord_reg[INTEL_BARYCENTRIC_MODE_COUNT][2];
+   uint8_t barycentric_coord_reg[BRW_BARYCENTRIC_MODE_COUNT][2];
 
    uint8_t depth_w_coef_reg;
    uint8_t pc_bary_coef_reg;
@@ -220,8 +219,6 @@ struct cs_thread_payload : public thread_payload {
 
    brw_reg local_invocation_id[3];
 
-   brw_reg inline_parameter;
-
 protected:
    brw_reg subgroup_id_;
 };
@@ -231,6 +228,7 @@ struct task_mesh_thread_payload : public cs_thread_payload {
 
    brw_reg extended_parameter_0;
    brw_reg local_index;
+   brw_reg inline_parameter;
 
    brw_reg urb_output;
 
@@ -256,19 +254,6 @@ enum instruction_scheduler_mode {
 };
 
 class instruction_scheduler;
-
-enum brw_shader_phase {
-   BRW_SHADER_PHASE_INITIAL = 0,
-   BRW_SHADER_PHASE_AFTER_NIR,
-   BRW_SHADER_PHASE_AFTER_OPT_LOOP,
-   BRW_SHADER_PHASE_AFTER_EARLY_LOWERING,
-   BRW_SHADER_PHASE_AFTER_MIDDLE_LOWERING,
-   BRW_SHADER_PHASE_AFTER_LATE_LOWERING,
-   BRW_SHADER_PHASE_AFTER_REGALLOC,
-
-   /* Larger value than any other phase. */
-   BRW_SHADER_PHASE_INVALID,
-};
 
 /**
  * The fragment shader front-end.
@@ -307,26 +292,87 @@ public:
 
    void import_uniforms(fs_visitor *v);
 
+   void VARYING_PULL_CONSTANT_LOAD(const brw::fs_builder &bld,
+                                   const brw_reg &dst,
+                                   const brw_reg &surface,
+                                   const brw_reg &surface_handle,
+                                   const brw_reg &varying_offset,
+                                   uint32_t const_offset,
+                                   uint8_t alignment,
+                                   unsigned components);
+
+   bool run_fs(bool allow_spilling, bool do_rep_send);
+   bool run_vs();
+   bool run_tcs();
+   bool run_tes();
+   bool run_gs();
+   bool run_cs(bool allow_spilling);
+   bool run_bs(bool allow_spilling);
+   bool run_task(bool allow_spilling);
+   bool run_mesh(bool allow_spilling);
+   void allocate_registers(bool allow_spilling);
+   uint32_t compute_max_register_pressure();
    void assign_curb_setup();
+   void assign_urb_setup();
    void convert_attr_sources_to_hw_regs(fs_inst *inst);
-   void calculate_payload_ranges(bool allow_spilling,
-                                 unsigned payload_node_count,
+   void assign_vs_urb_setup();
+   void assign_tcs_urb_setup();
+   void assign_tes_urb_setup();
+   void assign_gs_urb_setup();
+   bool assign_regs(bool allow_spilling, bool spill_all);
+   void assign_regs_trivial();
+   void calculate_payload_ranges(unsigned payload_node_count,
                                  int *payload_last_use_ip) const;
    void assign_constant_locations();
    bool get_pull_locs(const brw_reg &src, unsigned *out_surf_index,
                       unsigned *out_pull_index);
    void invalidate_analysis(brw::analysis_dependency_class c);
 
+   instruction_scheduler *prepare_scheduler(void *mem_ctx);
+   void schedule_instructions_pre_ra(instruction_scheduler *sched,
+                                     instruction_scheduler_mode mode);
+   void schedule_instructions_post_ra();
+
    void vfail(const char *msg, va_list args);
    void fail(const char *msg, ...);
    void limit_dispatch_width(unsigned n, const char *msg);
 
+   void emit_repclear_shader();
+   void emit_interpolation_setup();
+
+   void set_tcs_invocation_id();
+
+   fs_inst *emit_single_fb_write(const brw::fs_builder &bld,
+                                 brw_reg color1, brw_reg color2,
+                                 brw_reg src0_alpha, unsigned components,
+                                 bool null_rt);
+   void do_emit_fb_writes(int nr_color_regions, bool replicate_alpha);
+   void emit_fb_writes();
    void emit_urb_writes(const brw_reg &gs_vertex_count = brw_reg());
    void emit_gs_control_data_bits(const brw_reg &vertex_count);
    brw_reg gs_urb_channel_mask(const brw_reg &dword_index);
    brw_reg gs_urb_per_slot_dword_index(const brw_reg &vertex_count);
+   void emit_gs_thread_end();
    bool mark_last_urb_write_with_eot();
+   void emit_tcs_thread_end();
+   void emit_urb_fence();
    void emit_cs_terminate();
+
+   brw_reg interp_reg(const brw::fs_builder &bld, unsigned location,
+                     unsigned channel, unsigned comp);
+   brw_reg per_primitive_reg(const brw::fs_builder &bld,
+                            int location, unsigned comp);
+
+   void dump_instruction_to_file(const fs_inst *inst, FILE *file, const brw::def_analysis *defs) const;
+   void dump_instructions_to_file(FILE *file) const;
+
+   /* Convenience functions based on the above. */
+   void dump_instruction(const fs_inst *inst, FILE *file = stderr, const brw::def_analysis *defs = nullptr) const {
+      dump_instruction_to_file(inst, file, defs);
+   }
+   void dump_instructions(const char *name = nullptr) const;
+
+   void calculate_cfg();
 
    const struct brw_compiler *compiler;
    void *log_data; /* Passed to compiler->*_log functions */
@@ -377,8 +423,6 @@ public:
    brw_reg outputs[VARYING_SLOT_MAX];
    brw_reg dual_src_output;
    int first_non_payload_grf;
-
-   enum brw_shader_phase phase;
 
    bool failed;
    char *fail_msg;
@@ -441,7 +485,7 @@ public:
    brw_reg pixel_z;
    brw_reg wpos_w;
    brw_reg pixel_w;
-   brw_reg delta_xy[INTEL_BARYCENTRIC_MODE_COUNT];
+   brw_reg delta_xy[BRW_BARYCENTRIC_MODE_COUNT];
    brw_reg final_gs_vertex_count;
    brw_reg control_data_bits;
    brw_reg invocation_id;
@@ -457,18 +501,14 @@ public:
    /* The API selected subgroup size */
    unsigned api_subgroup_size; /**< 0, 8, 16, 32 */
 
-   struct brw_shader_stats shader_stats;
+   struct shader_stats shader_stats;
+
+   unsigned workgroup_size() const;
 
    void debug_optimizer(const nir_shader *nir,
                         const char *pass_name,
                         int iteration, int pass_num) const;
 };
-
-void brw_print_instructions(const fs_visitor &s, FILE *file = stderr);
-
-void brw_print_instruction(const fs_visitor &s, const fs_inst *inst,
-                           FILE *file = stderr,
-                           const brw::def_analysis *defs = nullptr);
 
 void brw_print_swsb(FILE *f, const struct intel_device_info *devinfo, const tgl_swsb swsb);
 
@@ -500,7 +540,7 @@ public:
 
    void enable_debug(const char *shader_name);
    int generate_code(const cfg_t *cfg, int dispatch_width,
-                     struct brw_shader_stats shader_stats,
+                     struct shader_stats shader_stats,
                      const brw::performance &perf,
                      struct brw_compile_stats *stats,
                      unsigned max_polygons = 0);
@@ -520,8 +560,7 @@ private:
                      struct brw_reg dst, struct brw_reg src);
    void generate_ddy(const fs_inst *inst,
                      struct brw_reg dst, struct brw_reg src);
-   void generate_scratch_header(fs_inst *inst,
-                                struct brw_reg dst, struct brw_reg src);
+   void generate_scratch_header(fs_inst *inst, struct brw_reg dst);
 
    void generate_halt(fs_inst *inst);
 
@@ -588,8 +627,8 @@ void shuffle_from_32bit_read(const brw::fs_builder &bld,
                              uint32_t first_component,
                              uint32_t components);
 
-enum intel_barycentric_mode brw_barycentric_mode(const struct brw_wm_prog_key *key,
-                                                 nir_intrinsic_instr *intr);
+enum brw_barycentric_mode brw_barycentric_mode(const struct brw_wm_prog_key *key,
+                                               nir_intrinsic_instr *intr);
 
 uint32_t brw_fb_write_msg_control(const fs_inst *inst,
                                   const struct brw_wm_prog_data *prog_data);
@@ -606,26 +645,13 @@ int brw_get_subgroup_id_param_index(const intel_device_info *devinfo,
 
 void nir_to_brw(fs_visitor *s);
 
-void brw_shader_phase_update(fs_visitor &s, enum brw_shader_phase phase);
-
 #ifndef NDEBUG
 void brw_fs_validate(const fs_visitor &s);
 #else
 static inline void brw_fs_validate(const fs_visitor &s) {}
 #endif
 
-void brw_calculate_cfg(fs_visitor &s);
-
 void brw_fs_optimize(fs_visitor &s);
-
-instruction_scheduler *brw_prepare_scheduler(fs_visitor &s, void *mem_ctx);
-void brw_schedule_instructions_pre_ra(fs_visitor &s, instruction_scheduler *sched,
-                                      instruction_scheduler_mode mode);
-void brw_schedule_instructions_post_ra(fs_visitor &s);
-
-void brw_allocate_registers(fs_visitor &s, bool allow_spilling);
-bool brw_assign_regs(fs_visitor &s, bool allow_spilling, bool spill_all);
-void brw_assign_regs_trivial(fs_visitor &s);
 
 bool brw_fs_lower_3src_null_dest(fs_visitor &s);
 bool brw_fs_lower_alu_restrictions(fs_visitor &s);
@@ -646,11 +672,9 @@ bool brw_fs_lower_sends_overlapping_payload(fs_visitor &s);
 bool brw_fs_lower_simd_width(fs_visitor &s);
 bool brw_fs_lower_csel(fs_visitor &s);
 bool brw_fs_lower_sub_sat(fs_visitor &s);
-bool brw_fs_lower_subgroup_ops(fs_visitor &s);
 bool brw_fs_lower_uniform_pull_constant_loads(fs_visitor &s);
 void brw_fs_lower_vgrfs_to_fixed_grfs(fs_visitor &s);
 
-bool brw_constant_fold_instruction(const intel_device_info *devinfo, fs_inst *inst);
 bool brw_fs_opt_algebraic(fs_visitor &s);
 bool brw_fs_opt_bank_conflicts(fs_visitor &s);
 bool brw_fs_opt_cmod_propagation(fs_visitor &s);
@@ -660,7 +684,10 @@ bool brw_fs_opt_copy_propagation(fs_visitor &s);
 bool brw_fs_opt_copy_propagation_defs(fs_visitor &s);
 bool brw_fs_opt_cse_defs(fs_visitor &s);
 bool brw_fs_opt_dead_code_eliminate(fs_visitor &s);
+bool brw_fs_opt_dead_control_flow_eliminate(fs_visitor &s);
 bool brw_fs_opt_eliminate_find_live_channel(fs_visitor &s);
+bool brw_fs_opt_peephole_sel(fs_visitor &s);
+bool brw_fs_opt_predicated_break(fs_visitor &s);
 bool brw_fs_opt_register_coalesce(fs_visitor &s);
 bool brw_fs_opt_remove_extra_rounding_modes(fs_visitor &s);
 bool brw_fs_opt_remove_redundant_halts(fs_visitor &s);
@@ -668,13 +695,13 @@ bool brw_fs_opt_saturate_propagation(fs_visitor &s);
 bool brw_fs_opt_split_sends(fs_visitor &s);
 bool brw_fs_opt_split_virtual_grfs(fs_visitor &s);
 bool brw_fs_opt_zero_samples(fs_visitor &s);
-bool brw_opt_combine_convergent_txf(fs_visitor &s);
 
 bool brw_fs_workaround_emit_dummy_mov_instruction(fs_visitor &s);
 bool brw_fs_workaround_memory_fence_before_eot(fs_visitor &s);
-bool brw_fs_workaround_source_arf_before_eot(fs_visitor &s);
 bool brw_fs_workaround_nomask_control_flow(fs_visitor &s);
 
 /* Helpers. */
 unsigned brw_fs_get_lowered_simd_width(const fs_visitor *shader,
                                        const fs_inst *inst);
+
+#endif /* BRW_FS_H */

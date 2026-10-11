@@ -9,10 +9,196 @@ import xml.parsers.expat
 import sys
 import operator
 import math
-import platform
 from functools import reduce
 
 global_prefix = "agx"
+
+pack_header = """
+/* Generated code, see midgard.xml and gen_pack_header.py
+ *
+ * Packets, enums and structures for Panfrost.
+ *
+ * This file has been generated, do not hand edit.
+ */
+
+#ifndef AGX_PACK_H
+#define AGX_PACK_H
+
+#ifndef __OPENCL_VERSION__
+#include <stdio.h>
+#include <inttypes.h>
+#include "util/bitpack_helpers.h"
+#include "util/half_float.h"
+#define FILE_TYPE FILE
+#define CONSTANT_ const
+#define GLOBAL_
+#else
+
+#include "libagx.h"
+#define assert(x)
+#define FILE_TYPE void
+#define CONSTANT_ constant
+#define GLOBAL_ global
+
+static uint64_t
+util_bitpack_uint(uint64_t v, uint32_t start, uint32_t end)
+{
+   return v << start;
+}
+
+static uint64_t
+util_bitpack_sint(int64_t v, uint32_t start, uint32_t end)
+{
+   const int bits = end - start + 1;
+   const uint64_t mask = (bits == 64) ? ~((uint64_t)0) : (1ull << bits) - 1;
+   return (v & mask) << start;
+}
+
+static uint32_t
+util_bitpack_float(float v)
+{
+   union { float f; uint32_t dw; } x;
+   x.f = v;
+   return x.dw;
+}
+
+static inline float
+uif(uint32_t ui)
+{
+   union { float f; uint32_t dw; } fi;
+   fi.dw = ui;
+   return fi.f;
+}
+
+#define DIV_ROUND_UP( A, B )  ( ((A) + (B) - 1) / (B) )
+#define CLAMP( X, MIN, MAX )  ( (X)>(MIN) ? ((X)>(MAX) ? (MAX) : (X)) : (MIN) )
+#define ALIGN_POT(x, pot_align) (((x) + (pot_align) - 1) & ~((pot_align) - 1))
+
+static inline unsigned
+util_logbase2(unsigned n)
+{
+   return ((sizeof(unsigned) * 8 - 1) - __builtin_clz(n | 1));
+}
+
+static inline int64_t
+util_sign_extend(uint64_t val, unsigned width)
+{
+   unsigned shift = 64 - width;
+   return (int64_t)(val << shift) >> shift;
+}
+
+static inline uint16_t
+_mesa_float_to_half(float f)
+{
+   union { half h; uint16_t w; } hi;
+   hi.h = convert_half(f);
+   return hi.w;
+}
+
+static inline float
+_mesa_half_to_float(uint16_t w)
+{
+   union { half h; uint16_t w; } hi;
+   hi.w = w;
+   return convert_float(hi.h);
+}
+
+#endif
+
+#define __gen_unpack_float(x, y, z) uif(__gen_unpack_uint(x, y, z))
+#define __gen_unpack_half(x, y, z) _mesa_half_to_float(__gen_unpack_uint(x, y, z))
+
+static inline uint64_t
+__gen_unpack_uint(CONSTANT_ uint32_t *restrict cl, uint32_t start, uint32_t end)
+{
+   uint64_t val = 0;
+   const int width = end - start + 1;
+   const uint64_t mask = (width == 64) ? ~((uint64_t)0) : ((uint64_t)1 << width) - 1;
+
+   for (unsigned word = start / 32; word < (end / 32) + 1; word++) {
+      val |= ((uint64_t) cl[word]) << ((word - start / 32) * 32);
+   }
+
+   return (val >> (start % 32)) & mask;
+}
+
+/*
+ * LODs are 4:6 fixed point. We must clamp before converting to integers to
+ * avoid undefined behaviour for out-of-bounds inputs like +/- infinity.
+ */
+static inline uint32_t
+__gen_pack_lod(float f, uint32_t start, uint32_t end)
+{
+    uint32_t fixed = CLAMP(f * (1 << 6), 0 /* 0.0 */, 0x380 /* 14.0 */);
+    return util_bitpack_uint(fixed, start, end);
+}
+
+static inline float
+__gen_unpack_lod(CONSTANT_ uint32_t *restrict cl, uint32_t start, uint32_t end)
+{
+    return ((float) __gen_unpack_uint(cl, start, end)) / (1 << 6);
+}
+
+static inline uint64_t
+__gen_unpack_sint(CONSTANT_ uint32_t *restrict cl, uint32_t start, uint32_t end)
+{
+   int size = end - start + 1;
+   int64_t val = __gen_unpack_uint(cl, start, end);
+
+   return util_sign_extend(val, size);
+}
+
+static inline uint64_t
+__gen_to_groups(uint32_t value, uint32_t group_size, uint32_t length)
+{
+    /* Zero is not representable, clamp to minimum */
+    if (value == 0)
+        return 1;
+
+    /* Round up to the nearest number of groups */
+    uint32_t groups = DIV_ROUND_UP(value, group_size);
+
+    /* The 0 encoding means "all" */
+    if (groups == (1ull << length))
+        return 0;
+
+    /* Otherwise it's encoded as the identity */
+    assert(groups < (1u << length) && "out of bounds");
+    assert(groups >= 1 && "exhaustive");
+    return groups;
+}
+
+static inline uint64_t
+__gen_from_groups(uint32_t value, uint32_t group_size, uint32_t length)
+{
+    return group_size * (value ? value: (1 << length));
+}
+
+#define agx_pack(dst, T, name)                              \\
+   for (struct AGX_ ## T name = { AGX_ ## T ## _header }, \\
+        *_loop_count = (GLOBAL_ void *) ((uintptr_t) 0);                  \\
+        (uintptr_t)_loop_count < 1;       \\
+        ({ AGX_ ## T ## _pack((GLOBAL_ uint32_t *) (dst), &name);  \\
+           _loop_count = (GLOBAL_ void*)(((uintptr_t)_loop_count) + 1); }))
+
+#define agx_unpack(fp, src, T, name)                        \\
+        struct AGX_ ## T name;                         \\
+        AGX_ ## T ## _unpack(fp, (CONSTANT_ uint8_t *)(src), &name)
+
+#define agx_print(fp, T, var, indent)                   \\
+        AGX_ ## T ## _print(fp, &(var), indent)
+
+static inline void agx_merge_helper(uint32_t *dst, const uint32_t *src, size_t bytes)
+{
+        assert((bytes & 3) == 0);
+
+        for (unsigned i = 0; i < (bytes / 4); ++i)
+                dst[i] |= src[i];
+}
+
+#define agx_merge(packed1, packed2, type) \
+        agx_merge_helper((packed1).opaque, (packed2).opaque, AGX_##type##_LENGTH)
+"""
 
 def to_alphanum(name):
     substitutions = {
@@ -55,7 +241,7 @@ def prefixed_upper_name(prefix, name):
     return safe_name(name).upper()
 
 def enum_name(name):
-    return f"{global_prefix}_{safe_name(name)}".lower()
+    return "{}_{}".format(global_prefix, safe_name(name)).lower()
 
 MODIFIERS = ["shr", "minus", "align", "log2", "groups"]
 
@@ -98,39 +284,20 @@ class Field(object):
         self.type = attrs["type"]
 
         if self.type == 'bool' and self.start != self.end:
-            print(f"#error Field {self.name} has bool type but more than one bit of size");
+            print("#error Field {} has bool type but more than one bit of size".format(self.name));
 
         if "prefix" in attrs:
             self.prefix = safe_name(attrs["prefix"]).upper()
         else:
             self.prefix = None
 
-        self.modifier = parse_modifier(attrs.get("modifier"))
-        self.exact = attrs.get("exact")
-        self.default = None
-
-        if self.exact is not None:
-            self.default = self.exact
-        elif self.modifier is not None:
-            # Set the default value to encode to zero
-            mod = self.modifier
-            if mod[0] == 'log2':
-                self.default = 1
-            elif mod[0] == 'minus':
-                self.default = mod[1]
-            elif mod[0] == 'groups':
-                # The zero encoding means "all"
-                self.default = (1 << int(attrs["size"])) * mod[1]
-            elif mod[0] in ['shr', 'align']:
-                # Zero encodes to zero
-                pass
-            else:
-                assert(0)
+        self.default = attrs.get("default")
 
         # Map enum values
         if self.type in self.parser.enums and self.default is not None:
-            self.default = safe_name(f'{global_prefix}_{self.type}_{self.default}').upper()
+            self.default = safe_name('{}_{}_{}'.format(global_prefix, self.type, self.default)).upper()
 
+        self.modifier  = parse_modifier(attrs.get("modifier"))
 
     def emit_template_struct(self, dim):
         if self.type == 'address':
@@ -150,7 +317,7 @@ class Field(object):
         elif self.type in self.parser.enums:
             type = 'enum ' + enum_name(self.type)
         else:
-            print(f"#error unhandled type: {self.type}")
+            print("#error unhandled type: %s" % self.type)
             type = "uint32_t"
 
         print("   %-36s %s%s;" % (type, self.name, dim))
@@ -190,14 +357,11 @@ class Group(object):
             if self.count > 1:
                 dim = "%s[%d]" % (dim, self.count)
 
-            any_fields = False
-            for field in self.fields:
-                if not field.exact:
-                    field.emit_template_struct(dim)
-                    any_fields = True
-
-            if not any_fields:
+            if len(self.fields) == 0:
                 print("   int dummy;")
+
+            for field in self.fields:
+                field.emit_template_struct(dim)
 
     class Word:
         def __init__(self):
@@ -213,7 +377,7 @@ class Group(object):
 
     def collect_fields(self, fields, offset, path, all_fields):
         for field in fields:
-            field_path = f'{path}{field.name}'
+            field_path = '{}{}'.format(path, field.name)
             field_offset = offset + field.start
 
             if field.type in self.parser.structs:
@@ -227,7 +391,7 @@ class Group(object):
 
     def collect_words(self, fields, offset, path, words):
         for field in fields:
-            field_path = f'{path}{field.name}'
+            field_path = '{}{}'.format(path, field.name)
             start = offset + field.start
 
             if field.type in self.parser.structs:
@@ -258,11 +422,11 @@ class Group(object):
             if field.modifier[0] == "shr":
                 shift = field.modifier[1]
                 mask = hex((1 << shift) - 1)
-                print(f"   assert((values->{field.name} & {mask}) == 0);")
+                print("   assert((values->{} & {}) == 0);".format(field.name, mask))
             elif field.modifier[0] == "minus":
-                print(f"   assert(values->{field.name} >= {field.modifier[1]});")
+                print("   assert(values->{} >= {});".format(field.name, field.modifier[1]))
             elif field.modifier[0] == "log2":
-                print(f"   assert(IS_POT_NONZERO(values->{field.name}));")
+                print("   assert(IS_POT_NONZERO(values->{}));".format(field.name))
 
         for index in range(math.ceil(self.length / 4)):
             # Handle MBZ words
@@ -277,8 +441,6 @@ class Group(object):
             v = None
             prefix = "   cl[%2d] =" % index
 
-            lines = []
-
             for contributor in word.contributors:
                 field = contributor.field
                 name = field.name
@@ -288,59 +450,43 @@ class Group(object):
                 start -= contrib_word_start
                 end -= contrib_word_start
 
-                value = f"values->{contributor.path}"
-                if field.exact:
-                    value = field.default
-
-                # These types all use util_bitpack_uint
-                pack_as_uint = field.type in ["uint", "hex", "address", "bool"]
-                pack_as_uint |= field.type in self.parser.enums
-                start_adjusted = start
-                value_unshifted = None
-
+                value = "values->{}".format(contributor.path)
                 if field.modifier is not None:
                     if field.modifier[0] == "shr":
-                        if pack_as_uint and start >= field.modifier[1]:
-                            # For uint, we fast path.  If we do `(a >> 2) << 2`,
-                            # clang will generate a mask in release builds, even
-                            # though we know we're aligned. So don't generate
-                            # that to avoid the masking.
-                            start_adjusted = start - field.modifier[1]
-                        else:
-                            value = f"{value} >> {field.modifier[1]}"
+                        value = "{} >> {}".format(value, field.modifier[1])
                     elif field.modifier[0] == "minus":
-                        value = f"{value} - {field.modifier[1]}"
+                        value = "{} - {}".format(value, field.modifier[1])
                     elif field.modifier[0] == "align":
-                        value = f"ALIGN_POT({value}, {field.modifier[1]})"
+                        value = "ALIGN_POT({}, {})".format(value, field.modifier[1])
                     elif field.modifier[0] == "log2":
-                        value = f"util_logbase2({value})"
+                        value = "util_logbase2({})".format(value)
                     elif field.modifier[0] == "groups":
                         value = "__gen_to_groups({}, {}, {})".format(value,
                                 field.modifier[1], end - start + 1)
 
-                if pack_as_uint:
-                    bits = (end - start_adjusted + 1)
-                    if bits < 64 and not field.exact:
-                        # Add some nicer error checking
-                        label = f"{self.label}::{name}"
-                        bound = hex(1 << bits)
-                        print(f"   agx_genxml_validate_bounds(\"{label}\", {value}, {bound}ull);")
-
-                    s = f"util_bitpack_uint({value}, {start_adjusted}, {end})"
+                if field.type in ["uint", "hex", "address"]:
+                    s = "util_bitpack_uint(%s, %d, %d)" % \
+                        (value, start, end)
+                elif field.type in self.parser.enums:
+                    s = "util_bitpack_uint(%s, %d, %d)" % \
+                        (value, start, end)
                 elif field.type == "int":
                     s = "util_bitpack_sint(%s, %d, %d)" % \
                         (value, start, end)
+                elif field.type == "bool":
+                    s = "util_bitpack_uint(%s, %d, %d)" % \
+                        (value, start, end)
                 elif field.type == "float":
                     assert(start == 0 and end == 31)
-                    s = f"util_bitpack_float({value})"
+                    s = "util_bitpack_float({})".format(value)
                 elif field.type == "half":
                     assert(start == 0 and end == 15)
-                    s = f"_mesa_float_to_half({value})"
+                    s = "_mesa_float_to_half({})".format(value)
                 elif field.type == "lod":
                     assert(end - start + 1 == 10)
                     s = "__gen_pack_lod(%s, %d, %d)" % (value, start, end)
                 else:
-                    s = f"#error unhandled field {contributor.path}, type {field.type}"
+                    s = "#error unhandled field {}, type {}".format(contributor.path, field.type)
 
                 if not s == None:
                     shift = word_start - contrib_word_start
@@ -348,13 +494,10 @@ class Group(object):
                         s = "%s >> %d" % (s, shift)
 
                     if contributor == word.contributors[-1]:
-                        lines.append(f"{prefix} {s};")
+                        print("%s %s;" % (prefix, s))
                     else:
-                        lines.append(f"{prefix} {s} |")
+                        print("%s %s |" % (prefix, s))
                     prefix = "           "
-
-            for ln in lines:
-                print(ln)
 
             continue
 
@@ -374,8 +517,9 @@ class Group(object):
         # First, verify there is no garbage in unused bits
         words = {}
         self.collect_words(self.fields, 0, '', words)
-        validation = []
+        print('    bool valid = true;')
 
+        print('#ifndef __OPENCL_VERSION__')
         for index in range(self.length // 4):
             base = index * 32
             word = words.get(index, self.Word())
@@ -385,8 +529,18 @@ class Group(object):
             ALL_ONES = 0xffffffff
 
             if mask != ALL_ONES:
-                bad_mask = hex(mask ^ ALL_ONES)
-                validation.append(f'agx_genxml_validate_mask(fp, \"{self.label}\", cl, {index}, {bad_mask})')
+                TMPL = '''
+   if (((const uint32_t *) cl)[{}] & {}) {{
+      valid = false;
+
+      if (fp != NULL) {{
+          fprintf(fp, "XXX: Unknown field of {} unpacked at word {}: got %X, bad mask %X\\n",
+                  ((const uint32_t *) cl)[{}], ((const uint32_t *) cl)[{}] & {});
+      }}
+   }}
+                '''
+                print(TMPL.format(index, hex(mask ^ ALL_ONES), self.label, index, index, index, hex(mask ^ ALL_ONES)))
+        print('#endif')
 
         fieldrefs = []
         self.collect_fields(self.fields, 0, '', fieldrefs)
@@ -395,7 +549,7 @@ class Group(object):
             convert = None
 
             args = []
-            args.append('(CONST uint32_t *) cl')
+            args.append('(CONSTANT_ uint32_t *) cl')
             args.append(str(fieldref.start))
             args.append(str(fieldref.end))
 
@@ -412,15 +566,15 @@ class Group(object):
             elif field.type == "lod":
                 convert = "__gen_unpack_lod"
             else:
-                s = f"/* unhandled field {field.name}, type {field.type} */\n"
+                s = "/* unhandled field %s, type %s */\n" % (field.name, field.type)
 
             suffix = ""
             prefix = ""
             if field.modifier:
                 if field.modifier[0] == "minus":
-                    suffix = f" + {field.modifier[1]}"
+                    suffix = " + {}".format(field.modifier[1])
                 elif field.modifier[0] == "shr":
-                    suffix = f" << {field.modifier[1]}"
+                    suffix = " << {}".format(field.modifier[1])
                 if field.modifier[0] == "log2":
                     prefix = "1 << "
                 elif field.modifier[0] == "groups":
@@ -428,64 +582,45 @@ class Group(object):
                     suffix = ", {}, {})".format(field.modifier[1],
                                                 fieldref.end - fieldref.start + 1)
 
-            if field.type in self.parser.enums and not field.exact:
+            if field.type in self.parser.enums:
                 prefix = f"(enum {enum_name(field.type)}) {prefix}"
 
-            decoded = f"{prefix}{convert}({', '.join(args)}){suffix}"
+            decoded = '{}{}({}){}'.format(prefix, convert, ', '.join(args), suffix)
 
-            if field.exact:
-                name = self.label
-                validation.append(f'agx_genxml_validate_exact(fp, \"{name}\", {decoded}, {field.default})')
-            else:
-                print(f'   values->{fieldref.path} = {decoded};')
-
+            print('   values->{} = {};'.format(fieldref.path, decoded))
             if field.modifier and field.modifier[0] == "align":
-                assert(not field.exact)
                 mask = hex(field.modifier[1] - 1)
-                print(f'   assert(!(values->{fieldref.path} & {mask}));')
-
-        if len(validation) > 1:
-            print('   bool valid = true;')
-            for v in validation:
-                print(f'   valid &= {v};')
-            print("   return valid;")
-        elif len(validation) == 1:
-            print(f"   return {validation[0]};")
-        else:
-            print("   return true;")
+                print('   assert(!(values->{} & {}));'.format(fieldref.path, mask))
 
     def emit_print_function(self):
         for field in self.fields:
             convert = None
-            name, val = field.human_name, f'values->{field.name}'
-
-            if field.exact:
-                continue
+            name, val = field.human_name, 'values->{}'.format(field.name)
 
             if field.type in self.parser.structs:
                 pack_name = self.parser.gen_prefix(safe_name(field.type)).upper()
-                print(f'   fprintf(fp, "%*s{field.human_name}:\\n", indent, "");')
-                print(f"   {pack_name}_print(fp, &values->{field.name}, indent + 2);")
+                print('   fprintf(fp, "%*s{}:\\n", indent, "");'.format(field.human_name))
+                print("   {}_print(fp, &values->{}, indent + 2);".format(pack_name, field.name))
             elif field.type == "address":
                 # TODO resolve to name
-                print(f'   fprintf(fp, "%*s{name}: 0x%" PRIx64 "\\n", indent, "", {val});')
+                print('   fprintf(fp, "%*s{}: 0x%" PRIx64 "\\n", indent, "", {});'.format(name, val))
             elif field.type in self.parser.enums:
-                print(f'   if ({enum_name(field.type)}_as_str({val}))')
-                print(f'     fprintf(fp, "%*s{name}: %s\\n", indent, "", {enum_name(field.type)}_as_str({val}));')
-                print(f'   else')
-                print(f'     fprintf(fp, "%*s{name}: unknown %X (XXX)\\n", indent, "", {val});')
+                print('   if ({}_as_str({}))'.format(enum_name(field.type), val))
+                print('     fprintf(fp, "%*s{}: %s\\n", indent, "", {}_as_str({}));'.format(name, enum_name(field.type), val))
+                print('    else')
+                print('     fprintf(fp, "%*s{}: unknown %X (XXX)\\n", indent, "", {});'.format(name, val))
             elif field.type == "int":
-                print(f'   fprintf(fp, "%*s{name}: %d\\n", indent, "", {val});')
+                print('   fprintf(fp, "%*s{}: %d\\n", indent, "", {});'.format(name, val))
             elif field.type == "bool":
-                print(f'   fprintf(fp, "%*s{name}: %s\\n", indent, "", {val} ? "true" : "false");')
+                print('   fprintf(fp, "%*s{}: %s\\n", indent, "", {} ? "true" : "false");'.format(name, val))
             elif field.type in ["float", "lod", "half"]:
-                print(f'   fprintf(fp, "%*s{name}: %f\\n", indent, "", {val});')
+                print('   fprintf(fp, "%*s{}: %f\\n", indent, "", {});'.format(name, val))
             elif field.type in ["uint", "hex"] and (field.end - field.start) >= 32:
-                print(f'   fprintf(fp, "%*s{name}: 0x%" PRIx64 "\\n", indent, "", {val});')
+                print('   fprintf(fp, "%*s{}: 0x%" PRIx64 "\\n", indent, "", {});'.format(name, val))
             elif field.type == "hex":
-                print(f'   fprintf(fp, "%*s{name}: 0x%" PRIx32 "\\n", indent, "", {val});')
+                print('   fprintf(fp, "%*s{}: 0x%" PRIx32 "\\n", indent, "", {});'.format(name, val))
             else:
-                print(f'   fprintf(fp, "%*s{name}: %u\\n", indent, "", {val});')
+                print('   fprintf(fp, "%*s{}: %u\\n", indent, "", {});'.format(name, val))
 
 class Value(object):
     def __init__(self, attrs):
@@ -497,7 +632,6 @@ class Parser(object):
         self.parser = xml.parsers.expat.ParserCreate()
         self.parser.StartElementHandler = self.start_element
         self.parser.EndElementHandler = self.end_element
-        self.os = platform.system().lower()
 
         self.struct = None
         self.structs = {}
@@ -505,12 +639,9 @@ class Parser(object):
         self.enums = set()
 
     def gen_prefix(self, name):
-        return f'{global_prefix.upper()}_{name}'
+        return '{}_{}'.format(global_prefix.upper(), name)
 
     def start_element(self, name, attrs):
-        if "os" in attrs and attrs["os"] != self.os:
-            return
-
         if name == "genxml":
             print(pack_header)
         elif name == "struct":
@@ -523,7 +654,7 @@ class Parser(object):
                 self.group.length = int(attrs["size"])
             self.group.align = int(attrs["align"]) if "align" in attrs else None
             self.structs[attrs["name"]] = self.group
-        elif name == "field" and self.group is not None:
+        elif name == "field":
             self.group.fields.append(Field(self, attrs))
             self.values = []
         elif name == "enum":
@@ -539,32 +670,32 @@ class Parser(object):
 
     def end_element(self, name):
         if name == "struct":
-            if self.struct is not None:
-                self.emit_struct()
-                self.struct = None
-
+            self.emit_struct()
+            self.struct = None
             self.group = None
-        elif name  == "field" and self.group is not None:
+        elif name  == "field":
             self.group.fields[-1].values = self.values
         elif name  == "enum":
             self.emit_enum()
             self.enum = None
+        elif name == "genxml":
+            print('#endif')
 
     def emit_header(self, name):
         default_fields = []
         for field in self.group.fields:
-            if not type(field) is Field or field.exact:
+            if not type(field) is Field:
                 continue
             if field.default is not None:
-                default_fields.append(f"   .{field.name} = {field.default}")
+                default_fields.append("   .{} = {}".format(field.name, field.default))
             elif field.type in self.structs:
-                default_fields.append(f"   .{field.name} = {{ {self.gen_prefix(safe_name(field.type.upper()))}_header }}")
+                default_fields.append("   .{} = {{ {}_header }}".format(field.name, self.gen_prefix(safe_name(field.type.upper()))))
 
+        print('#define %-40s\\' % (name + '_header'))
         if default_fields:
-            print('#define %-40s\\' % (name + '_header'))
             print(",  \\\n".join(default_fields))
         else:
-            print(f'#define {name}_header 0')
+            print('   0')
         print('')
 
     def emit_template_struct(self, name, group):
@@ -573,39 +704,41 @@ class Parser(object):
         print("};\n")
 
     def emit_pack_function(self, name, group):
-        print("static inline void\n%s_pack(GLOBAL uint32_t * restrict cl,\n%sconst struct %s * restrict values)\n{" %
+        print("static inline void\n%s_pack(GLOBAL_ uint32_t * restrict cl,\n%sconst struct %s * restrict values)\n{" %
               (name, ' ' * (len(name) + 6), name))
 
         group.emit_pack_function()
 
-        print("}\n")
+        print("}\n\n")
 
-        print(f"#define {name + '_LENGTH'} {self.group.length}")
+        print('#define {} {}'.format (name + "_LENGTH", self.group.length))
         if self.group.align != None:
-            print(f"#define {name + '_ALIGN'} {self.group.align}")
+            print('#define {} {}'.format (name + "_ALIGN", self.group.align))
 
         # round up to handle 6 half-word USC structures
         words = (self.group.length + 4 - 1) // 4
-        print(f'struct {name.lower()}_packed {{ uint32_t opaque[{words}];}};')
+        print('struct {}_packed {{ uint32_t opaque[{}];}};'.format(name.lower(),
+                                                                   words))
 
     def emit_unpack_function(self, name, group):
         print("static inline bool")
-        print("%s_unpack(FILE *fp, CONST uint8_t * restrict cl,\n%sstruct %s * restrict values)\n{" %
+        print("%s_unpack(FILE_TYPE *fp, CONSTANT_ uint8_t * restrict cl,\n%sstruct %s * restrict values)\n{" %
               (name.upper(), ' ' * (len(name) + 8), name))
 
         group.emit_unpack_function()
 
+        print("   return valid;\n")
         print("}\n")
 
     def emit_print_function(self, name, group):
         print("#ifndef __OPENCL_VERSION__")
         print("static inline void")
-        print(f"{name.upper()}_print(FILE *fp, const struct {name} * values, unsigned indent)\n{{")
+        print("{}_print(FILE *fp, const struct {} * values, unsigned indent)\n{{".format(name.upper(), name))
 
         group.emit_print_function()
 
-        print("}")
-        print("#endif\n")
+        print("}\n")
+        print("#endif")
 
     def emit_struct(self):
         name = self.struct
@@ -622,38 +755,38 @@ class Parser(object):
     def emit_enum(self):
         e_name = enum_name(self.enum)
         prefix = e_name if self.enum != 'Format' else global_prefix
-        print(f'enum {e_name} {{')
+        print('enum {} {{'.format(e_name))
 
         for value in self.values:
-            name = f'{prefix}_{value.name}'
+            name = '{}_{}'.format(prefix, value.name)
             name = safe_name(name).upper()
-            print(f'   {name} = {value.value},')
+            print('        % -36s = %6d,' % (name, value.value))
         print('};\n')
 
         print("#ifndef __OPENCL_VERSION__")
         print("static inline const char *")
-        print(f"{e_name.lower()}_as_str(enum {e_name} imm)\n{{")
+        print("{}_as_str(enum {} imm)\n{{".format(e_name.lower(), e_name))
         print("    switch (imm) {")
         for value in self.values:
-            name = f'{prefix}_{value.name}'
+            name = '{}_{}'.format(prefix, value.name)
             name = safe_name(name).upper()
-            print(f'    case {name}: return "{value.name}";')
-        print('    default: return NULL;')
+            print('    case {}: return "{}";'.format(name, value.name))
+        print('    default: break;')
         print("    }")
-        print("}")
-        print("#endif\n")
+        print("    return NULL;")
+        print("}\n")
+        print("#endif")
 
     def parse(self, filename):
         file = open(filename, "rb")
         self.parser.ParseFile(file)
         file.close()
 
-if len(sys.argv) < 3:
-    print("Missing input files file specified")
+if len(sys.argv) < 2:
+    print("No input xml file specified")
     sys.exit(1)
 
 input_file = sys.argv[1]
-pack_header = open(sys.argv[2]).read()
 
 p = Parser()
 p.parse(input_file)

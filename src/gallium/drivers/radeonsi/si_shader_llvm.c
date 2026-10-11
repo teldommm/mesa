@@ -73,15 +73,15 @@ bool si_compile_llvm(struct si_screen *sscreen, struct si_shader_binary *binary,
    }
 
    if (!si_replace_shader(count, binary)) {
-      struct ac_backend_optimizer *beo = compiler->beo;
+      struct ac_compiler_passes *passes = compiler->passes;
 
-      if (less_optimized && compiler->low_opt_beo)
-         beo = compiler->low_opt_beo;
+      if (less_optimized && compiler->low_opt_passes)
+         passes = compiler->low_opt_passes;
 
       struct si_llvm_diagnostics diag = {debug};
       LLVMContextSetDiagnosticHandler(ac->context, si_diagnostic_handler, &diag);
 
-      if (!ac_compile_module_to_elf(beo, ac->module, (char **)&binary->code_buffer,
+      if (!ac_compile_module_to_elf(passes, ac->module, (char **)&binary->code_buffer,
                                     &binary->code_size))
          diag.retval = 1;
 
@@ -236,7 +236,7 @@ void si_llvm_optimize_module(struct si_shader_context *ctx)
       ac_dump_module(ctx->ac.module);
 
    /* Run the pass */
-   ac_llvm_optimize_module(ctx->compiler->meo, ctx->ac.module);
+   LLVMRunPassManager(ctx->compiler->passmgr, ctx->ac.module);
 }
 
 void si_llvm_dispose(struct si_shader_context *ctx)
@@ -623,7 +623,7 @@ static bool si_llvm_translate_nir(struct si_shader_context *ctx, struct si_shade
     * compaction is enabled.
     */
    if (is_nogs_ngg_stage &&
-       (si_shader_uses_streamout(shader) || si_shader_culling_enabled(shader))) {
+       (si_shader_uses_streamout(shader) || shader->key.ge.opt.ngg_culling)) {
       LLVMTypeRef asi32 = LLVMArrayType(ctx->ac.i32, gfx10_ngg_get_scratch_dw_size(shader));
       ctx->gs_ngg_scratch = (struct ac_llvm_pointer) {
          .value = LLVMAddGlobalInAddressSpace(ctx->ac.module, asi32, "ngg_scratch",
@@ -659,7 +659,7 @@ static bool si_llvm_translate_nir(struct si_shader_context *ctx, struct si_shade
        */
       if (ctx->screen->info.gfx_level == GFX10 &&
           (ctx->stage == MESA_SHADER_VERTEX || ctx->stage == MESA_SHADER_TESS_EVAL) &&
-          shader->key.ge.as_ngg && !shader->key.ge.as_es && !si_shader_culling_enabled(shader))
+          shader->key.ge.as_ngg && !shader->key.ge.as_es && !shader->key.ge.opt.ngg_culling)
          ac_build_s_barrier(&ctx->ac, ctx->stage);
 
       LLVMValueRef thread_enabled = NULL;
@@ -794,7 +794,7 @@ static bool si_llvm_translate_nir(struct si_shader_context *ctx, struct si_shade
 static bool si_should_optimize_less(struct ac_llvm_compiler *compiler,
                                     struct si_shader_selector *sel)
 {
-   if (!compiler->low_opt_beo)
+   if (!compiler->low_opt_passes)
       return false;
 
    /* Assume a slow CPU. */

@@ -158,7 +158,7 @@ setup_nir_cs(enum amd_gfx_level gfx_level, gl_shader_stage stage, enum radeon_fa
 }
 
 void
-finish_program(Program* prog, bool endpgm, bool dominance)
+finish_program(Program* prog, bool endpgm)
 {
    for (Block& BB : prog->blocks) {
       for (unsigned idx : BB.linear_preds)
@@ -167,22 +167,20 @@ finish_program(Program* prog, bool endpgm, bool dominance)
          prog->blocks[idx].logical_succs.emplace_back(BB.index);
    }
 
-   for (Block& block : prog->blocks) {
-      if (block.linear_succs.size() == 0) {
-         block.kind |= block_kind_uniform;
-         if (endpgm)
+   if (endpgm) {
+      for (Block& block : prog->blocks) {
+         if (block.linear_succs.size() == 0) {
+            block.kind |= block_kind_uniform;
             Builder(prog, &block).sopp(aco_opcode::s_endpgm);
+         }
       }
    }
-
-   if (dominance)
-      dominator_tree(program.get());
 }
 
 void
 finish_validator_test()
 {
-   finish_program(program.get(), true, true);
+   finish_program(program.get());
    aco_print_program(program.get(), output);
    fprintf(output, "Validation results:\n");
    if (aco::validate_ir(program.get()))
@@ -194,7 +192,7 @@ finish_validator_test()
 void
 finish_opt_test()
 {
-   finish_program(program.get(), true, true);
+   finish_program(program.get());
    if (!aco::validate_ir(program.get())) {
       fail_test("Validation before optimization failed");
       return;
@@ -210,7 +208,7 @@ finish_opt_test()
 void
 finish_setup_reduce_temp_test()
 {
-   finish_program(program.get(), true, true);
+   finish_program(program.get());
    if (!aco::validate_ir(program.get())) {
       fail_test("Validation before setup_reduce_temp failed");
       return;
@@ -226,7 +224,7 @@ finish_setup_reduce_temp_test()
 void
 finish_lower_subdword_test()
 {
-   finish_program(program.get(), true, true);
+   finish_program(program.get());
    if (!aco::validate_ir(program.get())) {
       fail_test("Validation before lower_subdword failed");
       return;
@@ -242,7 +240,7 @@ finish_lower_subdword_test()
 void
 finish_ra_test(ra_test_policy policy)
 {
-   finish_program(program.get(), true, true);
+   finish_program(program.get());
    if (!aco::validate_ir(program.get())) {
       fail_test("Validation before register allocation failed");
       return;
@@ -263,7 +261,7 @@ finish_ra_test(ra_test_policy policy)
 void
 finish_optimizer_postRA_test()
 {
-   finish_program(program.get(), true, true);
+   finish_program(program.get());
 
    if (!aco::validate_ir(program.get())) {
       fail_test("Validation before optimize_postRA failed");
@@ -283,7 +281,7 @@ finish_optimizer_postRA_test()
 void
 finish_to_hw_instr_test()
 {
-   finish_program(program.get(), true, true);
+   finish_program(program.get());
 
    if (!aco::validate_ir(program.get())) {
       fail_test("Validation before lower_to_hw_instr failed");
@@ -312,7 +310,7 @@ void
 finish_waitcnt_test()
 {
    finish_program(program.get());
-   aco::insert_waitcnt(program.get());
+   aco::insert_wait_states(program.get());
    aco_print_program(program.get(), output);
 }
 
@@ -382,8 +380,6 @@ finish_isel_test(enum ac_hw_stage hw_stage, unsigned wave_size)
 
    select_program(program.get(), 1, &nb->shader, &config, &options, &info, &args);
    dominator_tree(program.get());
-   if (program->should_repair_ssa)
-      repair_ssa(program.get());
    lower_phis(program.get());
 
    ralloc_free(nb->shader);
@@ -530,39 +526,18 @@ fmax(Temp src0, Temp src1, Builder b)
    return b.vop2(aco_opcode::v_max_f32, b.def(v1), src0, src1);
 }
 
-static Temp
-extract(Temp src, unsigned idx, unsigned size, bool sign_extend, Builder b)
-{
-   if (src.type() == RegType::sgpr)
-      return b.pseudo(aco_opcode::p_extract, b.def(src.regClass()), bld.def(s1, scc), src,
-                      Operand::c32(idx), Operand::c32(size), Operand::c32(sign_extend));
-   else
-      return b.pseudo(aco_opcode::p_extract, b.def(src.regClass()), src, Operand::c32(idx),
-                      Operand::c32(size), Operand::c32(sign_extend));
-}
-
 Temp
 ext_ushort(Temp src, unsigned idx, Builder b)
 {
-   return extract(src, idx, 16, false, b);
-}
-
-Temp
-ext_sshort(Temp src, unsigned idx, Builder b)
-{
-   return extract(src, idx, 16, true, b);
+   return b.pseudo(aco_opcode::p_extract, b.def(src.regClass()), src, Operand::c32(idx),
+                   Operand::c32(16u), Operand::c32(false));
 }
 
 Temp
 ext_ubyte(Temp src, unsigned idx, Builder b)
 {
-   return extract(src, idx, 8, false, b);
-}
-
-Temp
-ext_sbyte(Temp src, unsigned idx, Builder b)
-{
-   return extract(src, idx, 8, true, b);
+   return b.pseudo(aco_opcode::p_extract, b.def(src.regClass()), src, Operand::c32(idx),
+                   Operand::c32(8u), Operand::c32(false));
 }
 
 void
@@ -604,30 +579,32 @@ emit_divergent_if_else(Program* prog, aco::Builder& b, Operand cond, std::functi
    b.reset(if_block);
    Temp saved_exec = b.sop1(Builder::s_and_saveexec, b.def(b.lm, saved_exec_reg),
                             Definition(scc, s1), Definition(exec, b.lm), cond, Operand(exec, b.lm));
-   b.branch(aco_opcode::p_cbranch_nz, then_logical->index, then_linear->index);
+   b.branch(aco_opcode::p_cbranch_nz, Definition(vcc, bld.lm), then_logical->index,
+            then_linear->index);
 
    b.reset(then_logical);
    b.pseudo(aco_opcode::p_logical_start);
    then();
    b.pseudo(aco_opcode::p_logical_end);
-   b.branch(aco_opcode::p_branch, invert->index);
+   b.branch(aco_opcode::p_branch, Definition(vcc, bld.lm), invert->index);
 
    b.reset(then_linear);
-   b.branch(aco_opcode::p_branch, invert->index);
+   b.branch(aco_opcode::p_branch, Definition(vcc, bld.lm), invert->index);
 
    b.reset(invert);
    b.sop2(Builder::s_andn2, Definition(exec, bld.lm), Definition(scc, s1),
           Operand(saved_exec, saved_exec_reg), Operand(exec, bld.lm));
-   b.branch(aco_opcode::p_cbranch_nz, else_logical->index, else_linear->index);
+   b.branch(aco_opcode::p_cbranch_nz, Definition(vcc, bld.lm), else_logical->index,
+            else_linear->index);
 
    b.reset(else_logical);
    b.pseudo(aco_opcode::p_logical_start);
    els();
    b.pseudo(aco_opcode::p_logical_end);
-   b.branch(aco_opcode::p_branch, endif_block->index);
+   b.branch(aco_opcode::p_branch, Definition(vcc, bld.lm), endif_block->index);
 
    b.reset(else_linear);
-   b.branch(aco_opcode::p_branch, endif_block->index);
+   b.branch(aco_opcode::p_branch, Definition(vcc, bld.lm), endif_block->index);
 
    b.reset(endif_block);
    b.pseudo(aco_opcode::p_parallelcopy, Definition(exec, bld.lm),

@@ -33,7 +33,6 @@
 #include "util/u_hash_table.h"
 #include "util/u_screen.h"
 #include "util/u_transfer_helper.h"
-#include "util/perf/cpu_trace.h"
 #include "util/ralloc.h"
 
 #include <xf86drm.h>
@@ -196,7 +195,6 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_TWO_SIDED_COLOR:
         case PIPE_CAP_TEXRECT:
         case PIPE_CAP_IMAGE_STORE_FORMATTED:
-        case PIPE_CAP_CLIP_PLANES:
                 return 0;
 
         case PIPE_CAP_SUPPORTED_PRIM_MODES:
@@ -277,6 +275,8 @@ vc4_screen_get_shader_param(struct pipe_screen *pscreen,
                 return 1;
         case PIPE_SHADER_CAP_CONT_SUPPORTED:
                 return 0;
+        case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+        case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
                 return 0;
         case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
@@ -548,8 +548,6 @@ vc4_screen_create(int fd, const struct pipe_screen_config *config,
         uint64_t syncobj_cap = 0;
         struct pipe_screen *pscreen;
         int err;
-
-        util_cpu_trace_init();
 
         pscreen = &screen->base;
 

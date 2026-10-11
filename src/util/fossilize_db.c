@@ -98,7 +98,7 @@ check_files_opened_successfully(FILE *file, FILE *db_idx)
 
 static bool
 create_foz_db_filenames(const char *cache_path,
-                        const char *name,
+                        char *name,
                         char **filename,
                         char **idx_filename)
 {
@@ -519,7 +519,7 @@ foz_prepare(struct foz_db *foz_db, char *cache_path)
       free(filename);
       free(idx_filename);
 
-      if (foz_db->file[0] == NULL || foz_db->db_idx == NULL)
+      if (!check_files_opened_successfully(foz_db->file[0], foz_db->db_idx))
          goto fail;
 
       if (!load_foz_dbs(foz_db, foz_db->db_idx, 0, false))
@@ -699,7 +699,7 @@ foz_write_entry(struct foz_db *foz_db, const uint8_t *cache_key_160bit,
        FOSSILIZE_BLOB_HASH_LENGTH)
       goto fail;
 
-   uint64_t offset = ftell(foz_db->file[0]);
+   off_t offset = ftell(foz_db->file[0]);
 
    /* Write db entry header */
    if (fwrite(&header, 1, sizeof(header), foz_db->file[0]) != sizeof(header))

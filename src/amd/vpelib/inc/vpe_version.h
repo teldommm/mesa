@@ -22,10 +22,6 @@
  *
  */
 
-/**
- * @file         vpe_version.h
- * @brief        This is the file containing the information and definitions for VPE versioning.
- */
 #pragma once
 
 #ifdef __cplusplus
@@ -51,8 +47,9 @@ extern "C" {
 #define VPE_VERSION_MAJ(ver)                  ((ver) >> 16)
 #define VPE_VERSION_MIN(ver)                  (((ver) >> 8) & 0xFF)
 #define VPE_VERSION_REV(ver)                  ((ver) & 0xFF)
-#define VPE_VERSION_6_1_0(ver)                ((ver) == VPE_VERSION(6, 1, 0) || (ver) == VPE_VERSION(6, 1, 3))
+#define VPE_VERSION_6_1_0(ver)                ((ver) == VPE_VERSION(6, 1, 0))
 #define VPE_VERSION_6_1_1(ver)                (((ver) == VPE_VERSION(6, 1, 1)) || ((ver) == VPE_VERSION(6, 1, 2)))
+#define VPE_VERSION_6_1_3(ver)                ((ver) == VPE_VERSION(6, 1, 3))
 
 #ifdef __cplusplus
 }

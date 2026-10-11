@@ -10,6 +10,8 @@
 
 #include "util/compiler.h"
 
+#include "svga_types.h"
+
 #include "svga3d_reg.h"
 
 

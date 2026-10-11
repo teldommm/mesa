@@ -1,6 +1,24 @@
 /*
- * Copyright © 2012 Rob Clark <robdclark@gmail.com>
- * SPDX-License-Identifier: MIT
+ * Copyright (c) 2012 Rob Clark <robdclark@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "ir3.h"
@@ -51,7 +69,7 @@ ir3_destroy(struct ir3 *shader)
 
 static bool
 is_shared_consts(struct ir3_compiler *compiler,
-                 const struct ir3_const_state *const_state,
+                 struct ir3_const_state *const_state,
                  struct ir3_register *reg)
 {
    if (const_state->push_consts_type == IR3_PUSH_CONSTS_SHARED &&
@@ -71,6 +89,7 @@ collect_reg_info(struct ir3_instruction *instr, struct ir3_register *reg,
                  struct ir3_info *info)
 {
    struct ir3_shader_variant *v = info->data;
+   unsigned repeat = instr->repeat;
 
    if (reg->flags & IR3_REG_IMMED) {
       /* nothing to do */
@@ -81,6 +100,10 @@ collect_reg_info(struct ir3_instruction *instr, struct ir3_register *reg,
    if (is_shared_consts(v->compiler, ir3_const_state(v), reg))
       return;
 
+   if (!(reg->flags & IR3_REG_R)) {
+      repeat = 0;
+   }
+
    unsigned components;
    int16_t max;
 
@@ -89,7 +112,7 @@ collect_reg_info(struct ir3_instruction *instr, struct ir3_register *reg,
       max = (reg->array.base + components - 1);
    } else {
       components = util_last_bit(reg->wrmask);
-      max = (reg->num + components - 1);
+      max = (reg->num + repeat + components - 1);
    }
 
    if (reg->flags & IR3_REG_CONST) {
@@ -292,12 +315,9 @@ ir3_collect_info(struct ir3_shader_variant *v)
 
          if ((instr->opc == OPC_STP || instr->opc == OPC_LDP)) {
             unsigned components = instr->srcs[2]->uim_val;
-
-            /* This covers any multi-component access that could straddle
-             * across multiple double-words.
-             */
-            if (components > 1)
+            if (components * type_size(instr->cat6.type) > 32) {
                info->multi_dword_ldp_stp = true;
+            }
 
             if (instr->opc == OPC_STP)
                info->stp_count += components;
@@ -628,7 +648,6 @@ instr_create(struct ir3_block *block, opc_t opc, int ndst, int nsrc)
    instr->srcs_max = nsrc;
 #endif
 
-   list_inithead(&instr->rpt_node);
    return instr;
 }
 
@@ -680,20 +699,7 @@ ir3_build_instr(struct ir3_builder *builder, opc_t opc, int ndst, int nsrc)
 {
    struct ir3_instruction *instr =
       ir3_instr_create_at(builder->cursor, opc, ndst, nsrc);
-
-   /* During instruction selection, instructions are sometimes emitted to blocks
-    * other than the current one. For example, to predecessor blocks for phi
-    * sources or to the first block for inputs. For those cases, a new builder
-    * is created to emit at the end of the target block. However, if the target
-    * block happens to be the same as the current block, the main builder would
-    * not be updated to point past the new instructions. Therefore, don't update
-    * the cursor when it points to the end of a block to ensure that new
-    * instructions will always be added at the end.
-    */
-   if (builder->cursor.option != IR3_CURSOR_AFTER_BLOCK) {
-      builder->cursor = ir3_after_instr(instr);
-   }
-
+   builder->cursor = ir3_after_instr(instr);
    return instr;
 }
 
@@ -721,7 +727,6 @@ ir3_instr_clone(struct ir3_instruction *instr)
    *new_instr = *instr;
    new_instr->dsts = dsts;
    new_instr->srcs = srcs;
-   list_inithead(&new_instr->rpt_node);
 
    insert_instr(ir3_before_terminator(instr->block), new_instr);
 
@@ -760,74 +765,6 @@ ir3_instr_add_dep(struct ir3_instruction *instr, struct ir3_instruction *dep)
    }
 
    array_insert(instr, instr->deps, dep);
-}
-
-void
-ir3_instr_remove(struct ir3_instruction *instr)
-{
-   list_delinit(&instr->node);
-   list_delinit(&instr->rpt_node);
-}
-
-void
-ir3_instr_create_rpt(struct ir3_instruction **instrs, unsigned n)
-{
-   assert(n > 0 && !ir3_instr_is_rpt(instrs[0]));
-
-   for (unsigned i = 1; i < n; ++i) {
-      assert(!ir3_instr_is_rpt(instrs[i]));
-      assert(instrs[i]->serialno > instrs[i - 1]->serialno);
-
-      list_addtail(&instrs[i]->rpt_node, &instrs[0]->rpt_node);
-   }
-}
-
-bool
-ir3_instr_is_rpt(const struct ir3_instruction *instr)
-{
-   return !list_is_empty(&instr->rpt_node);
-}
-
-bool
-ir3_instr_is_first_rpt(const struct ir3_instruction *instr)
-{
-   if (!ir3_instr_is_rpt(instr))
-      return false;
-
-   struct ir3_instruction *prev_rpt =
-      list_entry(instr->rpt_node.prev, struct ir3_instruction, rpt_node);
-   return prev_rpt->serialno > instr->serialno;
-}
-
-struct ir3_instruction *
-ir3_instr_prev_rpt(const struct ir3_instruction *instr)
-{
-   assert(ir3_instr_is_rpt(instr));
-
-   if (ir3_instr_is_first_rpt(instr))
-      return NULL;
-   return list_entry(instr->rpt_node.prev, struct ir3_instruction, rpt_node);
-}
-
-struct ir3_instruction *
-ir3_instr_first_rpt(struct ir3_instruction *instr)
-{
-   assert(ir3_instr_is_rpt(instr));
-
-   while (!ir3_instr_is_first_rpt(instr)) {
-      instr = ir3_instr_prev_rpt(instr);
-      assert(instr);
-   }
-
-   return instr;
-}
-
-unsigned
-ir3_instr_rpt_length(const struct ir3_instruction *instr)
-{
-   assert(ir3_instr_is_first_rpt(instr));
-
-   return list_length(&instr->rpt_node) + 1;
 }
 
 struct ir3_register *
@@ -1301,7 +1238,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
       break;
    case 3:
       valid_flags =
-         ir3_cat3_absneg(instr->opc, n) | IR3_REG_RELATIV | IR3_REG_SHARED;
+         ir3_cat3_absneg(instr->opc) | IR3_REG_RELATIV | IR3_REG_SHARED;
 
       switch (instr->opc) {
       case OPC_SHRM:
@@ -1309,23 +1246,10 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
       case OPC_SHRG:
       case OPC_SHLG:
       case OPC_ANDG: {
-         if (n != 1) {
-            valid_flags |= IR3_REG_IMMED;
-         }
-
+         valid_flags |= IR3_REG_IMMED;
          /* Can be RELATIV+CONST but not CONST: */
          if (flags & IR3_REG_RELATIV)
             valid_flags |= IR3_REG_CONST;
-
-         if (!(instr->dsts[0]->flags & IR3_REG_SHARED) && n < 2) {
-            /* Of the first two sources, only one can be shared. */
-            unsigned m = n ^ 1;
-
-            if ((flags & IR3_REG_SHARED) &&
-                (instr->srcs[m]->flags & IR3_REG_SHARED)) {
-               return false;
-            }
-         }
          break;
       }
       case OPC_WMM:
@@ -1385,12 +1309,6 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
 
       if (instr->opc == OPC_STC && n == 1)
          valid_flags |= IR3_REG_SHARED;
-      if (instr->opc == OPC_SHFL) {
-         if (n == 0)
-            valid_flags &= ~IR3_REG_IMMED;
-         else if (n == 1)
-            valid_flags |= IR3_REG_SHARED;
-      }
 
       if (flags & ~valid_flags)
          return false;
@@ -1505,13 +1423,6 @@ ir3_valid_immediate(struct ir3_instruction *instr, int32_t immed)
       }
    }
 
-   /* The alternative cat3 encoding used for sh[lr][gm]/andg uses 12 bit
-    * immediates that won't be sign-extended.
-    */
-   if (is_cat3_alt(instr->opc)) {
-      return !(immed & ~0xfff);
-   }
-
    /* Other than cat1 (mov) we can only encode up to 10 bits, sign-extended: */
    return !(immed & ~0x1ff) || !(-immed & ~0x1ff);
 }
@@ -1529,25 +1440,4 @@ ir3_get_cond_for_nonzero_compare(struct ir3_instruction *instr)
    }
 
    return instr;
-}
-
-bool
-ir3_supports_rpt(struct ir3_compiler *compiler, unsigned opc)
-{
-   switch (opc_cat(opc)) {
-   case 0:
-      return opc == OPC_NOP;
-   case 1:
-      return opc == OPC_MOV || opc == OPC_SWZ || opc == OPC_MOVMSK;
-   case 2:
-      if (opc == OPC_BARY_F && !compiler->has_rpt_bary_f)
-         return false;
-      return true;
-   case 3:
-      return opc != OPC_DP2ACC && opc != OPC_DP4ACC;
-   case 4:
-      return opc != OPC_RCP;
-   default:
-      return false;
-   }
 }

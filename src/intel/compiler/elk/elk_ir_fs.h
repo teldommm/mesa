@@ -22,7 +22,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_IR_FS_H
+#define ELK_IR_FS_H
 
 #include "elk_shader.h"
 
@@ -724,3 +725,5 @@ is_coalescing_payload(const elk::simple_allocator &alloc, const elk_fs_inst *ins
 
 bool
 elk_has_bank_conflict(const struct elk_isa_info *isa, const elk_fs_inst *inst);
+
+#endif

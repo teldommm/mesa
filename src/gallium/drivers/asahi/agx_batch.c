@@ -23,8 +23,7 @@
    do {                                                                        \
       if (unlikely(agx_device(batch->ctx->base.screen)->debug &                \
                    AGX_DBG_BATCH))                                             \
-         agx_msg("[Queue %u Batch %u] " fmt "\n", batch->ctx->queue_id,        \
-                 agx_batch_idx(batch), ##__VA_ARGS__);                         \
+         agx_msg("[Batch %u] " fmt "\n", agx_batch_idx(batch), ##__VA_ARGS__); \
    } while (0)
 
 bool
@@ -79,9 +78,13 @@ agx_batch_mark_complete(struct agx_batch *batch)
 struct agx_encoder
 agx_encoder_allocate(struct agx_batch *batch, struct agx_device *dev)
 {
-   struct agx_bo *bo = agx_bo_create(dev, 0x80000, 0, 0, "Encoder");
-   uint8_t *map = agx_bo_map(bo);
-   return (struct agx_encoder){.bo = bo, .current = map, .end = map + bo->size};
+   struct agx_bo *bo = agx_bo_create(dev, 0x80000, 0, "Encoder");
+
+   return (struct agx_encoder){
+      .bo = bo,
+      .current = bo->ptr.cpu,
+      .end = (uint8_t *)bo->ptr.cpu + bo->size,
+   };
 }
 
 static void
@@ -90,16 +93,13 @@ agx_batch_init(struct agx_context *ctx,
                struct agx_batch *batch)
 {
    struct agx_device *dev = agx_device(ctx->base.screen);
-   struct agx_screen *screen = agx_screen(ctx->base.screen);
 
    batch->ctx = ctx;
    util_copy_framebuffer_state(&batch->key, key);
    batch->seqnum = ++ctx->batches.seqnum;
 
-   agx_bo_reference(screen->rodata);
-   agx_pool_init(&batch->pool, dev, "Batch pool", 0, true);
-   agx_pool_init(&batch->pipeline_pool, dev, "Batch low VA pool", AGX_BO_LOW_VA,
-                 true);
+   agx_pool_init(&batch->pool, dev, 0, true);
+   agx_pool_init(&batch->pipeline_pool, dev, AGX_BO_LOW_VA, true);
 
    /* These allocations can happen only once and will just be zeroed (not freed)
     * during batch clean up. The memory is owned by the context.
@@ -127,7 +127,6 @@ agx_batch_init(struct agx_context *ctx,
    batch->draw = 0;
    batch->load = 0;
    batch->resolve = 0;
-   batch->feedback = 0;
    memset(batch->uploaded_clear_color, 0, sizeof(batch->uploaded_clear_color));
    batch->clear_depth = 0;
    batch->clear_stencil = 0;
@@ -136,7 +135,7 @@ agx_batch_init(struct agx_context *ctx,
    batch->initialized = false;
    batch->draws = 0;
    batch->incoherent_writes = false;
-   agx_bo_unreference(dev, batch->sampler_heap.bo);
+   agx_bo_unreference(batch->sampler_heap.bo);
    batch->sampler_heap.bo = NULL;
    batch->sampler_heap.count = 0;
    batch->vs_scratch = false;
@@ -162,7 +161,7 @@ agx_batch_init(struct agx_context *ctx,
    batch->result_off =
       (2 * sizeof(union agx_batch_result)) * agx_batch_idx(batch);
    batch->result =
-      (void *)(((uint8_t *)agx_bo_map(ctx->result_buf)) + batch->result_off);
+      (void *)(((uint8_t *)ctx->result_buf->ptr.cpu) + batch->result_off);
    memset(batch->result, 0, sizeof(union agx_batch_result) * 2);
 
    agx_batch_mark_active(batch);
@@ -288,8 +287,14 @@ agx_print_result(struct agx_device *dev, struct agx_context *ctx,
       agx_debug_fault(dev, info->address);
    }
 
-   assert(info->status == DRM_ASAHI_STATUS_COMPLETE ||
-          info->status == DRM_ASAHI_STATUS_KILLED);
+   /* Obscurely, we need to tolerate faults to pass the robustness parts of the
+    * CTS, so we can't assert that we don't fault. But it's helpful for any sort
+    * of debugging to crash on fault.
+    */
+   if (dev->debug) {
+      assert(info->status == DRM_ASAHI_STATUS_COMPLETE ||
+             info->status == DRM_ASAHI_STATUS_KILLED);
+   }
 }
 
 static void
@@ -315,8 +320,6 @@ static void
 agx_batch_cleanup(struct agx_context *ctx, struct agx_batch *batch, bool reset)
 {
    struct agx_device *dev = agx_device(ctx->base.screen);
-   struct agx_screen *screen = agx_screen(ctx->base.screen);
-
    assert(batch->ctx == ctx);
    assert(agx_batch_is_submitted(batch));
 
@@ -343,7 +346,7 @@ agx_batch_cleanup(struct agx_context *ctx, struct agx_batch *batch, bool reset)
          /* We should write no buffers if this is an empty batch */
          assert(agx_writer_get(ctx, handle) != batch);
 
-         agx_bo_unreference(dev, agx_lookup_bo(dev, handle));
+         agx_bo_unreference(agx_lookup_bo(dev, handle));
       }
    } else {
       int handle;
@@ -359,13 +362,12 @@ agx_batch_cleanup(struct agx_context *ctx, struct agx_batch *batch, bool reset)
          p_atomic_cmpxchg(&bo->writer,
                           agx_bo_writer(ctx->queue_id, batch->syncobj), 0);
 
-         agx_bo_unreference(dev, agx_lookup_bo(dev, handle));
+         agx_bo_unreference(agx_lookup_bo(dev, handle));
       }
    }
 
-   agx_bo_unreference(dev, screen->rodata);
-   agx_bo_unreference(dev, batch->vdm.bo);
-   agx_bo_unreference(dev, batch->cdm.bo);
+   agx_bo_unreference(batch->vdm.bo);
+   agx_bo_unreference(batch->cdm.bo);
    agx_pool_cleanup(&batch->pool);
    agx_pool_cleanup(&batch->pipeline_pool);
 
@@ -752,62 +754,16 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
    /* We allocate the worst-case sync array size since this won't be excessive
     * for most workloads
     */
-   unsigned max_syncs = batch->bo_list.bit_count + 2;
+   unsigned max_syncs = batch->bo_list.bit_count + 1;
    unsigned in_sync_count = 0;
    unsigned shared_bo_count = 0;
    struct drm_asahi_sync *in_syncs =
       malloc(max_syncs * sizeof(struct drm_asahi_sync));
    struct agx_bo **shared_bos = malloc(max_syncs * sizeof(struct agx_bo *));
 
-   uint64_t wait_seqid = p_atomic_read(&screen->flush_wait_seqid);
-
-   struct agx_submit_virt virt = {
-      .vbo_res_id = ctx->result_buf->vbo_res_id,
-   };
-
-   /* Elide syncing against our own queue */
-   if (wait_seqid && wait_seqid == ctx->flush_my_seqid) {
-      batch_debug(batch,
-                  "Wait sync point %" PRIu64 " is ours, waiting on %" PRIu64
-                  " instead",
-                  wait_seqid, ctx->flush_other_seqid);
-      wait_seqid = ctx->flush_other_seqid;
-   }
-
-   uint64_t seqid = p_atomic_inc_return(&screen->flush_cur_seqid);
-   assert(seqid > wait_seqid);
-
-   batch_debug(batch, "Sync point is %" PRIu64, seqid);
-
-   /* Subtle concurrency note: Since we assign seqids atomically and do
-    * not lock submission across contexts, it is possible for two threads
-    * to submit timeline syncobj updates out of order. As far as I can
-    * tell, this case is handled in the kernel conservatively: it triggers
-    * a fence context bump and effectively "splits" the timeline at the
-    * larger point, causing future lookups for earlier points to return a
-    * later point, waiting more. The signaling code still makes sure all
-    * prior fences have to be signaled before considering a given point
-    * signaled, regardless of order. That's good enough for us.
-    *
-    * (Note: this case breaks drm_syncobj_query_ioctl and for this reason
-    * triggers a DRM_DEBUG message on submission, but we don't use that
-    * so we don't care.)
-    *
-    * This case can be tested by setting seqid = 1 unconditionally here,
-    * causing every single syncobj update to reuse the same timeline point.
-    * Everything still works (but over-synchronizes because this effectively
-    * serializes all submissions once any context flushes once).
-    */
-   struct drm_asahi_sync out_syncs[2] = {
-      {
-         .sync_type = DRM_ASAHI_SYNC_SYNCOBJ,
-         .handle = batch->syncobj,
-      },
-      {
-         .sync_type = DRM_ASAHI_SYNC_TIMELINE_SYNCOBJ,
-         .handle = screen->flush_syncobj,
-         .timeline_value = seqid,
-      },
+   struct drm_asahi_sync out_sync = {
+      .sync_type = DRM_ASAHI_SYNC_SYNCOBJ,
+      .handle = batch->syncobj,
    };
 
    /* This lock protects against a subtle race scenario:
@@ -838,7 +794,7 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       struct agx_bo *bo = agx_lookup_bo(dev, handle);
 
       if (bo->flags & AGX_BO_SHARED) {
-         batch_debug(batch, "Waits on shared BO @ 0x%" PRIx64, bo->va->addr);
+         batch_debug(batch, "Waits on shared BO @ 0x%" PRIx64, bo->ptr.gpu);
 
          /* Get a sync file fd from the buffer */
          int in_sync_fd = agx_export_sync_file(dev, bo);
@@ -860,38 +816,20 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
 
          /* And keep track of the BO for cloning the out_sync */
          shared_bos[shared_bo_count++] = bo;
-         if (dev->is_virtio)
-            virt.extres_count++;
       } else {
          /* Deal with BOs which are not externally shared, but which have been
           * written from another context within the same screen. We also need to
           * wait on these using their syncobj.
           */
          uint64_t writer = p_atomic_read_relaxed(&bo->writer);
-         uint32_t queue_id = agx_bo_writer_queue(writer);
-         if (writer && queue_id != ctx->queue_id) {
-            batch_debug(
-               batch, "Waits on inter-context BO @ 0x%" PRIx64 " from queue %u",
-               bo->va->addr, queue_id);
+         if (writer && agx_bo_writer_queue(writer) != ctx->queue_id) {
+            batch_debug(batch, "Waits on inter-context BO @ 0x%" PRIx64,
+                        bo->ptr.gpu);
 
             agx_add_sync(in_syncs, &in_sync_count,
                          agx_bo_writer_syncobj(writer));
             shared_bos[shared_bo_count++] = NULL;
          }
-      }
-   }
-
-   if (dev->is_virtio && virt.extres_count) {
-      struct agx_bo **p = shared_bos;
-      virt.extres =
-         malloc(virt.extres_count * sizeof(struct asahi_ccmd_submit_res));
-
-      for (unsigned i = 0; i < virt.extres_count; i++) {
-         while (!*p)
-            p++; // Skip inter-context slots which are not recorded here
-         virt.extres[i].res_id = (*p)->vbo_res_id;
-         virt.extres[i].flags = ASAHI_EXTRES_READ | ASAHI_EXTRES_WRITE;
-         p++;
       }
    }
 
@@ -907,17 +845,6 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
    /* Add an explicit fence from gallium, if any */
    agx_add_sync(in_syncs, &in_sync_count, agx_get_in_sync(ctx));
 
-   /* Add an implicit cross-context flush sync point, if any */
-   if (wait_seqid) {
-      batch_debug(batch, "Waits on inter-context sync point %" PRIu64,
-                  wait_seqid);
-      in_syncs[in_sync_count++] = (struct drm_asahi_sync){
-         .sync_type = DRM_ASAHI_SYNC_TIMELINE_SYNCOBJ,
-         .handle = screen->flush_syncobj,
-         .timeline_value = wait_seqid,
-      };
-   }
-
    /* Submit! */
    struct drm_asahi_command commands[2];
    unsigned command_count = 0;
@@ -927,10 +854,7 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
          .cmd_type = DRM_ASAHI_CMD_COMPUTE,
          .flags = 0,
          .cmd_buffer = (uint64_t)(uintptr_t)compute,
-
-         /* Work around for shipping 6.11.8 kernels, remove when we bump uapi
-          */
-         .cmd_buffer_size = sizeof(struct drm_asahi_cmd_compute) - 8,
+         .cmd_buffer_size = sizeof(struct drm_asahi_cmd_compute),
          .result_offset = feedback ? batch->result_off : 0,
          .result_size = feedback ? sizeof(union agx_batch_result) : 0,
          /* Barrier on previous submission */
@@ -957,14 +881,14 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       .queue_id = ctx->queue_id,
       .result_handle = feedback ? ctx->result_buf->handle : 0,
       .in_sync_count = in_sync_count,
-      .out_sync_count = 2,
+      .out_sync_count = 1,
       .command_count = command_count,
       .in_syncs = (uint64_t)(uintptr_t)(in_syncs),
-      .out_syncs = (uint64_t)(uintptr_t)(out_syncs),
+      .out_syncs = (uint64_t)(uintptr_t)(&out_sync),
       .commands = (uint64_t)(uintptr_t)(&commands[0]),
    };
 
-   int ret = dev->ops.submit(dev, &submit, &virt);
+   int ret = dev->ops.submit(dev, &submit, ctx->result_buf->vbo_res_id);
 
    u_rwlock_rdunlock(&screen->destroy_lock);
 
@@ -1001,7 +925,7 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
             continue;
 
          batch_debug(batch, "Signals shared BO @ 0x%" PRIx64,
-                     shared_bos[i]->va->addr);
+                     shared_bos[i]->ptr.gpu);
 
          /* Free the in_sync handle we just acquired */
          ret = drmSyncobjDestroy(dev->fd, in_syncs[i].handle);
@@ -1031,7 +955,6 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       /* But any BOs written by active batches are ours */
       assert(writer == batch && "exclusive writer");
       p_atomic_set(&bo->writer, agx_bo_writer(ctx->queue_id, batch->syncobj));
-      batch_debug(batch, "Writes to BO @ 0x%" PRIx64, bo->va->addr);
    }
 
    free(in_syncs);
@@ -1074,16 +997,8 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
 
    agx_batch_mark_submitted(batch);
 
-   if (virt.extres)
-      free(virt.extres);
-
    /* Record the last syncobj for fence creation */
    ctx->syncobj = batch->syncobj;
-
-   /* Update the last seqid in the context (must only happen if the submit
-    * succeeded, otherwise the timeline point would not be valid).
-    */
-   ctx->flush_last_seqid = seqid;
 
    if (ctx->batch == batch)
       ctx->batch = NULL;

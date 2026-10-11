@@ -704,8 +704,6 @@ match_function_by_name(const char *name,
       /* Look for a match in the local shader.  If exact, we're done. */
       bool is_exact = false;
       sig = local_sig = f->matching_signature(state, actual_parameters,
-                                              state->has_implicit_conversions(),
-                                              state->has_implicit_int_to_uint_conversion(),
                                               allow_builtins, &is_exact);
       if (is_exact)
          return sig;
@@ -757,8 +755,6 @@ match_subroutine_by_name(const char *name,
       return NULL;
    *var_r = var;
    sig = found->matching_signature(state, actual_parameters,
-                                   state->has_implicit_conversions(),
-                                   state->has_implicit_int_to_uint_conversion(),
                                    false, &is_exact);
    return sig;
 }
@@ -843,11 +839,11 @@ no_matching_function_error(const char *name,
                            exec_list *actual_parameters,
                            _mesa_glsl_parse_state *state)
 {
-   struct glsl_symbol_table *symb = _mesa_glsl_get_builtin_function_symbols();
+   gl_shader *sh = _mesa_glsl_get_builtin_function_shader();
 
    if (!function_exists(state, state->symbols, name)
        && (!state->uses_builtin_functions
-           || !function_exists(state, symb, name))) {
+           || !function_exists(state, sh->symbols, name))) {
       _mesa_glsl_error(loc, state, "no function with name '%s'", name);
    } else {
       char *str = prototype_string(NULL, name, actual_parameters);
@@ -861,7 +857,8 @@ no_matching_function_error(const char *name,
                                 state->symbols->get_function(name));
 
       if (state->uses_builtin_functions) {
-         print_function_prototypes(state, loc, symb->get_function(name));
+         print_function_prototypes(state, loc,
+                                   sh->symbols->get_function(name));
       }
    }
 }
@@ -1165,9 +1162,7 @@ implicitly_convert_component(ir_rvalue * &from, const glsl_base_type to,
                           from->type->vector_elements,
                           from->type->matrix_columns);
 
-      if (_mesa_glsl_can_implicitly_convert(from->type, desired_type,
-                                            state->has_implicit_conversions(),
-                                            state->has_implicit_int_to_uint_conversion())) {
+      if (_mesa_glsl_can_implicitly_convert(from->type, desired_type, state)) {
          /* Even though convert_component() implements the constructor
           * conversion rules (not the implicit conversion rules), its safe
           * to use it here because we already checked that the implicit

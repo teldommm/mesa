@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_REG_TYPE_H
+#define ELK_REG_TYPE_H
 
 #include <stdbool.h>
 
@@ -195,4 +196,6 @@ elk_reg_type_to_letters(enum elk_reg_type type);
 
 #ifdef __cplusplus
 }
+#endif
+
 #endif

@@ -10,6 +10,7 @@
 #include <xf86drm.h>
 #include "asahi/compiler/agx_compile.h"
 #include "asahi/layout/layout.h"
+#include "asahi/lib/agx_formats.h"
 #include "asahi/lib/decode.h"
 #include "asahi/lib/unstable_asahi_drm.h"
 #include "drm-uapi/drm_fourcc.h"
@@ -27,10 +28,8 @@
 #include "pipe/p_state.h"
 #include "util/bitscan.h"
 #include "util/format/u_format.h"
-#include "util/format/u_formats.h"
 #include "util/half_float.h"
 #include "util/macros.h"
-#include "util/simple_mtx.h"
 #include "util/timespec.h"
 #include "util/u_drm.h"
 #include "util/u_gen_mipmap.h"
@@ -43,7 +42,6 @@
 #include "util/u_upload_mgr.h"
 #include "util/xmlconfig.h"
 #include "agx_bg_eot.h"
-#include "agx_bo.h"
 #include "agx_device.h"
 #include "agx_disk_cache.h"
 #include "agx_fence.h"
@@ -88,6 +86,21 @@ void agx_init_state_functions(struct pipe_context *ctx);
  * resource
  */
 
+static enum ail_tiling
+ail_modifier_to_tiling(uint64_t modifier)
+{
+   switch (modifier) {
+   case DRM_FORMAT_MOD_LINEAR:
+      return AIL_TILING_LINEAR;
+   case DRM_FORMAT_MOD_APPLE_TWIDDLED:
+      return AIL_TILING_TWIDDLED;
+   case DRM_FORMAT_MOD_APPLE_TWIDDLED_COMPRESSED:
+      return AIL_TILING_TWIDDLED_COMPRESSED;
+   default:
+      unreachable("Unsupported modifier");
+   }
+}
+
 const static char *s_tiling[] = {
    [AIL_TILING_LINEAR] = "LINR",
    [AIL_TILING_TWIDDLED] = "TWID",
@@ -115,7 +128,7 @@ agx_resource_debug(struct agx_resource *res, const char *msg)
 
    agx_msg(
       "%s%s %dx%dx%d %dL %d/%dM %dS M:%llx %s %s%s S:0x%llx LS:0x%llx CS:0x%llx "
-      "Base=0x%llx Size=0x%llx Meta=0x%llx/0x%llx (%s) %s%s%s%s%s%sfd:%d(%d) B:%x @ %p\n",
+      "Base=0x%llx Size=0x%llx Meta=0x%llx/0x%llx (%s) %s%s%s%s%s%sfd:%d(%d) @ %p\n",
       msg ?: "", util_format_short_name(res->base.format), res->base.width0,
       res->base.height0, res->base.depth0, res->base.array_size,
       res->base.last_level, res->layout.levels, res->layout.sample_count_sa,
@@ -125,9 +138,9 @@ agx_resource_debug(struct agx_resource *res, const char *msg)
       (long long)res->layout.linear_stride_B,
       (long long)res->layout.layer_stride_B,
       (long long)res->layout.compression_layer_stride_B,
-      (long long)res->bo->va->addr, (long long)res->layout.size_B,
+      (long long)res->bo->ptr.gpu, (long long)res->layout.size_B,
       res->layout.metadata_offset_B
-         ? ((long long)res->bo->va->addr + res->layout.metadata_offset_B)
+         ? ((long long)res->bo->ptr.gpu + res->layout.metadata_offset_B)
          : 0,
       (long long)res->layout.metadata_offset_B, res->bo->label,
       res->bo->flags & AGX_BO_SHARED ? "SH " : "",
@@ -136,7 +149,7 @@ agx_resource_debug(struct agx_resource *res, const char *msg)
       res->bo->flags & AGX_BO_WRITEBACK ? "WB " : "",
       res->bo->flags & AGX_BO_SHAREABLE ? "SA " : "",
       res->bo->flags & AGX_BO_READONLY ? "RO " : "", res->bo->prime_fd, ino,
-      res->base.bind, res);
+      res);
 }
 
 static void
@@ -145,7 +158,7 @@ agx_resource_setup(struct agx_device *dev, struct agx_resource *nresource)
    struct pipe_resource *templ = &nresource->base;
 
    nresource->layout = (struct ail_layout){
-      .tiling = ail_drm_modifier_to_tiling(nresource->modifier),
+      .tiling = ail_modifier_to_tiling(nresource->modifier),
       .mipmapped_z = templ->target == PIPE_TEXTURE_3D,
       .format = templ->format,
       .width_px = templ->width0,
@@ -197,8 +210,6 @@ agx_resource_from_handle(struct pipe_screen *pscreen,
 
    pipe_reference_init(&prsc->reference, 1);
    prsc->screen = pscreen;
-
-   prsc->bind |= PIPE_BIND_SHARED;
 
    rsc->bo = agx_bo_import(dev, whandle->handle);
    /* Sometimes an import can fail e.g. on an invalid buffer fd, out of
@@ -269,7 +280,7 @@ agx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *ctx,
 
       handle->handle = rsrc->bo->handle;
    } else if (handle->type == WINSYS_HANDLE_TYPE_FD) {
-      int fd = agx_bo_export(dev, rsrc->bo);
+      int fd = agx_bo_export(rsrc->bo);
 
       if (fd < 0)
          return false;
@@ -412,14 +423,23 @@ agx_compression_allowed(const struct agx_resource *pres)
       return false;
    }
 
-   if (!ail_can_compress(pres->base.format, pres->base.width0,
-                         pres->base.height0, MAX2(pres->base.nr_samples, 1))) {
-      rsrc_debug(pres, "No compression: incompatible layout\n");
+   /* We use the PBE for compression via staging blits, so we can only compress
+    * renderable formats. As framebuffer compression, other formats don't make a
+    * ton of sense to compress anyway.
+    */
+   if (agx_pixel_format[pres->base.format].renderable == PIPE_FORMAT_NONE &&
+       !util_format_is_depth_or_stencil(pres->base.format)) {
+      rsrc_debug(pres, "No compression: format not renderable\n");
       return false;
    }
 
-   if (pres->base.format == PIPE_FORMAT_R9G9B9E5_FLOAT) {
-      rsrc_debug(pres, "No compression: RGB9E5 copies need work\n");
+   /* Lossy-compressed texture formats cannot be compressed */
+   assert(!util_format_is_compressed(pres->base.format) &&
+          "block-compressed formats are not renderable");
+
+   if (!ail_can_compress(pres->base.width0, pres->base.height0,
+                         MAX2(pres->base.nr_samples, 1))) {
+      rsrc_debug(pres, "No compression: too small\n");
       return false;
    }
 
@@ -578,7 +598,7 @@ agx_resource_create_with_modifiers(struct pipe_screen *screen,
       create_flags |= AGX_BO_SHAREABLE;
 
    nresource->bo =
-      agx_bo_create(dev, nresource->layout.size_B, 0, create_flags, label);
+      agx_bo_create(dev, nresource->layout.size_B, create_flags, label);
 
    if (!nresource->bo) {
       FREE(nresource);
@@ -610,7 +630,7 @@ agx_resource_destroy(struct pipe_screen *screen, struct pipe_resource *prsrc)
    if (rsrc->scanout)
       renderonly_scanout_destroy(rsrc->scanout, agx_screen->dev.ro);
 
-   agx_bo_unreference(&agx_screen->dev, rsrc->bo);
+   agx_bo_unreference(rsrc->bo);
    FREE(rsrc);
 }
 
@@ -681,7 +701,7 @@ agx_shadow(struct agx_context *ctx, struct agx_resource *rsrc, bool needs_copy)
    if (needs_copy)
       flags |= AGX_BO_WRITEBACK;
 
-   struct agx_bo *new_ = agx_bo_create(dev, size, 0, flags, old->label);
+   struct agx_bo *new_ = agx_bo_create(dev, size, flags, old->label);
 
    /* If allocation failed, we can fallback on a flush gracefully*/
    if (new_ == NULL)
@@ -692,11 +712,11 @@ agx_shadow(struct agx_context *ctx, struct agx_resource *rsrc, bool needs_copy)
                      (old->flags & AGX_BO_WRITEBACK) ? "cached" : "uncached");
       agx_resource_debug(rsrc, "Shadowed: ");
 
-      memcpy(agx_bo_map(new_), agx_bo_map(old), size);
+      memcpy(new_->ptr.cpu, old->ptr.cpu, size);
    }
 
    /* Swap the pointers, dropping a reference */
-   agx_bo_unreference(dev, rsrc->bo);
+   agx_bo_unreference(rsrc->bo);
    rsrc->bo = new_;
 
    /* Reemit descriptors using this resource */
@@ -915,6 +935,7 @@ agx_transfer_map(struct pipe_context *pctx, struct pipe_resource *resource,
 {
    struct agx_context *ctx = agx_context(pctx);
    struct agx_resource *rsrc = agx_resource(resource);
+   struct agx_device *dev = agx_device(ctx->base.screen);
 
    /* Can't map tiled/compressed directly */
    if ((usage & PIPE_MAP_DIRECTLY) && rsrc->modifier != DRM_FORMAT_MOD_LINEAR)
@@ -978,8 +999,11 @@ agx_transfer_map(struct pipe_context *pctx, struct pipe_resource *resource,
          agx_sync_writer(ctx, staging, "GPU read staging blit");
       }
 
-      return agx_bo_map(staging->bo);
+      dev->ops.bo_mmap(staging->bo);
+      return staging->bo->ptr.cpu;
    }
+
+   dev->ops.bo_mmap(rsrc->bo);
 
    if (ail_is_level_twiddled_uncompressed(&rsrc->layout, level)) {
       /* Should never happen for buffers, and it's not safe */
@@ -1021,7 +1045,7 @@ agx_transfer_map(struct pipe_context *pctx, struct pipe_resource *resource,
       uint32_t offset =
          ail_get_linear_pixel_B(&rsrc->layout, level, box->x, box->y, box->z);
 
-      return ((uint8_t *)agx_bo_map(rsrc->bo)) + offset;
+      return ((uint8_t *)rsrc->bo->ptr.cpu) + offset;
    }
 }
 
@@ -1109,7 +1133,7 @@ agx_clear(struct pipe_context *pctx, unsigned buffers,
 
    /* Slow clears draw a fullscreen rectangle */
    if (slowclear) {
-      agx_blitter_save(ctx, ctx->blitter, ASAHI_CLEAR);
+      agx_blitter_save(ctx, ctx->blitter, false /* render cond */);
       util_blitter_clear(
          ctx->blitter, ctx->framebuffer.width, ctx->framebuffer.height,
          util_framebuffer_get_num_layers(&ctx->framebuffer), slowclear, color,
@@ -1220,7 +1244,7 @@ asahi_add_attachment(struct attachments *att, struct agx_resource *rsrc,
    int idx = att->count++;
 
    att->list[idx].size = rsrc->layout.size_B;
-   att->list[idx].pointer = rsrc->bo->va->addr;
+   att->list[idx].pointer = rsrc->bo->ptr.gpu;
    att->list[idx].order = 1; // TODO: What does this do?
    att->list[idx].flags = 0;
 }
@@ -1250,9 +1274,6 @@ agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
    c->encoder_id = encoder_id;
    c->cmd_3d_id = cmd_3d_id;
    c->cmd_ta_id = cmd_ta_id;
-
-   c->fragment_usc_base = dev->shader_base;
-   c->vertex_usc_base = dev->shader_base;
 
    /* bit 0 specifies OpenGL clip behaviour. Since ARB_clip_control is
     * advertised, we don't set it and lower in the vertex shader.
@@ -1470,7 +1491,7 @@ agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
    c->visibility_result_buffer = visibility_result_ptr;
 
    c->vertex_sampler_array =
-      batch->sampler_heap.bo ? batch->sampler_heap.bo->va->addr : 0;
+      batch->sampler_heap.bo ? batch->sampler_heap.bo->ptr.gpu : 0;
    c->vertex_sampler_count = batch->sampler_heap.count;
    c->vertex_sampler_max = batch->sampler_heap.count + 1;
 
@@ -1514,14 +1535,14 @@ agx_cmdbuf(struct agx_device *dev, struct drm_asahi_cmd_render *c,
 
    if (batch->vs_scratch) {
       c->flags |= ASAHI_RENDER_VERTEX_SPILLS;
-      c->vertex_helper_arg = batch->ctx->scratch_vs.buf->va->addr;
+      c->vertex_helper_arg = batch->ctx->scratch_vs.buf->ptr.gpu;
       c->vertex_helper_cfg = batch->vs_preamble_scratch << 16;
-      c->vertex_helper_program = agx_helper_program(&batch->ctx->bg_eot);
+      c->vertex_helper_program = dev->helper->ptr.gpu | 1;
    }
    if (batch->fs_scratch) {
-      c->fragment_helper_arg = batch->ctx->scratch_fs.buf->va->addr;
+      c->fragment_helper_arg = batch->ctx->scratch_fs.buf->ptr.gpu;
       c->fragment_helper_cfg = batch->fs_preamble_scratch << 16;
-      c->fragment_helper_program = agx_helper_program(&batch->ctx->bg_eot);
+      c->fragment_helper_program = dev->helper->ptr.gpu | 1;
    }
 }
 
@@ -1533,51 +1554,8 @@ agx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
           unsigned flags)
 {
    struct agx_context *ctx = agx_context(pctx);
-   struct agx_screen *screen = agx_screen(ctx->base.screen);
 
    agx_flush_all(ctx, "Gallium flush");
-
-   if (!(flags & (PIPE_FLUSH_DEFERRED | PIPE_FLUSH_ASYNC)) &&
-       ctx->flush_last_seqid) {
-      /* Ensure other contexts in this screen serialize against the last
-       * submission (and all prior submissions).
-       */
-      simple_mtx_lock(&screen->flush_seqid_lock);
-
-      uint64_t val = p_atomic_read(&screen->flush_wait_seqid);
-      if (val < ctx->flush_last_seqid)
-         p_atomic_set(&screen->flush_wait_seqid, ctx->flush_last_seqid);
-
-      /* Note: it's possible for the max() logic above to be "wrong" due
-       * to a race in agx_batch_submit causing out-of-order timeline point
-       * updates, making the larger value not actually a later submission.
-       * However, see the comment in agx_batch.c for why this doesn't matter
-       * because this corner case is handled conservatively in the kernel.
-       */
-
-      simple_mtx_unlock(&screen->flush_seqid_lock);
-
-      /* Optimization: Avoid serializing against our own queue by
-       * recording the last seen foreign seqid when flushing, and our own
-       * flush seqid. If we then try to sync against our own seqid, we'll
-       * instead sync against the last possible foreign one. This is *not*
-       * the `val` we got above, because another context might flush with a
-       * seqid between `val` and `flush_last_seqid` (which would not update
-       * `flush_wait_seqid` per the logic above). This is somewhat
-       * conservative: it means that if *any* foreign context flushes, then
-       * on next flush of this context we will start waiting for *all*
-       * prior submits on *all* contexts (even if unflushed) at that point,
-       * including any local submissions prior to the latest one. That's
-       * probably fine, it creates a one-time "wait for the second-previous
-       * batch" wait on this queue but that still allows for at least
-       * the previous batch to pipeline on the GPU and it's one-time
-       * until another foreign flush happens. Phew.
-       */
-      if (val && val != ctx->flush_my_seqid)
-         ctx->flush_other_seqid = ctx->flush_last_seqid - 1;
-
-      ctx->flush_my_seqid = ctx->flush_last_seqid;
-   }
 
    /* At this point all pending work has been submitted. Since jobs are
     * started and completed sequentially from a UAPI perspective, and since
@@ -1617,17 +1595,15 @@ agx_flush_compute(struct agx_context *ctx, struct agx_batch *batch,
 
    *cmdbuf = (struct drm_asahi_cmd_compute){
       .flags = 0,
-      .encoder_ptr = batch->cdm.bo->va->addr,
-      .encoder_end =
-         batch->cdm.bo->va->addr +
-         (batch->cdm.current - (uint8_t *)agx_bo_map(batch->cdm.bo)),
-      .usc_base = dev->shader_base,
+      .encoder_ptr = batch->cdm.bo->ptr.gpu,
+      .encoder_end = batch->cdm.bo->ptr.gpu +
+                     (batch->cdm.current - (uint8_t *)batch->cdm.bo->ptr.cpu),
       .helper_arg = 0,
       .helper_cfg = 0,
       .helper_program = 0,
       .iogpu_unk_40 = 0,
       .sampler_array =
-         batch->sampler_heap.bo ? batch->sampler_heap.bo->va->addr : 0,
+         batch->sampler_heap.bo ? batch->sampler_heap.bo->ptr.gpu : 0,
       .sampler_count = batch->sampler_heap.count,
       .sampler_max = batch->sampler_heap.count + 1,
       .encoder_id = encoder_id,
@@ -1641,10 +1617,10 @@ agx_flush_compute(struct agx_context *ctx, struct agx_batch *batch,
       // helper. Disable them for now.
 
       // cmdbuf->iogpu_unk_40 = 0x1c;
-      cmdbuf->helper_arg = ctx->scratch_cs.buf->va->addr;
+      cmdbuf->helper_arg = ctx->scratch_cs.buf->ptr.gpu;
       cmdbuf->helper_cfg = batch->cs_preamble_scratch << 16;
       // cmdbuf->helper_cfg |= 0x40;
-      cmdbuf->helper_program = agx_helper_program(&batch->ctx->bg_eot);
+      cmdbuf->helper_program = dev->helper->ptr.gpu | 1;
    }
 }
 
@@ -1705,9 +1681,9 @@ agx_flush_render(struct agx_context *ctx, struct agx_batch *batch,
    unsigned encoder_id = agx_get_global_id(dev);
 
    agx_cmdbuf(dev, cmdbuf, att, &batch->pool, batch, &batch->key,
-              batch->vdm.bo->va->addr, encoder_id, cmd_ta_id, cmd_3d_id,
-              scissor, zbias, agx_get_occlusion_heap(batch),
-              pipeline_background, pipeline_background_partial, pipeline_store,
+              batch->vdm.bo->ptr.gpu, encoder_id, cmd_ta_id, cmd_3d_id, scissor,
+              zbias, agx_get_occlusion_heap(batch), pipeline_background,
+              pipeline_background_partial, pipeline_store,
               clear_pipeline_textures, batch->clear_depth, batch->clear_stencil,
               &batch->tilebuffer_layout);
 }
@@ -1767,7 +1743,7 @@ agx_destroy_context(struct pipe_context *pctx)
    agx_bg_eot_cleanup(&ctx->bg_eot);
    agx_destroy_meta_shaders(ctx);
 
-   agx_bo_unreference(dev, ctx->result_buf);
+   agx_bo_unreference(ctx->result_buf);
 
    /* Lock around the syncobj destruction, to avoid racing
     * command submission in another context.
@@ -1854,8 +1830,6 @@ agx_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
       priority = 2;
    else if (flags & PIPE_CONTEXT_PRIORITY_HIGH)
       priority = 1;
-   else if (flags & PIPE_CONTEXT_PRIORITY_REALTIME)
-      priority = 0;
 
    ctx->queue_id = agx_create_command_queue(agx_device(screen),
                                             DRM_ASAHI_QUEUE_CAP_RENDER |
@@ -1897,11 +1871,10 @@ agx_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    agx_init_meta_shaders(ctx);
 
    ctx->blitter = util_blitter_create(pctx);
-   ctx->compute_blitter.blit_cs = asahi_blit_key_table_create(ctx);
 
    ctx->result_buf =
       agx_bo_create(agx_device(screen),
-                    (2 * sizeof(union agx_batch_result)) * AGX_MAX_BATCHES, 0,
+                    (2 * sizeof(union agx_batch_result)) * AGX_MAX_BATCHES,
                     AGX_BO_WRITEBACK, "Batch result buffer");
    assert(ctx->result_buf);
 
@@ -2093,8 +2066,8 @@ agx_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 64;
 
-   case PIPE_CAP_VERTEX_INPUT_ALIGNMENT:
-      return PIPE_VERTEX_INPUT_ALIGNMENT_ELEMENT;
+   case PIPE_CAP_VERTEX_ATTRIB_ELEMENT_ALIGNED_ONLY:
+      return 1;
 
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE:
       return true;
@@ -2205,7 +2178,7 @@ agx_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_CONTEXT_PRIORITY_MASK:
       return PIPE_CONTEXT_PRIORITY_LOW | PIPE_CONTEXT_PRIORITY_MEDIUM |
-             PIPE_CONTEXT_PRIORITY_HIGH | PIPE_CONTEXT_PRIORITY_REALTIME;
+             PIPE_CONTEXT_PRIORITY_HIGH;
 
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
@@ -2308,6 +2281,8 @@ agx_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_type shader,
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
       return 0;
 
+   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+   case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
    case PIPE_SHADER_CAP_INTEGERS:
@@ -2368,8 +2343,6 @@ static int
 agx_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
                       enum pipe_compute_cap param, void *ret)
 {
-   struct agx_device *dev = agx_device(pscreen);
-
 #define RET(x)                                                                 \
    do {                                                                        \
       if (ret)                                                                 \
@@ -2416,10 +2389,10 @@ agx_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
       RET((uint64_t[]){4096});
 
    case PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY:
-      RET((uint32_t[]){dev->params.max_frequency_khz / 1000});
+      RET((uint32_t[]){800 /* MHz -- TODO */});
 
    case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS:
-      RET((uint32_t[]){agx_get_num_cores(dev)});
+      RET((uint32_t[]){4 /* TODO */});
 
    case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
       RET((uint32_t[]){1});
@@ -2475,9 +2448,9 @@ agx_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
       if (tex_format == PIPE_FORMAT_X24S8_UINT)
          tex_format = PIPE_FORMAT_S8_UINT;
 
-      struct ail_pixel_format_entry ent = ail_pixel_format[tex_format];
+      struct agx_pixel_format_entry ent = agx_pixel_format[tex_format];
 
-      if (!ail_is_valid_pixel_format(tex_format))
+      if (!agx_is_valid_pixel_format(tex_format))
          return false;
 
       /* RGB32, luminance/alpha/intensity emulated for texture buffers only */
@@ -2489,9 +2462,7 @@ agx_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
           target != PIPE_BUFFER)
          return false;
 
-      /* XXX: sort out rgb9e5 rendering */
-      if ((usage & PIPE_BIND_RENDER_TARGET) &&
-          (!ent.renderable || (tex_format == PIPE_FORMAT_R9G9B9E5_FLOAT)))
+      if ((usage & PIPE_BIND_RENDER_TARGET) && !ent.renderable)
          return false;
    }
 
@@ -2559,12 +2530,9 @@ agx_destroy_screen(struct pipe_screen *pscreen)
 {
    struct agx_screen *screen = agx_screen(pscreen);
 
-   drmSyncobjDestroy(screen->dev.fd, screen->flush_syncobj);
-
    if (screen->dev.ro)
       screen->dev.ro->destroy(screen->dev.ro);
 
-   agx_bo_unreference(&screen->dev, screen->rodata);
    u_transfer_helper_destroy(pscreen->transfer_helper);
    agx_close_device(&screen->dev);
    disk_cache_destroy(screen->disk_cache);
@@ -2639,19 +2607,6 @@ agx_screen_get_driver_uuid(struct pipe_screen *pscreen, char *uuid)
    agx_get_driver_uuid(uuid);
 }
 
-static const char *
-agx_get_cl_cts_version(struct pipe_screen *pscreen)
-{
-   struct agx_device *dev = agx_device(pscreen);
-
-   /* https://www.khronos.org/conformance/adopters/conformant-products/opencl#submission_433
-    */
-   if (dev->params.gpu_generation < 15)
-      return "v2024-08-08-00";
-
-   return NULL;
-}
-
 struct pipe_screen *
 agx_screen_create(int fd, struct renderonly *ro,
                   const struct pipe_screen_config *config)
@@ -2676,6 +2631,10 @@ agx_screen_create(int fd, struct renderonly *ro,
    driParseConfigFiles(config->options, config->options_info, 0, "asahi", NULL,
                        NULL, NULL, 0, NULL, 0);
 
+   /* Forward no16 flag from driconf */
+   if (driQueryOptionb(config->options, "no_fp16"))
+      agx_screen->dev.debug |= AGX_DBG_NO16;
+
    agx_screen->dev.fd = fd;
    agx_screen->dev.ro = ro;
    u_rwlock_init(&agx_screen->destroy_lock);
@@ -2685,18 +2644,6 @@ agx_screen_create(int fd, struct renderonly *ro,
       ralloc_free(agx_screen);
       return NULL;
    }
-
-   /* Forward no16 flag from driconf. This must happen after opening the device,
-    * since agx_open_device sets debug.
-    */
-   if (driQueryOptionb(config->options, "no_fp16"))
-      agx_screen->dev.debug |= AGX_DBG_NO16;
-
-   int ret =
-      drmSyncobjCreate(agx_device(screen)->fd, 0, &agx_screen->flush_syncobj);
-   assert(!ret);
-
-   simple_mtx_init(&agx_screen->flush_seqid_lock, mtx_plain);
 
    screen->destroy = agx_destroy_screen;
    screen->get_screen_fd = agx_screen_get_fd;
@@ -2724,7 +2671,6 @@ agx_screen_create(int fd, struct renderonly *ro,
    screen->fence_get_fd = agx_fence_get_fd;
    screen->get_compiler_options = agx_get_compiler_options;
    screen->get_disk_shader_cache = agx_get_disk_shader_cache;
-   screen->get_cl_cts_version = agx_get_cl_cts_version;
 
    screen->resource_create = u_transfer_helper_resource_create;
    screen->resource_destroy = u_transfer_helper_resource_destroy;
@@ -2734,22 +2680,6 @@ agx_screen_create(int fd, struct renderonly *ro,
          U_TRANSFER_HELPER_MSAA_MAP | U_TRANSFER_HELPER_Z24_IN_Z32F);
 
    agx_disk_cache_init(agx_screen);
-
-   /* TODO: Refactor readonly data? */
-   {
-      struct agx_bo *bo =
-         agx_bo_create(&agx_screen->dev, 16384, 0, 0, "Rodata");
-
-      agx_pack_txf_sampler((struct agx_sampler_packed *)agx_bo_map(bo));
-
-      agx_pack(&agx_screen->dev.txf_sampler, USC_SAMPLER, cfg) {
-         cfg.start = 0;
-         cfg.count = 1;
-         cfg.buffer = bo->va->addr;
-      }
-
-      agx_screen->rodata = bo;
-   }
 
    return screen;
 }

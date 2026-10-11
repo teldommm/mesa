@@ -34,8 +34,6 @@ files_etnaviv = files(
   'etnaviv_internal.h',
   'etnaviv_ml.c',
   'etnaviv_ml.h',
-  'etnaviv_ml_nn_v7.c',
-  'etnaviv_ml_nn_v8.c',
   'etnaviv_ml_nn.c',
   'etnaviv_ml_nn.h',
   'etnaviv_ml_tp.c',

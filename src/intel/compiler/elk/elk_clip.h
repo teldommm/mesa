@@ -29,7 +29,8 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
-#pragma once
+#ifndef ELK_CLIP_H
+#define ELK_CLIP_H
 
 #include "elk_compiler.h"
 #include "elk_eu.h"
@@ -158,3 +159,5 @@ void elk_clip_project_position(struct elk_clip_compile *c,
              struct elk_reg pos );
 void elk_clip_ff_sync(struct elk_clip_compile *c);
 void elk_clip_init_ff_sync(struct elk_clip_compile *c);
+
+#endif

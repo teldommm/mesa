@@ -108,11 +108,7 @@ import sys
 from bifrost_isa import *
 from mako.template import Template
 
-instructions = {}
-for arg in sys.argv[1:]:
-    new_instructions = parse_instructions(arg, include_pseudo = True)
-    instructions.update(new_instructions)
-
+instructions = parse_instructions(sys.argv[1], include_pseudo = True)
 ir_instructions = partition_mnemonics(instructions)
 modifier_lists = order_modifiers(ir_instructions)
 

@@ -102,6 +102,7 @@ struct aco_shader_info {
    bool has_ngg_early_prim_export;
    bool image_2d_view_of_3d;
    unsigned workgroup_size;
+   bool has_epilog;                        /* Only for TCS or PS. */
    bool merged_shader_compiled_separately; /* GFX9+ */
    struct ac_arg next_stage_pc;
    struct ac_arg epilog_pc; /* Vulkan only */
@@ -115,13 +116,17 @@ struct aco_shader_info {
 
       /* Vulkan only */
       uint32_t num_lds_blocks;
+
+      /* OpenGL only */
+      bool pass_tessfactors_by_reg;
+      unsigned patch_stride;
+      struct ac_arg tes_offchip_addr;
+      struct ac_arg vs_state_bits;
    } tcs;
    struct {
-      uint32_t num_inputs;
+      uint32_t num_interp;
       unsigned spi_ps_input_ena;
       unsigned spi_ps_input_addr;
-      bool has_prolog;
-      bool has_epilog;
 
       /* OpenGL only */
       struct ac_arg alpha_reference;
@@ -131,6 +136,8 @@ struct aco_shader_info {
    } cs;
 
    uint32_t gfx9_gs_ring_lds_size;
+
+   bool is_trap_handler_shader;
 };
 
 enum aco_compiler_debug_level {
@@ -138,9 +145,8 @@ enum aco_compiler_debug_level {
 };
 
 struct aco_compiler_options {
-   bool dump_ir;
+   bool dump_shader;
    bool dump_preoptir;
-   bool record_asm;
    bool record_ir;
    bool record_stats;
    bool has_ls_vgpr_init_bug;
@@ -189,35 +195,6 @@ enum aco_symbol_id {
 struct aco_symbol {
    enum aco_symbol_id id;
    unsigned offset;
-};
-
-#define MAX_SGPRS 108
-#define MAX_VGPRS       256
-#define MAX_LDS_SIZE    65536 /* 64 KiB */
-#define NUM_SAVED_VGPRS 2
-
-struct aco_trap_handler_layout {
-   uint32_t saved_vgprs[NUM_SAVED_VGPRS * 64];
-
-   uint32_t ttmp0;
-   uint32_t ttmp1;
-
-   struct {
-      uint32_t status;
-      uint32_t mode;
-      uint32_t trap_sts;
-      uint32_t hw_id1;
-      uint32_t gpr_alloc;
-      uint32_t lds_alloc;
-      uint32_t ib_sts;
-   } sq_wave_regs;
-
-   uint32_t m0;
-   uint32_t exec_lo;
-   uint32_t exec_hi;
-   uint32_t sgprs[MAX_SGPRS];
-   uint32_t vgprs[MAX_VGPRS * 64];
-   uint32_t lds[MAX_LDS_SIZE / 4];
 };
 
 #ifdef __cplusplus

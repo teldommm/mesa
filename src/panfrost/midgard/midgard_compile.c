@@ -323,67 +323,6 @@ midgard_vectorize_filter(const nir_instr *instr, const void *data)
    return 4;
 }
 
-static nir_mem_access_size_align
-mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
-                         uint8_t bit_size, uint32_t align_mul,
-                         uint32_t align_offset, bool offset_is_const,
-                         enum gl_access_qualifier access, const void *cb_data)
-{
-   uint32_t align = nir_combined_align(align_mul, align_offset);
-   assert(util_is_power_of_two_nonzero(align));
-
-   /* No more than 16 bytes at a time. */
-   bytes = MIN2(bytes, 16);
-
-   /* If the number of bytes is a multiple of 4, use 32-bit loads. Else if it's
-    * a multiple of 2, use 16-bit loads. Else use 8-bit loads.
-    *
-    * But if we're only aligned to 1 byte, use 8-bit loads. If we're only
-    * aligned to 2 bytes, use 16-bit loads, unless we needed 8-bit loads due to
-    * the size.
-    */
-   if ((bytes & 1) || (align == 1))
-      bit_size = 8;
-   else if ((bytes & 2) || (align == 2))
-      bit_size = 16;
-   else if (bit_size >= 32)
-      bit_size = 32;
-
-   unsigned num_comps = MIN2(bytes / (bit_size / 8), 4);
-
-   /* Push constants require 32-bit loads. */
-   if (intrin == nir_intrinsic_load_push_constant) {
-      if (align_mul >= 4) {
-         /* If align_mul is bigger than 4 we can use align_offset to find
-          * the exact number of words we need to read.
-          */
-         num_comps = DIV_ROUND_UP((align_offset % 4) + bytes, 4);
-      } else {
-         /* If bytes is aligned on 32-bit, the access might still cross one
-          * word at the beginning, and one word at the end. If bytes is not
-          * aligned on 32-bit, the extra two words should cover for both the
-          * size and offset mis-alignment.
-          */
-         num_comps = (bytes / 4) + 2;
-      }
-
-      bit_size = MIN2(bit_size, 32);
-   }
-
-   return (nir_mem_access_size_align){
-      .num_components = num_comps,
-      .bit_size = bit_size,
-      .align = bit_size / 8,
-      .shift = nir_mem_access_shift_method_scalar,
-   };
-}
-
-static uint8_t
-lower_vec816_alu(const nir_instr *instr, const void *cb_data)
-{
-  return 4;
-}
-
 void
 midgard_preprocess_nir(nir_shader *nir, unsigned gpu_id)
 {
@@ -393,60 +332,44 @@ midgard_preprocess_nir(nir_shader *nir, unsigned gpu_id)
     * (so we don't accidentally duplicate the epilogue since mesa/st has
     * messed with our I/O quite a bit already).
     */
-   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+   NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
    if (nir->info.stage == MESA_SHADER_VERTEX) {
-      NIR_PASS(_, nir, nir_lower_viewport_transform);
-      NIR_PASS(_, nir, nir_lower_point_size, 1.0, 0.0);
+      NIR_PASS_V(nir, nir_lower_viewport_transform);
+      NIR_PASS_V(nir, nir_lower_point_size, 1.0, 0.0);
    }
 
-   NIR_PASS(_, nir, nir_lower_var_copies);
-   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
-   NIR_PASS(_, nir, nir_split_var_copies);
-   NIR_PASS(_, nir, nir_lower_var_copies);
-   NIR_PASS(_, nir, nir_lower_global_vars_to_local);
-   NIR_PASS(_, nir, nir_lower_var_copies);
-   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+   NIR_PASS_V(nir, nir_lower_var_copies);
+   NIR_PASS_V(nir, nir_lower_vars_to_ssa);
+   NIR_PASS_V(nir, nir_split_var_copies);
+   NIR_PASS_V(nir, nir_lower_var_copies);
+   NIR_PASS_V(nir, nir_lower_global_vars_to_local);
+   NIR_PASS_V(nir, nir_lower_var_copies);
+   NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
-   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
-            glsl_type_size, nir_lower_io_use_interpolated_input_intrinsics);
+   NIR_PASS_V(nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+              glsl_type_size, 0);
 
    if (nir->info.stage == MESA_SHADER_VERTEX) {
       /* nir_lower[_explicit]_io is lazy and emits mul+add chains even
        * for offsets it could figure out are constant.  Do some
        * constant folding before pan_nir_lower_store_component below.
        */
-      NIR_PASS(_, nir, nir_opt_constant_folding);
-      NIR_PASS(_, nir, pan_nir_lower_store_component);
+      NIR_PASS_V(nir, nir_opt_constant_folding);
+      NIR_PASS_V(nir, pan_nir_lower_store_component);
    }
 
-   /* Could be eventually useful for Vulkan, but we don't expect it to have
-    * the support, so limit it to compute */
-   if (gl_shader_stage_is_compute(nir->info.stage)) {
-      nir_lower_mem_access_bit_sizes_options mem_size_options = {
-         .modes = nir_var_mem_ubo | nir_var_mem_push_const | nir_var_mem_ssbo |
-                  nir_var_mem_constant | nir_var_mem_task_payload |
-                  nir_var_shader_temp | nir_var_function_temp |
-                  nir_var_mem_global | nir_var_mem_shared,
-         .callback = mem_access_size_align_cb,
-      };
+   NIR_PASS_V(nir, nir_lower_ssbo);
+   NIR_PASS_V(nir, pan_nir_lower_zs_store);
 
-      NIR_PASS(_, nir, nir_lower_mem_access_bit_sizes, &mem_size_options);
-      NIR_PASS(_, nir, nir_lower_alu_width, lower_vec816_alu, NULL);
-      NIR_PASS(_, nir, nir_lower_alu_vec8_16_srcs);
-   }
-
-   NIR_PASS(_, nir, nir_lower_ssbo, NULL);
-   NIR_PASS(_, nir, pan_nir_lower_zs_store);
-
-   NIR_PASS(_, nir, nir_lower_frexp);
-   NIR_PASS(_, nir, midgard_nir_lower_global_load);
+   NIR_PASS_V(nir, nir_lower_frexp);
+   NIR_PASS_V(nir, midgard_nir_lower_global_load);
 
    nir_lower_idiv_options idiv_options = {
       .allow_fp16 = true,
    };
 
-   NIR_PASS(_, nir, nir_lower_idiv, &idiv_options);
+   NIR_PASS_V(nir, nir_lower_idiv, &idiv_options);
 
    nir_lower_tex_options lower_tex_options = {
       .lower_txs_lod = true,
@@ -456,30 +379,30 @@ midgard_preprocess_nir(nir_shader *nir, unsigned gpu_id)
       .lower_invalid_implicit_lod = true,
    };
 
-   NIR_PASS(_, nir, nir_lower_tex, &lower_tex_options);
-   NIR_PASS(_, nir, nir_lower_image_atomics_to_global);
+   NIR_PASS_V(nir, nir_lower_tex, &lower_tex_options);
+   NIR_PASS_V(nir, nir_lower_image_atomics_to_global);
 
    /* TEX_GRAD fails to apply sampler descriptor settings on some
     * implementations, requiring a lowering.
     */
    if (quirks & MIDGARD_BROKEN_LOD)
-      NIR_PASS(_, nir, midgard_nir_lod_errata);
+      NIR_PASS_V(nir, midgard_nir_lod_errata);
 
    /* lower MSAA image operations to 3D load before coordinate lowering */
-   NIR_PASS(_, nir, pan_nir_lower_image_ms);
+   NIR_PASS_V(nir, pan_nir_lower_image_ms);
 
    /* Midgard image ops coordinates are 16-bit instead of 32-bit */
-   NIR_PASS(_, nir, midgard_nir_lower_image_bitsize);
+   NIR_PASS_V(nir, midgard_nir_lower_image_bitsize);
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT)
-      NIR_PASS(_, nir, nir_lower_helper_writes, true);
+      NIR_PASS_V(nir, nir_lower_helper_writes, true);
 
-   NIR_PASS(_, nir, pan_lower_helper_invocation);
-   NIR_PASS(_, nir, pan_lower_sample_pos);
-   NIR_PASS(_, nir, midgard_nir_lower_algebraic_early);
-   NIR_PASS(_, nir, nir_lower_alu_to_scalar, mdg_should_scalarize, NULL);
-   NIR_PASS(_, nir, nir_lower_flrp, 16 | 32 | 64, false /* always_precise */);
-   NIR_PASS(_, nir, nir_lower_var_copies);
+   NIR_PASS_V(nir, pan_lower_helper_invocation);
+   NIR_PASS_V(nir, pan_lower_sample_pos);
+   NIR_PASS_V(nir, midgard_nir_lower_algebraic_early);
+   NIR_PASS_V(nir, nir_lower_alu_to_scalar, mdg_should_scalarize, NULL);
+   NIR_PASS_V(nir, nir_lower_flrp, 16 | 32 | 64, false /* always_precise */);
+   NIR_PASS_V(nir, nir_lower_var_copies);
 }
 
 static void
@@ -509,7 +432,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                NULL);
    } while (progress);
 
-   NIR_PASS(_, nir, nir_lower_alu_to_scalar, mdg_should_scalarize, NULL);
+   NIR_PASS_V(nir, nir_lower_alu_to_scalar, mdg_should_scalarize, NULL);
 
    /* Run after opts so it can hit more */
    if (!is_blend)
@@ -533,7 +456,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
    /* Now that booleans are lowered, we can run out late opts */
    NIR_PASS(progress, nir, midgard_nir_lower_algebraic_late);
    NIR_PASS(progress, nir, midgard_nir_cancel_inot);
-   NIR_PASS(_, nir, midgard_nir_type_csel);
+   NIR_PASS_V(nir, midgard_nir_type_csel);
 
    /* Clean up after late opts */
    do {
@@ -550,8 +473,8 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                                nir_move_load_input | nir_move_comparisons |
                                nir_move_copies | nir_move_load_ssbo;
 
-   NIR_PASS(_, nir, nir_opt_sink, move_all);
-   NIR_PASS(_, nir, nir_opt_move, move_all);
+   NIR_PASS_V(nir, nir_opt_sink, move_all);
+   NIR_PASS_V(nir, nir_opt_move, move_all);
 
    /* Take us out of SSA */
    NIR_PASS(progress, nir, nir_convert_from_ssa, true);
@@ -561,7 +484,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
    NIR_PASS(progress, nir, nir_lower_vec_to_regs, NULL, NULL);
 
    NIR_PASS(progress, nir, nir_opt_dce);
-   nir_trivialize_registers(nir);
+   NIR_PASS_V(nir, nir_trivialize_registers);
 }
 
 /* Do not actually emit a load; instead, cache the constant for inlining */
@@ -699,6 +622,14 @@ mir_copy_src(midgard_instruction *ins, nir_alu_instr *instr, unsigned i,
 static void
 emit_alu(compiler_context *ctx, nir_alu_instr *instr)
 {
+   /* Derivatives end up emitted on the texture pipe, not the ALUs. This
+    * is handled elsewhere */
+
+   if (instr->op == nir_op_fddx || instr->op == nir_op_fddy) {
+      midgard_emit_derivatives(ctx, instr);
+      return;
+   }
+
    unsigned nr_components = instr->def.num_components;
    unsigned nr_inputs = nir_op_infos[instr->op].num_inputs;
    unsigned op = 0;
@@ -774,7 +705,6 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
       ALU_CASE_CMP(b2f32, iand);
       ALU_CASE_CMP(b2f16, iand);
       ALU_CASE_CMP(b2i32, iand);
-      ALU_CASE_CMP(b2i16, iand);
 
       ALU_CASE(frcp, frcp);
       ALU_CASE(frsq, frsqrt);
@@ -833,8 +763,8 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
       ALU_CASE(fabs, fmov);
       ALU_CASE(fneg, fmov);
       ALU_CASE(fsat, fmov);
-      ALU_CASE(fsat_signed, fmov);
-      ALU_CASE(fclamp_pos, fmov);
+      ALU_CASE(fsat_signed_mali, fmov);
+      ALU_CASE(fclamp_pos_mali, fmov);
 
       /* For size conversion, we use a move. Ideally though we would squash
        * these ops together; maybe that has to happen after in NIR as part of
@@ -902,14 +832,6 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
       break;
    }
 
-   case nir_op_unpack_64_2x32:
-   case nir_op_unpack_64_4x16:
-   case nir_op_pack_64_2x32:
-   case nir_op_pack_64_4x16: {
-      op = midgard_alu_op_imov;
-      break;
-   }
-
    default:
       mesa_loge("Unhandled ALU op %s\n", nir_op_infos[instr->op].name);
       assert(0);
@@ -935,9 +857,9 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
       outmod = midgard_outmod_keeplo;
    } else if (instr->op == nir_op_fsat) {
       outmod = midgard_outmod_clamp_0_1;
-   } else if (instr->op == nir_op_fsat_signed) {
+   } else if (instr->op == nir_op_fsat_signed_mali) {
       outmod = midgard_outmod_clamp_m1_1;
-   } else if (instr->op == nir_op_fclamp_pos) {
+   } else if (instr->op == nir_op_fclamp_pos_mali) {
       outmod = midgard_outmod_clamp_0_inf;
    }
 
@@ -2004,11 +1926,6 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
    case nir_intrinsic_global_atomic:
    case nir_intrinsic_global_atomic_swap:
       emit_atomic(ctx, instr);
-      break;
-
-   case nir_intrinsic_ddx:
-   case nir_intrinsic_ddy:
-      midgard_emit_derivatives(ctx, instr);
       break;
 
    default:

@@ -163,13 +163,6 @@ nir_variable_clone(const nir_variable *var, nir_shader *shader)
    }
    nvar->interface_type = var->interface_type;
 
-   if (var->max_ifc_array_access) {
-      nvar->max_ifc_array_access =
-         rzalloc_array(nvar, int, var->interface_type->length);
-      memcpy(nvar->max_ifc_array_access, var->max_ifc_array_access,
-             var->interface_type->length * sizeof(unsigned));
-   }
-
    nvar->num_members = var->num_members;
    if (var->num_members) {
       nvar->members = ralloc_array(nvar, struct nir_variable_data,
@@ -325,8 +318,7 @@ clone_load_const(clone_state *state, const nir_load_const_instr *lc)
 
    memcpy(&nlc->value, &lc->value, sizeof(*nlc->value) * lc->def.num_components);
 
-   if (likely(state->remap_table))
-      add_remap(state, &nlc->def, &lc->def);
+   add_remap(state, &nlc->def, &lc->def);
 
    return nlc;
 }
@@ -338,8 +330,7 @@ clone_ssa_undef(clone_state *state, const nir_undef_instr *sa)
       nir_undef_instr_create(state->ns, sa->def.num_components,
                              sa->def.bit_size);
 
-   if (likely(state->remap_table))
-      add_remap(state, &nsa->def, &sa->def);
+   add_remap(state, &nsa->def, &sa->def);
 
    return nsa;
 }
@@ -433,30 +424,6 @@ clone_call(clone_state *state, const nir_call_instr *call)
    return ncall;
 }
 
-static nir_debug_info_instr *
-clone_debug_info(clone_state *state, nir_debug_info_instr *di)
-{
-   nir_debug_info_instr *instr =
-      nir_debug_info_instr_create(state->ns, di->type, di->string_length);
-
-   switch (di->type) {
-   case nir_debug_info_src_loc:
-      if (di->src_loc.line)
-         __clone_src(state, instr, &instr->src_loc.filename, &di->src_loc.filename);
-      instr->src_loc.line = di->src_loc.line;
-      instr->src_loc.column = di->src_loc.column;
-      instr->src_loc.spirv_offset = di->src_loc.spirv_offset;
-      instr->src_loc.source = di->src_loc.source;
-      return instr;
-   case nir_debug_info_string:
-      memcpy(instr->string, di->string, di->string_length);
-      __clone_def(state, &instr->instr, &instr->def, &di->def);
-      return instr;
-   }
-
-   unreachable("Unimplemented nir_debug_info_type");
-}
-
 static nir_instr *
 clone_instr(clone_state *state, const nir_instr *instr)
 {
@@ -479,8 +446,6 @@ clone_instr(clone_state *state, const nir_instr *instr)
       return &clone_jump(state, nir_instr_as_jump(instr))->instr;
    case nir_instr_type_call:
       return &clone_call(state, nir_instr_as_call(instr))->instr;
-   case nir_instr_type_debug_info:
-      return &clone_debug_info(state, nir_instr_as_debug_info(instr))->instr;
    case nir_instr_type_parallel_copy:
       unreachable("Cannot clone parallel copies");
    default:
@@ -677,27 +642,18 @@ clone_function_impl(clone_state *state, const nir_function_impl *fi)
 }
 
 nir_function_impl *
-nir_function_impl_clone_remap_globals(nir_shader *shader,
-                                      const nir_function_impl *fi,
-                                      struct hash_table *remap_table)
+nir_function_impl_clone(nir_shader *shader, const nir_function_impl *fi)
 {
    clone_state state;
-   init_clone_state(&state, remap_table, !!remap_table, false);
+   init_clone_state(&state, NULL, false, false);
 
    state.ns = shader;
 
    nir_function_impl *nfi = clone_function_impl(&state, fi);
 
-   if (!remap_table)
-      free_clone_state(&state);
+   free_clone_state(&state);
 
    return nfi;
-}
-
-nir_function_impl *
-nir_function_impl_clone(nir_shader *shader, const nir_function_impl *fi)
-{
-   return nir_function_impl_clone_remap_globals(shader, fi, NULL);
 }
 
 nir_function *
@@ -708,23 +664,14 @@ nir_function_clone(nir_shader *ns, const nir_function *fxn)
    if (fxn->num_params) {
       nfxn->params = ralloc_array(ns, nir_parameter, fxn->num_params);
       memcpy(nfxn->params, fxn->params, sizeof(nir_parameter) * fxn->num_params);
-
-      for (unsigned i = 0; i < fxn->num_params; ++i) {
-         if (fxn->params[i].name)
-            nfxn->params[i].name = ralloc_strdup(ns, fxn->params[i].name);
-      }
    }
    nfxn->is_entrypoint = fxn->is_entrypoint;
    nfxn->is_preamble = fxn->is_preamble;
    nfxn->should_inline = fxn->should_inline;
    nfxn->dont_inline = fxn->dont_inline;
    nfxn->is_subroutine = fxn->is_subroutine;
-   nfxn->is_tmp_globals_wrapper = fxn->is_tmp_globals_wrapper;
    nfxn->num_subroutine_types = fxn->num_subroutine_types;
    nfxn->subroutine_index = fxn->subroutine_index;
-   nfxn->workgroup_size[0] = fxn->workgroup_size[0];
-   nfxn->workgroup_size[1] = fxn->workgroup_size[1];
-   nfxn->workgroup_size[2] = fxn->workgroup_size[2];
    if (fxn->num_subroutine_types) {
       nfxn->subroutine_types = ralloc_array(ns, const struct glsl_type *,
                                             fxn->num_subroutine_types);

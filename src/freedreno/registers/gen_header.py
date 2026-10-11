@@ -30,7 +30,7 @@ class Enum(object):
 	def names(self):
 		return [n for (n, value) in self.values]
 
-	def dump(self, is_deprecated):
+	def dump(self):
 		use_hex = False
 		for (name, value) in self.values:
 			if value > 0x1000:
@@ -44,7 +44,7 @@ class Enum(object):
 				print("\t%s = %d," % (name, value))
 		print("};\n")
 
-	def dump_pack_struct(self, is_deprecated):
+	def dump_pack_struct(self):
 		pass
 
 class Field(object):
@@ -69,11 +69,11 @@ class Field(object):
 			raise parser.error("booleans should be 1 bit fields")
 		elif self.type == "float" and not (high - low == 31 or high - low == 15):
 			raise parser.error("floats should be 16 or 32 bit fields")
-		elif self.type not in builtin_types and self.type not in parser.enums:
+		elif not self.type in builtin_types and not self.type in parser.enums:
 			raise parser.error("unknown type '%s'" % self.type)
 
 	def ctype(self, var_name):
-		if self.type is None:
+		if self.type == None:
 			type = "uint32_t"
 			val = var_name
 		elif self.type == "boolean":
@@ -174,7 +174,11 @@ class Bitset(object):
 		print("#endif\n")
 
 		print("    return (struct fd_reg_pair) {")
-		print("        .reg = (uint32_t)%s," % reg.reg_offset())
+		if reg.array:
+			print("        .reg = REG_%s(__i)," % reg.full_name)
+		else:
+			print("        .reg = REG_%s," % reg.full_name)
+
 		print("        .value =")
 		for f in self.fields:
 			if f.type in [ "address", "waddress" ]:
@@ -199,7 +203,7 @@ class Bitset(object):
 
 		print("    };")
 
-	def dump_pack_struct(self, is_deprecated, reg=None):
+	def dump_pack_struct(self, reg=None):
 		if not reg:
 			return
 
@@ -224,15 +228,12 @@ class Bitset(object):
 			tab_to("    uint32_t", "dword;")
 		print("};\n")
 
-		depcrstr = ""
-		if is_deprecated:
-			depcrstr = " __attribute__((deprecated))"
 		if reg.array:
-			print("static inline%s struct fd_reg_pair\npack_%s(uint32_t __i, struct %s fields)\n{" %
-				  (depcrstr, prefix, prefix))
+			print("static inline struct fd_reg_pair\npack_%s(uint32_t __i, struct %s fields)\n{" %
+				  (prefix, prefix))
 		else:
-			print("static inline%s struct fd_reg_pair\npack_%s(struct %s fields)\n{" %
-				  (depcrstr, prefix, prefix))
+			print("static inline struct fd_reg_pair\npack_%s(struct %s fields)\n{" %
+				  (prefix, prefix))
 
 		self.dump_regpair_builder(reg)
 
@@ -251,8 +252,8 @@ class Bitset(object):
 				  (prefix, prefix, prefix, skip))
 
 
-	def dump(self, is_deprecated, prefix=None):
-		if prefix is None:
+	def dump(self, prefix=None):
+		if prefix == None:
 			prefix = self.name
 		for f in self.fields:
 			if f.name:
@@ -260,9 +261,9 @@ class Bitset(object):
 			else:
 				name = prefix
 
-			if not f.name and f.low == 0 and f.shr == 0 and f.type not in ["float", "fixed", "ufixed"]:
+			if not f.name and f.low == 0 and f.shr == 0 and not f.type in ["float", "fixed", "ufixed"]:
 				pass
-			elif f.type == "boolean" or (f.type is None and f.low == f.high):
+			elif f.type == "boolean" or (f.type == None and f.low == f.high):
 				tab_to("#define %s" % name, "0x%08x" % (1 << f.low))
 			else:
 				tab_to("#define %s__MASK" % name, "0x%08x" % mask(f.low, f.high))
@@ -335,15 +336,12 @@ class Array(object):
 			offset += self.parent.total_offset()
 		return offset
 
-	def dump(self, is_deprecated):
-		depcrstr = ""
-		if is_deprecated:
-			depcrstr = " __attribute__((deprecated))"
+	def dump(self):
 		proto = indices_varlist(self.indices())
 		strides = indices_strides(self.indices())
 		array_offset = self.total_offset()
 		if self.fixed_offsets:
-			print("static inline%s uint32_t __offset_%s(%s idx)" % (depcrstr, self.local_name, self.index_ctype()))
+			print("static inline uint32_t __offset_%s(%s idx)" % (self.local_name, self.index_ctype()))
 			print("{\n\tswitch (idx) {")
 			if self.index_type:
 				for val, offset in zip(self.index_type.names(), self.offsets):
@@ -358,7 +356,7 @@ class Array(object):
 		else:
 			tab_to("#define REG_%s_%s(%s)" % (self.domain, self.name, proto), "(0x%08x + %s )\n" % (array_offset, strides))
 
-	def dump_pack_struct(self, is_deprecated):
+	def dump_pack_struct(self):
 		pass
 
 	def dump_regpair_builder(self):
@@ -398,31 +396,21 @@ class Reg(object):
 		else:
 			return self.offset
 
-	def reg_offset(self):
-		if self.array:
-			offset = self.array.offset + self.offset
-			return "(0x%08x + 0x%x*__i)" % (offset, self.array.stride)
-		return "0x%08x" % self.offset
-
-	def dump(self, is_deprecated):
-		depcrstr = ""
-		if is_deprecated:
-			depcrstr = " __attribute__((deprecated)) "
+	def dump(self):
 		proto = indices_prototype(self.indices())
 		strides = indices_strides(self.indices())
 		offset = self.total_offset()
 		if proto == '':
 			tab_to("#define REG_%s" % self.full_name, "0x%08x" % offset)
 		else:
-			print("static inline%s uint32_t REG_%s(%s) { return 0x%08x + %s; }" % (depcrstr, self.full_name, proto, offset, strides))
+			print("static inline uint32_t REG_%s(%s) { return 0x%08x + %s; }" % (self.full_name, proto, offset, strides))
 
 		if self.bitset.inline:
-			self.bitset.dump(is_deprecated, self.full_name)
-		print("")
+			self.bitset.dump(self.full_name)
 
-	def dump_pack_struct(self, is_deprecated):
+	def dump_pack_struct(self):
 		if self.bitset.inline:
-			self.bitset.dump_pack_struct(is_deprecated, self)
+			self.bitset.dump_pack_struct(self)
 
 	def dump_regpair_builder(self):
 		if self.bitset.inline:
@@ -511,7 +499,7 @@ class Parser(object):
 		return varset
 
 	def parse_variants(self, attrs):
-		if "variants" not in attrs:
+		if not "variants" in attrs:
 				return None
 		variant = attrs["variants"].split(",")[0]
 		if "-" in variant:
@@ -757,9 +745,6 @@ class Parser(object):
 
 		print("#endif")
 
-	def has_variants(self, reg):
-		return reg.name in self.variant_regs and len(self.variant_regs[reg.name]) > 1
-
 	def dump(self):
 		enums = []
 		bitsets = []
@@ -773,7 +758,7 @@ class Parser(object):
 				regs.append(e)
 
 		for e in enums + bitsets + regs:
-			e.dump(self.has_variants(e))
+			e.dump()
 
 		self.dump_reg_usages()
 
@@ -858,7 +843,7 @@ class Parser(object):
 
 	def dump_structs(self):
 		for e in self.file:
-			e.dump_pack_struct(self.has_variants(e))
+			e.dump_pack_struct()
 
 		for regname in self.variant_regs:
 			self.dump_reg_variants(regname, self.variant_regs[regname])
@@ -895,7 +880,7 @@ The rules-ng-ng source files this header was generated from are:
 	if p.copyright_year:
 		current_year = str(datetime.date.today().year)
 		print()
-		print("Copyright © %s-%s by the following authors:" % (p.copyright_year, current_year))
+		print("Copyright (C) %s-%s by the following authors:" % (p.copyright_year, current_year))
 		for author in p.authors:
 			print("- " + author)
 	if p.license:

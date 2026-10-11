@@ -54,9 +54,7 @@ static void schedule_calc_sched_info(gpir_node *node)
       if (node->rsched.est < est)
          node->rsched.est = est;
 
-      unsigned len = list_length(&pred->succ_list);
-      assert(len > 0);
-      float reg_weight = 1.0f - 1.0f / len;
+      float reg_weight = 1.0f - 1.0f / list_length(&pred->succ_list);
       if (extra_reg > reg_weight)
          extra_reg = reg_weight;
 

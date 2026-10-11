@@ -27,6 +27,10 @@
  * Based on weston shared/os-compatibility.c
  */
 
+#ifdef __TERMUX__
+#define SYS_memfd_create 279
+#endif
+
 #include "anon_file.h"
 #include "detect_os.h"
 
@@ -70,7 +74,7 @@ err:
 }
 #endif
 
-#if !(defined(__FreeBSD__) || defined(HAVE_MEMFD_CREATE) || DETECT_OS_ANDROID) || defined __TERMUX__ 
+#if !(defined(__FreeBSD__) || defined(HAVE_MEMFD_CREATE) || DETECT_OS_ANDROID)
 static int
 create_tmpfile_cloexec(char *tmpname)
 {
@@ -117,10 +121,10 @@ int
 os_create_anonymous_file(int64_t size, const char *debug_name)
 {
    int fd, ret;
-#if defined(HAVE_MEMFD_CREATE) && !defined __TERMUX__
+#if defined(HAVE_MEMFD_CREATE)
    if (!debug_name)
       debug_name = "mesa-shared";
-   fd = memfd_create(debug_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
+   fd = syscall(SYS_memfd_create, debug_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
 #elif DETECT_OS_ANDROID
    if (!debug_name)
       debug_name = "mesa-shared";
@@ -139,7 +143,7 @@ os_create_anonymous_file(int64_t size, const char *debug_name)
    path = getenv("XDG_RUNTIME_DIR");
 #ifdef __TERMUX__
    if (!path) {
-   	  path = getenv("TMPDIR");
+      path = "@TERMUX_PREFIX@/tmp";
    }
 #endif
    if (!path) {

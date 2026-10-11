@@ -24,9 +24,10 @@
 #include <iostream>
 
 char *
-r600_finalize_nir(pipe_screen *screen, struct nir_shader *nir)
+r600_finalize_nir(pipe_screen *screen, void *shader)
 {
    auto rs = container_of(screen, r600_screen, b.b);
+   auto nir = static_cast<nir_shader *>(shader);
    r600_finalize_nir_common(nir, rs->b.gfx_level);
    return nullptr;
 }

@@ -28,7 +28,6 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#include "util/perf/cpu_trace.h"
 #include "util/u_hash_table.h"
 #include "util/u_memory.h"
 #include "util/u_string.h"
@@ -147,13 +146,10 @@ vc4_bo_free(struct vc4_bo *bo)
         struct vc4_screen *screen = bo->screen;
 
         if (bo->map) {
-#ifdef USE_VC4_SIMULATOR
-                if (bo->name &&
+                if (using_vc4_simulator && bo->name &&
                     strcmp(bo->name, "winsys") == 0) {
                         free(bo->map);
-                } else
-#endif
-                {
+                } else {
                         munmap(bo->map, bo->size);
                         VG(VALGRIND_FREELIKE_BLOCK(bo->map, 0));
                 }
@@ -604,8 +600,6 @@ bool
 vc4_bo_wait(struct vc4_bo *bo, uint64_t timeout_ns, const char *reason)
 {
         struct vc4_screen *screen = bo->screen;
-
-        MESA_TRACE_FUNC();
 
         if (VC4_DBG(PERF) && timeout_ns && reason) {
                 if (vc4_wait_bo_ioctl(screen->fd, bo->handle, 0) == -ETIME) {

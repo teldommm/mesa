@@ -252,9 +252,7 @@ static bool lower_resinfo(nir_builder *b, nir_instr *instr, void *data)
          dim = nir_intrinsic_image_dim(intr);
          is_array = nir_intrinsic_image_array(intr);
          desc = nir_image_descriptor_amd(b, dim == GLSL_SAMPLER_DIM_BUF ? 4 : 8,
-                                         32, intr->src[0].ssa,
-                                         .image_dim = dim,
-                                         .image_array = is_array);
+                                         32, intr->src[0].ssa);
          break;
 
       case nir_intrinsic_image_deref_size:
@@ -263,9 +261,7 @@ static bool lower_resinfo(nir_builder *b, nir_instr *instr, void *data)
          dim = glsl_get_sampler_dim(type);
          is_array = glsl_sampler_type_is_array(type);
          desc = nir_image_deref_descriptor_amd(b, dim == GLSL_SAMPLER_DIM_BUF ? 4 : 8,
-                                               32, intr->src[0].ssa,
-                                               .image_dim = dim,
-                                               .image_array = is_array);
+                                               32, intr->src[0].ssa);
          break;
 
       case nir_intrinsic_bindless_image_size:
@@ -273,9 +269,7 @@ static bool lower_resinfo(nir_builder *b, nir_instr *instr, void *data)
          dim = nir_intrinsic_image_dim(intr);
          is_array = nir_intrinsic_image_array(intr);
          desc = nir_bindless_image_descriptor_amd(b, dim == GLSL_SAMPLER_DIM_BUF ? 4 : 8,
-                                                  32, intr->src[0].ssa,
-                                                  .image_dim = dim,
-                                                  .image_array = is_array);
+                                                  32, intr->src[0].ssa);
          break;
 
       default:

@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ELK_VEC4_H
+#define ELK_VEC4_H
 
 #include "elk_shader.h"
 
@@ -345,3 +346,5 @@ private:
 
 } /* namespace elk */
 #endif /* __cplusplus */
+
+#endif /* ELK_VEC4_H */

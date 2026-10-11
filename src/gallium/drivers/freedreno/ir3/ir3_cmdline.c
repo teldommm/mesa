@@ -1,6 +1,24 @@
 /*
- * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -103,7 +121,21 @@ load_glsl(unsigned num_files, char *const *files, gl_shader_stage stage)
    if (!prog)
       errx(1, "couldn't parse `%s'", files[0]);
 
-   nir_shader *nir = prog->_LinkedShaders[stage]->Program->nir;
+   nir_shader *nir = glsl_to_nir(&local_ctx.Const,
+                                 &prog->_LinkedShaders[stage]->ir,
+                                 &prog->_LinkedShaders[stage]->Program->info,
+                                 stage, nir_options);
+
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      nir->info.fs.pixel_center_integer =
+         prog->_LinkedShaders[stage]->Program->info.fs.pixel_center_integer;
+      nir->info.fs.origin_upper_left =
+         prog->_LinkedShaders[stage]->Program->info.fs.origin_upper_left;
+      nir->info.fs.advanced_blend_modes =
+         prog->_LinkedShaders[stage]->Program->info.fs.advanced_blend_modes;
+   }
+
+   gl_nir_inline_functions(nir);
 
    /* required NIR passes: */
    if (nir_options->lower_all_io_to_temps ||
@@ -166,8 +198,7 @@ load_glsl(unsigned num_files, char *const *files, gl_shader_stage stage)
    NIR_PASS_V(nir, nir_lower_frexp);
    NIR_PASS_V(nir, nir_lower_io,
               nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
-              ir3_glsl_type_size,
-              nir_lower_io_use_interpolated_input_intrinsics);
+              ir3_glsl_type_size, (nir_lower_io_options)0);
    NIR_PASS_V(nir, gl_nir_lower_samplers, prog);
 
    return nir;
@@ -385,8 +416,7 @@ main(int argc, char **argv)
       nir = load_spirv(filenames[0], spirv_entry, stage);
 
       NIR_PASS_V(nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
-                 ir3_glsl_type_size,
-                 nir_lower_io_use_interpolated_input_intrinsics);
+                 ir3_glsl_type_size, (nir_lower_io_options)0);
 
       /* TODO do this somewhere else */
       nir_lower_int64(nir);
@@ -399,10 +429,8 @@ main(int argc, char **argv)
       return -1;
    }
 
-   const struct ir3_shader_nir_options options = {};
-
    ir3_nir_lower_io_to_temporaries(nir);
-   ir3_finalize_nir(compiler, &options, nir);
+   ir3_finalize_nir(compiler, nir);
 
    struct ir3_shader *shader = rzalloc_size(NULL, sizeof(*shader));
    shader->compiler = compiler;
@@ -420,7 +448,7 @@ main(int argc, char **argv)
    shader->variants = v;
    shader->variant_count = 1;
 
-   ir3_nir_lower_variant(v, &options, nir);
+   ir3_nir_lower_variant(v, nir);
 
    info = "NIR compiler";
    ret = ir3_compile_shader_nir(compiler, shader, v);

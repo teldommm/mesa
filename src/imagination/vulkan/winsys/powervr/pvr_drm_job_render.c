@@ -454,9 +454,6 @@ static uint32_t pvr_winsys_frag_flags_to_drm(
    if (ws_flags->has_spm_scratch_buffer)
       flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_SCRATCHBUFFER;
 
-   if (ws_flags->disable_pixel_merging)
-      flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE;
-
    return flags;
 }
 

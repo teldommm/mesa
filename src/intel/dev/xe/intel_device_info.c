@@ -186,8 +186,7 @@ static void
 xe_compute_topology(struct intel_device_info * devinfo,
                     const uint8_t *geo_dss_mask,
                     const uint32_t geo_dss_num_bytes,
-                    const uint64_t eu_per_dss_mask,
-                    const unsigned l3_banks)
+                    const uint32_t *eu_per_dss_mask)
 {
    intel_device_info_topology_reset_masks(devinfo);
    /* TGL/DG1/ADL-P: 1 slice x 6 dual sub slices
@@ -201,7 +200,7 @@ xe_compute_topology(struct intel_device_info * devinfo,
       devinfo->max_slices = 1;
       devinfo->max_subslices_per_slice = 6;
    }
-   devinfo->max_eus_per_subslice = __builtin_popcount(eu_per_dss_mask);
+   devinfo->max_eus_per_subslice = 16;
    devinfo->subslice_slice_stride = DIV_ROUND_UP(devinfo->max_slices, 8);
    devinfo->eu_slice_stride = DIV_ROUND_UP(devinfo->max_eus_per_subslice * devinfo->max_subslices_per_slice, 8);
    devinfo->eu_subslice_stride = DIV_ROUND_UP(devinfo->max_eus_per_subslice, 8);
@@ -214,7 +213,7 @@ xe_compute_topology(struct intel_device_info * devinfo,
       uint32_t dss_mask;
       struct {
          bool enabled;
-         uint64_t eu_mask;
+         uint32_t eu_mask;
       } dual_subslice[INTEL_DEVICE_MAX_SUBSLICES];
    } slices[INTEL_DEVICE_MAX_SLICES] = {};
 
@@ -236,7 +235,7 @@ xe_compute_topology(struct intel_device_info * devinfo,
          for (uint32_t dss = 0; dss < devinfo->max_subslices_per_slice; dss++) {
             if ((1u << dss) & slices[s].dss_mask) {
                slices[s].dual_subslice[dss].enabled = true;
-               slices[s].dual_subslice[dss].eu_mask = eu_per_dss_mask;
+               slices[s].dual_subslice[dss].eu_mask = *eu_per_dss_mask;
             }
          }
       }
@@ -257,7 +256,7 @@ xe_compute_topology(struct intel_device_info * devinfo,
                                  ss / 8] |= (1u << (ss % 8));
 
          for (unsigned eu = 0; eu < devinfo->max_eus_per_subslice; eu++) {
-            if (!(slices[s].dual_subslice[ss].eu_mask & (1ULL << eu)))
+            if (!(slices[s].dual_subslice[ss].eu_mask & (1u << eu)))
                continue;
 
             devinfo->eu_masks[s * devinfo->eu_slice_stride +
@@ -270,10 +269,7 @@ xe_compute_topology(struct intel_device_info * devinfo,
 
    intel_device_info_topology_update_counts(devinfo);
    intel_device_info_update_pixel_pipes(devinfo, devinfo->subslice_masks);
-   if (devinfo->ver != 12)
-      devinfo->l3_banks = l3_banks;
-   else
-      intel_device_info_update_l3_banks(devinfo);
+   intel_device_info_update_l3_banks(devinfo);
 }
 
 static bool
@@ -285,10 +281,8 @@ xe_query_topology(int fd, struct intel_device_info *devinfo)
    if (!topology)
       return false;
 
-   uint64_t eu_per_dss_mask = 0;
-   uint32_t geo_dss_num_bytes = 0;
+   uint32_t geo_dss_num_bytes = 0, *eu_per_dss_mask = NULL;
    uint8_t *geo_dss_mask = NULL, *tmp;
-   unsigned l3_banks = 0;
    const struct drm_xe_query_topology_mask *head = topology;
 
    tmp = (uint8_t *)topology + len;
@@ -301,15 +295,9 @@ xe_query_topology(int fd, struct intel_device_info *devinfo)
             geo_dss_mask = topology->mask;
             geo_dss_num_bytes = topology->num_bytes;
             break;
-         case DRM_XE_TOPO_L3_BANK:
-            for (int i = 0; i < topology->num_bytes; i++)
-               l3_banks += util_bitcount(topology->mask[i]);
-            break;
          case DRM_XE_TOPO_EU_PER_DSS:
          case DRM_XE_TOPO_SIMD16_EU_PER_DSS:
-            assert(topology->num_bytes <= sizeof(eu_per_dss_mask));
-            for (int i = 0; i < topology->num_bytes; i++)
-               eu_per_dss_mask |= ((uint64_t)topology->mask[i]) << (8 * i);
+            eu_per_dss_mask = (uint32_t *)topology->mask;
             break;
          }
       }
@@ -323,8 +311,7 @@ xe_query_topology(int fd, struct intel_device_info *devinfo)
       goto parse_failed;
    }
 
-   xe_compute_topology(devinfo, geo_dss_mask, geo_dss_num_bytes,
-                       eu_per_dss_mask, l3_banks);
+   xe_compute_topology(devinfo, geo_dss_mask, geo_dss_num_bytes, eu_per_dss_mask);
 
 parse_failed:
    free((void *)head);
@@ -343,11 +330,11 @@ intel_device_info_xe_get_info_from_fd(int fd, struct intel_device_info *devinfo)
    if (!xe_query_gts(fd, devinfo))
       return false;
 
-   if (!xe_query_topology(fd, devinfo))
-         return false;
-
    if (xe_query_process_hwconfig(fd, devinfo))
       intel_device_info_update_after_hwconfig(devinfo);
+
+   if (!xe_query_topology(fd, devinfo))
+         return false;
 
    devinfo->has_context_isolation = true;
    devinfo->has_mmap_offset = true;

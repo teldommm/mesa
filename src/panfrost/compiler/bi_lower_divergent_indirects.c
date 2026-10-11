@@ -60,12 +60,6 @@ bi_lower_divergent_indirects_impl(nir_builder *b, nir_intrinsic_instr *intr,
       offset = nir_get_io_offset_src(intr);
       break;
 
-   case nir_intrinsic_store_per_view_output:
-      assert(stage == MESA_SHADER_VERTEX);
-      assert(!nir_src_is_divergent(&intr->src[1]));
-      offset = nir_get_io_offset_src(intr);
-      break;
-
    case nir_intrinsic_image_texel_address:
    case nir_intrinsic_image_load:
    case nir_intrinsic_image_store:
@@ -76,7 +70,7 @@ bi_lower_divergent_indirects_impl(nir_builder *b, nir_intrinsic_instr *intr,
       return false;
    }
 
-   if (!nir_src_is_divergent(offset))
+   if (!nir_src_is_divergent(*offset))
       return false;
 
    /* This indirect does need it */

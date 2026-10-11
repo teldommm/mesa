@@ -38,10 +38,12 @@
 #include "vk_sync.h"
 #include "vk_sync_dummy.h"
 #include "vk_util.h"
-#include "../wrapper/wrapper_log.h"
 
 #include <time.h>
 #include <stdlib.h>
+#ifndef __TERMUX__
+#include <bits/pthreadtypes.h>
+#endif
 #include <stdio.h>
 
 #ifndef _WIN32
@@ -60,11 +62,36 @@ static const struct debug_control debug_control[] = {
    { "noshm",        WSI_DEBUG_NOSHM },
    { "linear",       WSI_DEBUG_LINEAR },
    { "dxgi",         WSI_DEBUG_DXGI },
-   { "nowlts",       WSI_DEBUG_NOWLTS },
    { "blit",         WSI_DEBUG_BLIT },
-   { "forcesync",    WSI_DEBUG_FORCESYNC },
+   { "nosync",       WSI_DEBUG_NOSYNC },
    { NULL, },
 };
+
+#if defined(HAVE_PTHREAD) && !defined(_WIN32)
+bool
+wsi_init_pthread_cond_monotonic(pthread_cond_t* cond){
+   pthread_condattr_t condattr;
+   bool ret = false;
+
+   if(pthread_condattr_init(&condattr) != 0)
+      goto fail_attr_init;
+
+   if (pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC) != 0)
+      goto fail_attr_set;
+
+   if (pthread_cond_init(cond, &condattr) != 0)
+      goto fail_cond_init;
+
+   ret = true;
+
+   fail_cond_init:
+   fail_attr_set:
+      pthread_condattr_destroy(&condattr);
+   fail_attr_init:
+      return ret;
+}
+#endif
+
 
 static bool present_false(VkPhysicalDevice pdevice, int fd) {
    return false;
@@ -92,13 +119,14 @@ wsi_device_init(struct wsi_device *wsi,
    wsi->pdevice = pdevice;
    wsi->supports_scanout = true;
    wsi->sw = device_options->sw_device || (WSI_DEBUG & WSI_DEBUG_SW);
-   wsi->forcesync = (WSI_DEBUG & WSI_DEBUG_FORCESYNC) != 0;
    wsi->wants_linear = (WSI_DEBUG & WSI_DEBUG_LINEAR) != 0;
    wsi->x11.extra_xwayland_image = device_options->extra_xwayland_image;
-   wsi->wayland.disable_timestamps = (WSI_DEBUG & WSI_DEBUG_NOWLTS) != 0;
-
-   int wrapper_blit = getenv("WRAPPER_BLIT") && atoi(getenv("WRAPPER_BLIT"));
-   wsi->needs_blit = ((WSI_DEBUG & WSI_DEBUG_BLIT) != 0) || wrapper_blit;
+   wsi->needs_blit = (WSI_DEBUG & WSI_DEBUG_BLIT) != 0;
+   {
+      const char *wrapper_blit = getenv("WRAPPER_BLIT");
+      if (wrapper_blit && atoi(wrapper_blit))
+         wsi->needs_blit = true;
+   }
 #define WSI_GET_CB(func) \
    PFN_vk##func func = (PFN_vk##func)proc_addr(pdevice, "vk" #func)
    WSI_GET_CB(GetPhysicalDeviceExternalSemaphoreProperties);
@@ -116,16 +144,19 @@ wsi_device_init(struct wsi_device *wsi,
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
       .pNext = &wsi->pci_bus_info,
    };
-   wsi->properties2 = (VkPhysicalDeviceProperties2) {
+   VkPhysicalDeviceProperties2 pdp2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
       .pNext = &pddp,
    };
-   GetPhysicalDeviceProperties2(pdevice, &wsi->properties2);
+   GetPhysicalDeviceProperties2(pdevice, &pdp2);
 
-   wsi->maxImageDimension2D = wsi->properties2.properties.limits.maxImageDimension2D;
-   assert(wsi->properties2.properties.limits.optimalBufferCopyRowPitchAlignment <= UINT32_MAX);
+   if (pddp.driverID == VK_DRIVER_ID_ARM_PROPRIETARY)
+      wsi->needs_blit = true;
+
+   wsi->maxImageDimension2D = pdp2.properties.limits.maxImageDimension2D;
+   assert(pdp2.properties.limits.optimalBufferCopyRowPitchAlignment <= UINT32_MAX);
    wsi->optimalBufferCopyRowPitchAlignment =
-      wsi->properties2.properties.limits.optimalBufferCopyRowPitchAlignment;
+      pdp2.properties.limits.optimalBufferCopyRowPitchAlignment;
    wsi->override_present_mode = VK_PRESENT_MODE_MAX_ENUM_KHR;
 
    GetPhysicalDeviceMemoryProperties(pdevice, &wsi->memory_props);
@@ -193,7 +224,6 @@ wsi_device_init(struct wsi_device *wsi,
    WSI_GET_CB(BeginCommandBuffer);
    WSI_GET_CB(CmdPipelineBarrier);
    WSI_GET_CB(CmdCopyImage);
-   WSI_GET_CB(CmdBlitImage);
    WSI_GET_CB(CmdCopyImageToBuffer);
    WSI_GET_CB(CreateBuffer);
    WSI_GET_CB(CreateCommandPool);
@@ -214,7 +244,7 @@ wsi_device_init(struct wsi_device *wsi,
    WSI_GET_CB(GetImageMemoryRequirements);
    WSI_GET_CB(GetImageSubresourceLayout);
    if (!wsi->sw)
-      WSI_GET_CB(GetMemoryFdKHR);
+       WSI_GET_CB(GetMemoryFdKHR);
    WSI_GET_CB(GetPhysicalDeviceFormatProperties);
    WSI_GET_CB(GetPhysicalDeviceFormatProperties2);
    WSI_GET_CB(GetPhysicalDeviceImageFormatProperties2);
@@ -234,7 +264,7 @@ wsi_device_init(struct wsi_device *wsi,
 #endif
 #undef WSI_GET_CB
 
-#if defined(VK_USE_PLATFORM_XCB_KHR)
+#ifdef VK_USE_PLATFORM_XCB_KHR
    result = wsi_x11_init_wsi(wsi, alloc, dri_options);
    if (result != VK_SUCCESS)
       goto fail;
@@ -254,12 +284,6 @@ wsi_device_init(struct wsi_device *wsi,
 
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
    result = wsi_display_init_wsi(wsi, alloc, display_fd);
-   if (result != VK_SUCCESS)
-      goto fail;
-#endif
-
-#ifdef VK_USE_PLATFORM_METAL_EXT
-   result = wsi_metal_init_wsi(wsi, alloc, pdevice);
    if (result != VK_SUCCESS)
       goto fail;
 #endif
@@ -341,11 +365,8 @@ wsi_device_finish(struct wsi_device *wsi,
 #ifdef VK_USE_PLATFORM_WIN32_KHR
    wsi_win32_finish_wsi(wsi, alloc);
 #endif
-#if defined(VK_USE_PLATFORM_XCB_KHR)
+#ifdef VK_USE_PLATFORM_XCB_KHR
    wsi_x11_finish_wsi(wsi, alloc);
-#endif
-#if defined(VK_USE_PLATFORM_METAL_EXT)
-   wsi_metal_finish_wsi(wsi, alloc);
 #endif
 }
 
@@ -398,8 +419,8 @@ get_blit_type(const struct wsi_device *wsi,
          WSI_SWAPCHAIN_BUFFER_BLIT : WSI_SWAPCHAIN_NO_BLIT;
    }
 #ifdef __TERMUX__
-   case WSI_IMAGE_TYPE_ANDROID: {
-      return wsi_get_android_blit_type(wsi, params, device);
+   case WSI_IMAGE_TYPE_AHB: {
+      return wsi_get_ahardware_buffer_blit_type(wsi, params, device);
    }
 #endif
 #ifdef HAVE_LIBDRM
@@ -436,8 +457,8 @@ configure_image(const struct wsi_swapchain *chain,
       return wsi_configure_cpu_image(chain, pCreateInfo, cpu_params, info);
    }
 #ifdef __TERMUX__
-   case WSI_IMAGE_TYPE_ANDROID: {
-      return wsi_configure_android_image(chain, pCreateInfo, params, info);
+   case WSI_IMAGE_TYPE_AHB: {
+      return wsi_configure_ahardware_buffer_image(chain, pCreateInfo, params, info);
    }
 #endif
 #ifdef HAVE_LIBDRM
@@ -566,7 +587,7 @@ fail:
       return supported;
 }
 
-VkPresentModeKHR
+enum VkPresentModeKHR
 wsi_swapchain_get_present_mode(struct wsi_device *wsi,
                                const VkSwapchainCreateInfoKHR *pCreateInfo)
 {
@@ -752,6 +773,7 @@ wsi_create_image(const struct wsi_swapchain *chain,
                  const struct wsi_image_info *info,
                  struct wsi_image *image)
 {
+   LOG_A("In wsi_create_image");
    const struct wsi_device *wsi = chain->wsi;
    VkResult result;
 
@@ -763,34 +785,20 @@ wsi_create_image(const struct wsi_swapchain *chain,
       image->explicit_sync[i].fd = -1;
 #endif
 
-#ifdef __TERMUX__
-   if (info->ahardware_buffer_desc && AHardwareBuffer_allocate(info->ahardware_buffer_desc,
-                                &image->ahardware_buffer) != 0)
-   {
-      WRAPPER_LOG(error, "Failed to allocate ahardware buffer");
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-   }
-#endif
    result = wsi->CreateImage(chain->device, &info->create,
                              &chain->alloc, &image->image);
-                  
-   if (result != VK_SUCCESS) {
-      WRAPPER_LOG(error, "Failed to create image, res %d", result);
+   if (result != VK_SUCCESS)
       goto fail;
-   }
-   
+
    result = info->create_mem(chain, info, image);
-   if (result != VK_SUCCESS) {
-      WRAPPER_LOG(error, "Failed to create image mem, res %d", result);
+   LOG_A("info->create_mem: %d", result);
+   if (result != VK_SUCCESS)
       goto fail;
-   }
- 
+
    result = wsi->BindImageMemory(chain->device, image->image,
                                  image->memory, 0);
-   if (result != VK_SUCCESS) {
-      WRAPPER_LOG(error, "Failed to bind image memory, res %d", result);
+   if (result != VK_SUCCESS)
       goto fail;
-   }
 
    if (info->finish_create) {
       result = info->finish_create(chain, info, image);
@@ -1035,6 +1043,7 @@ wsi_CreateSwapchainKHR(VkDevice _device,
                        const VkAllocationCallbacks *pAllocator,
                        VkSwapchainKHR *pSwapchain)
 {
+   LOG_A("Inside of wsi_CreateSwapchainKHR");
    MESA_TRACE_FUNC();
    VK_FROM_HANDLE(vk_device, device, _device);
    ICD_FROM_HANDLE(VkIcdSurfaceBase, surface, pCreateInfo->surface);
@@ -1067,6 +1076,7 @@ wsi_CreateSwapchainKHR(VkDevice _device,
    VkResult result = iface->create_swapchain(surface, _device, wsi_device,
                                              &info, alloc,
                                              &swapchain);
+   LOG_A("iface->create_swapchain: %d", result);
    if (result != VK_SUCCESS)
       return result;
 
@@ -1079,7 +1089,7 @@ wsi_CreateSwapchainKHR(VkDevice _device,
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
-   if (wsi_device->khr_present_wait) {
+   if (wsi_device->khr_present_wait && false) {
       const VkSemaphoreTypeCreateInfo type_info = {
          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
          .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
@@ -1134,6 +1144,7 @@ wsi_DestroySwapchainKHR(VkDevice _device,
    else
      alloc = &device->alloc;
 
+   WSI_LOGD("Destroying swapchain");
    swapchain->destroy(swapchain, alloc);
 }
 
@@ -1374,6 +1385,8 @@ static VkResult wsi_signal_present_id_timeline(struct wsi_swapchain *swapchain,
                                                VkQueue queue, uint64_t present_id,
                                                VkFence present_fence)
 {
+   assert(swapchain->present_id_timeline || present_fence);
+
    const VkTimelineSemaphoreSubmitInfo timeline_info = {
       .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
       .pSignalSemaphoreValues = &present_id,
@@ -1382,9 +1395,9 @@ static VkResult wsi_signal_present_id_timeline(struct wsi_swapchain *swapchain,
 
    const VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      .pNext = (swapchain->present_id_timeline) ? &timeline_info : NULL,
-      .signalSemaphoreCount = (swapchain->present_id_timeline) ? 1 : 0,
-      .pSignalSemaphores = (swapchain->present_id_timeline) ? &swapchain->present_id_timeline : NULL,
+      .pNext = &timeline_info,
+      .signalSemaphoreCount = 1,
+      .pSignalSemaphores = &swapchain->present_id_timeline,
    };
 
    uint32_t submit_count = present_id ? 1 : 0;
@@ -1626,7 +1639,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
 #endif
       }
 
-      if (wsi->sw || wsi->forcesync)
+      if (wsi->sw)
 	      wsi->WaitForFences(device, 1, &swapchain->fences[image_index],
 				 true, ~0ull);
 
@@ -1810,6 +1823,7 @@ wsi_select_memory_type(const struct wsi_device *wsi,
    assert(type_bits != 0);
 
    VkMemoryPropertyFlags common_props = ~0;
+   uint32_t last_bit = -1;
    u_foreach_bit(t, type_bits) {
       const VkMemoryType type = wsi->memory_props.memoryTypes[t];
 
@@ -1820,6 +1834,10 @@ wsi_select_memory_type(const struct wsi_device *wsi,
 
       if (!(req_props & ~type.propertyFlags))
          return t;
+   }
+
+   if (last_bit > 0) {
+      return last_bit;
    }
 
    if ((deny_props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
@@ -2070,35 +2088,30 @@ wsi_finish_create_blit_context(const struct wsi_swapchain *chain,
                                    image->blit.buffer,
                                    1, &buffer_image_copy);
       } else {
-         struct VkImageBlit image_blit = {
+         struct VkImageCopy image_copy = {
             .srcSubresource = {
                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                .mipLevel = 0,
                .baseArrayLayer = 0,
                .layerCount = 1,
             },
-            .srcOffsets = { 
-               { .x = 0, .y = 0, .z = 0 },
-               { .x = info->create.extent.width, .y = info->create.extent.height, .z = info->create.extent.depth }
-            },
+            .srcOffset = { .x = 0, .y = 0, .z = 0 },
             .dstSubresource = {
                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                .mipLevel = 0,
                .baseArrayLayer = 0,
                .layerCount = 1,
             },
-            .dstOffsets = { 
-               { .x = 0, .y = 0, .z = 0 },
-               { .x = info->create.extent.width, .y = info->create.extent.height, .z = info->create.extent.depth }
-            }
+            .dstOffset = { .x = 0, .y = 0, .z = 0 },
+            .extent = info->create.extent,
          };
 
-         wsi->CmdBlitImage(image->blit.cmd_buffers[i],
+         wsi->CmdCopyImage(image->blit.cmd_buffers[i],
                            image->image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            image->blit.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           1, &image_blit, VK_FILTER_NEAREST);
+                           1, &image_copy);
       }
 
       img_mem_barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;

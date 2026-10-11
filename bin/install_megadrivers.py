@@ -41,13 +41,8 @@ def main():
     parser.add_argument('megadriver')
     parser.add_argument('libdir')
     parser.add_argument('drivers', nargs='+')
-    parser.add_argument('--megadriver-libdir')
-    parser.add_argument('--libname-suffix', required=True)
+    parser.add_argument('--megadriver_libdir')
     args = parser.parse_args()
-
-    # Not neccesarily at the end, there might be a version suffix, but let's
-    # make sure that the same suffix is in the megadriver lib name.
-    assert '.' + args.libname_suffix in args.megadriver
 
     to = resolve_libdir(args.libdir)
     if args.megadriver_libdir:
@@ -79,7 +74,7 @@ def main():
             os.chdir(to)
 
             name, ext = os.path.splitext(driver)
-            while ext != '.' + args.libname_suffix:
+            while ext != '.so':
                 if os.path.lexists(name):
                     os.unlink(name)
                 os.symlink(driver, name)
@@ -87,9 +82,9 @@ def main():
         finally:
             os.chdir(ret)
 
-    # Remove meson-created symlinks
+    # Remove meson-created .so symlinks
     name, ext = os.path.splitext(master)
-    while ext != '.' + args.libname_suffix:
+    while ext != '.so':
         if os.path.lexists(name):
             os.unlink(name)
         name, ext = os.path.splitext(name)

@@ -91,46 +91,21 @@ static inline bool mesa_db_truncate(FILE *file, long pos)
 }
 
 static bool
-mesa_db_reopen_file(struct mesa_cache_db_file *db_file);
-
-static void
-mesa_db_close_file(struct mesa_cache_db_file *db_file);
-
-static int
-mesa_db_flock(FILE *file, int op)
-{
-   int ret;
-
-   do {
-      ret = flock(fileno(file), op);
-   } while (ret < 0 && errno == EINTR);
-
-   return ret;
-}
-
-static bool
 mesa_db_lock(struct mesa_cache_db *db)
 {
    simple_mtx_lock(&db->flock_mtx);
 
-   if (!mesa_db_reopen_file(&db->index) ||
-       !mesa_db_reopen_file(&db->cache))
-      goto close_files;
+   if (flock(fileno(db->cache.file), LOCK_EX) == -1)
+      goto unlock_mtx;
 
-   if (mesa_db_flock(db->cache.file, LOCK_EX) < 0)
-      goto close_files;
-
-   if (mesa_db_flock(db->index.file, LOCK_EX) < 0)
+   if (flock(fileno(db->index.file), LOCK_EX) == -1)
       goto unlock_cache;
 
    return true;
 
 unlock_cache:
-   mesa_db_flock(db->cache.file, LOCK_UN);
-close_files:
-   mesa_db_close_file(&db->index);
-   mesa_db_close_file(&db->cache);
-
+   flock(fileno(db->cache.file), LOCK_UN);
+unlock_mtx:
    simple_mtx_unlock(&db->flock_mtx);
 
    return false;
@@ -139,12 +114,8 @@ close_files:
 static void
 mesa_db_unlock(struct mesa_cache_db *db)
 {
-   mesa_db_flock(db->index.file, LOCK_UN);
-   mesa_db_flock(db->cache.file, LOCK_UN);
-
-   mesa_db_close_file(&db->index);
-   mesa_db_close_file(&db->cache);
-
+   flock(fileno(db->index.file), LOCK_UN);
+   flock(fileno(db->cache.file), LOCK_UN);
    simple_mtx_unlock(&db->flock_mtx);
 }
 
@@ -279,58 +250,43 @@ static bool
 mesa_db_update_index(struct mesa_cache_db *db)
 {
    struct mesa_index_db_hash_entry *hash_entry;
-   struct mesa_index_db_file_entry *index_entries, *index_entry;
+   struct mesa_index_db_file_entry index_entry;
    size_t file_length;
-   size_t old_entries, new_entries;
-   size_t new_index_size;
-   bool ret = false;
-   int i;
 
    if (!mesa_db_seek_end(db->index.file))
       return false;
 
    file_length = ftell(db->index.file);
-   if (file_length < db->index.offset)
-      return false;
 
    if (!mesa_db_seek(db->index.file, db->index.offset))
       return false;
 
-   old_entries = _mesa_hash_table_num_entries(db->index_db->table);
-   new_entries = (file_length - db->index.offset) / sizeof(*index_entries);
-   _mesa_hash_table_reserve(db->index_db->table, old_entries + new_entries);
+   while (db->index.offset < file_length) {
+      if (!mesa_db_read(db->index.file, &index_entry))
+         break;
 
-   new_index_size = new_entries * sizeof(*index_entries);
-   index_entries = malloc(new_index_size);
-   if (!mesa_db_read_data(db->index.file, index_entries, new_index_size))
-      goto error;
-
-   for (i = 0, index_entry = index_entries; i < new_entries; i++, index_entry++) {
       /* Check whether the index entry looks valid or we have a corrupted DB */
-      if (!mesa_db_index_entry_valid(index_entry))
+      if (!mesa_db_index_entry_valid(&index_entry))
          break;
 
       hash_entry = ralloc(db->mem_ctx, struct mesa_index_db_hash_entry);
       if (!hash_entry)
          break;
 
-      hash_entry->cache_db_file_offset = index_entry->cache_db_file_offset;
+      hash_entry->cache_db_file_offset = index_entry.cache_db_file_offset;
       hash_entry->index_db_file_offset = db->index.offset;
-      hash_entry->last_access_time = index_entry->last_access_time;
-      hash_entry->size = index_entry->size;
+      hash_entry->last_access_time = index_entry.last_access_time;
+      hash_entry->size = index_entry.size;
 
-      _mesa_hash_table_u64_insert(db->index_db, index_entry->hash, hash_entry);
+      _mesa_hash_table_u64_insert(db->index_db, index_entry.hash, hash_entry);
 
-      db->index.offset += sizeof(*index_entry);
+      db->index.offset += sizeof(index_entry);
    }
 
-   if (mesa_db_seek(db->index.file, db->index.offset) &&
-       db->index.offset == file_length)
-      ret = true;
+   if (!mesa_db_seek(db->index.file, db->index.offset))
+      return false;
 
-error:
-   free(index_entries);
-   return ret;
+   return db->index.offset == file_length;
 }
 
 static void
@@ -367,6 +323,10 @@ mesa_db_load(struct mesa_cache_db *db, bool reload)
        !mesa_db_load_header(&db->index) ||
        db->cache.uuid != db->index.uuid) {
 
+      /* This is unexpected to happen on reload, bail out */
+      if (reload)
+         goto fail;
+
       if (!mesa_db_recreate_files(db))
          goto fail;
    } else {
@@ -378,16 +338,8 @@ mesa_db_load(struct mesa_cache_db *db, bool reload)
    if (reload)
       mesa_db_hash_table_reset(db);
 
-   /* The update failed so we assume the files are corrupt and
-    * recreate them.
-    */
-   if (!mesa_db_update_index(db)) {
-      mesa_db_recreate_files(db);
-      db->index.offset = ftell(db->index.file);
-
-      if (!mesa_db_update_index(db))
-         goto fail;
-   }
+   if (!mesa_db_update_index(db))
+      goto fail;
 
    if (!reload)
       mesa_db_unlock(db);
@@ -412,21 +364,10 @@ mesa_db_reload(struct mesa_cache_db *db)
    return mesa_db_load(db, true);
 }
 
-static FILE *
-mesa_db_fopen(const char *path)
+static void
+touch_file(const char* path)
 {
-   /* The fopen("r+b") mode doesn't auto-create new file, hence we need to
-    * explicitly create the file first.
-    */
-   int fd = open(path, O_CREAT | O_CLOEXEC | O_RDWR, 0644);
-   if (fd < 0)
-      return NULL;
-
-   FILE *f = fdopen(fd, "r+b");
-   if (!f)
-      close(fd);
-
-   return f;
+   close(open(path, O_CREAT | O_CLOEXEC, 0644));
 }
 
 static bool
@@ -437,7 +378,12 @@ mesa_db_open_file(struct mesa_cache_db_file *db_file,
    if (asprintf(&db_file->path, "%s/%s", cache_path, filename) == -1)
       return false;
 
-   db_file->file = mesa_db_fopen(db_file->path);
+   /* The fopen("r+b") mode doesn't auto-create new file, hence we need to
+    * explicitly create the file first.
+    */
+   touch_file(db_file->path);
+
+   db_file->file = fopen(db_file->path, "r+b");
    if (!db_file->file) {
       free(db_file->path);
       return false;
@@ -446,34 +392,10 @@ mesa_db_open_file(struct mesa_cache_db_file *db_file,
    return true;
 }
 
-static bool
-mesa_db_reopen_file(struct mesa_cache_db_file *db_file)
-{
-   if (db_file->file)
-      return true;
-
-   db_file->file = mesa_db_fopen(db_file->path);
-   if (!db_file->file)
-      return false;
-
-   return true;
-}
-
 static void
 mesa_db_close_file(struct mesa_cache_db_file *db_file)
 {
-   if (db_file->file) {
-      fclose(db_file->file);
-      db_file->file = NULL;
-   }
-}
-
-static void
-mesa_db_free_file(struct mesa_cache_db_file *db_file)
-{
-   if (db_file->file)
-      fclose(db_file->file);
-
+   fclose(db_file->file);
    free(db_file->path);
 }
 
@@ -543,15 +465,12 @@ mesa_db_compact(struct mesa_cache_db *db, int64_t blob_size,
       return false;
 
    num_entries = _mesa_hash_table_num_entries(db->index_db->table);
-   if (!num_entries)
-      return true;
-
    entries = calloc(num_entries, sizeof(*entries));
    if (!entries)
       return false;
 
-   compacted_cache = mesa_db_fopen(db->cache.path);
-   compacted_index = mesa_db_fopen(db->index.path);
+   compacted_cache = fopen(db->cache.path, "r+b");
+   compacted_index = fopen(db->index.path, "r+b");
    if (!compacted_cache || !compacted_index)
       goto cleanup;
 
@@ -713,9 +632,9 @@ destroy_mtx:
 
    ralloc_free(db->mem_ctx);
 close_index:
-   mesa_db_free_file(&db->index);
+   mesa_db_close_file(&db->index);
 close_cache:
-   mesa_db_free_file(&db->cache);
+   mesa_db_close_file(&db->cache);
 
    return false;
 }
@@ -743,8 +662,8 @@ mesa_cache_db_close(struct mesa_cache_db *db)
    simple_mtx_destroy(&db->flock_mtx);
    ralloc_free(db->mem_ctx);
 
-   mesa_db_free_file(&db->index);
-   mesa_db_free_file(&db->cache);
+   mesa_db_close_file(&db->index);
+   mesa_db_close_file(&db->cache);
 }
 
 void

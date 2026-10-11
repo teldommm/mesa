@@ -6,9 +6,6 @@
 # DEBIAN_BUILD_TAG
 
 set -e
-
-. .gitlab-ci/setup-test-env.sh
-
 set -o xtrace
 
 export DEBIAN_FRONTEND=noninteractive
@@ -86,7 +83,7 @@ rm -rf $XORGMACROS_VERSION
 
 . .gitlab-ci/container/build-bindgen.sh
 
-python3 -m pip install --break-system-packages -r bin/ci/requirements.txt
+python3 -m pip install --break-system-packages -r .gitlab-ci/lava/requirements.txt
 
 ############### Uninstall the build software
 

@@ -93,13 +93,11 @@ files_libnir = files(
   'nir_deref.h',
   'nir_divergence_analysis.c',
   'nir_dominance.c',
-  'nir_fixup_is_exported.c',
   'nir_format_convert.c',
   'nir_format_convert.h',
   'nir_from_ssa.c',
   'nir_functions.c',
   'nir_gather_info.c',
-  'nir_gather_tcs_info.c',
   'nir_gather_types.c',
   'nir_gather_xfb_info.c',
   'nir_group_loads.c',
@@ -124,7 +122,6 @@ files_libnir = files(
   'nir_lower_bool_to_bitsize.c',
   'nir_lower_bool_to_float.c',
   'nir_lower_bool_to_int32.c',
-  'nir_lower_calls_to_builtins.c',
   'nir_lower_cl_images.c',
   'nir_lower_clamp_color_outputs.c',
   'nir_lower_clip.c',
@@ -188,7 +185,6 @@ files_libnir = files(
   'nir_lower_robust_access.c',
   'nir_lower_samplers.c',
   'nir_lower_scratch.c',
-  'nir_lower_scratch_to_var.c',
   'nir_lower_shader_calls.c',
   'nir_lower_single_sampled.c',
   'nir_lower_ssbo.c',
@@ -222,7 +218,6 @@ files_libnir = files(
   'nir_normalize_cubemap_coords.c',
   'nir_opt_access.c',
   'nir_opt_barriers.c',
-  'nir_opt_clip_cull_const.c',
   'nir_opt_combine_stores.c',
   'nir_opt_comparison_pre.c',
   'nir_opt_conditional_discard.c',
@@ -234,10 +229,8 @@ files_libnir = files(
   'nir_opt_dead_cf.c',
   'nir_opt_dead_write_vars.c',
   'nir_opt_find_array_copies.c',
-  'nir_opt_frag_coord_to_pixel_coord.c',
   'nir_opt_fragdepth.c',
   'nir_opt_gcm.c',
-  'nir_opt_generate_bfi.c',
   'nir_opt_idiv_const.c',
   'nir_opt_if.c',
   'nir_opt_intrinsics.c',
@@ -259,6 +252,7 @@ files_libnir = files(
   'nir_opt_reassociate_bfi.c',
   'nir_opt_rematerialize_compares.c',
   'nir_opt_remove_phis.c',
+  'nir_opt_reuse_constants.c',
   'nir_opt_shrink_stores.c',
   'nir_opt_shrink_vectors.c',
   'nir_opt_sink.c',
@@ -300,7 +294,6 @@ files_libnir = files(
   'nir_worklist.c',
   'nir_worklist.h',
   'nir_xfb_info.h',
-  'nir_lower_atomics.c'
 )
 
 # When a file is too large, -Wmisleading-indentation will give a note about
@@ -331,7 +324,7 @@ inc_nir = include_directories('.')
 idep_nir_headers = declare_dependency(
   sources : [nir_opcodes_h, nir_builder_opcodes_h, nir_intrinsics_h, nir_intrinsics_indices_h,
              ir_expression_operation_h, builtin_types_h],
-  include_directories : [inc_nir, inc_compiler, inc_src, inc_include],
+  include_directories : [inc_nir, inc_compiler],
 )
 
 # Also link with nir

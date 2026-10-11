@@ -45,7 +45,6 @@ enum radeon_bo_domain
   RADEON_DOMAIN_VRAM_GTT = RADEON_DOMAIN_VRAM | RADEON_DOMAIN_GTT,
   RADEON_DOMAIN_GDS = 8,
   RADEON_DOMAIN_OA = 16,
-  RADEON_DOMAIN_DOORBELL = 32,
 };
 
 enum radeon_bo_flag
@@ -65,7 +64,6 @@ enum radeon_bo_flag
   RADEON_FLAG_DISCARDABLE = (1 << 10),
   RADEON_FLAG_WINSYS_SLAB_BACKING = (1 << 11), /* only used by the winsys */
   RADEON_FLAG_GFX12_ALLOW_DCC = (1 << 12), /* allow DCC, VRAM only */
-  RADEON_FLAG_CLEAR_VRAM = (1 << 13),
 };
 
 static inline void
@@ -875,10 +873,10 @@ static void radeon_canonicalize_bo_flags(enum radeon_bo_domain *_domain,
    unsigned flags = *_flags;
 
    /* Only set 1 domain, e.g. ignore GTT if VRAM is set. */
-   if (domain == RADEON_DOMAIN_VRAM_GTT)
-      domain = RADEON_DOMAIN_VRAM;
+   if (domain)
+      domain = BITFIELD_BIT(ffs(domain) - 1);
    else
-      assert(util_bitcount(domain) == 1);
+      domain = RADEON_DOMAIN_VRAM;
 
    switch (domain) {
    case RADEON_DOMAIN_VRAM:
@@ -891,10 +889,6 @@ static void radeon_canonicalize_bo_flags(enum radeon_bo_domain *_domain,
    case RADEON_DOMAIN_GDS:
    case RADEON_DOMAIN_OA:
       flags |= RADEON_FLAG_NO_SUBALLOC | RADEON_FLAG_NO_CPU_ACCESS;
-      flags &= ~RADEON_FLAG_SPARSE;
-      break;
-   case RADEON_DOMAIN_DOORBELL:
-      flags |= RADEON_FLAG_NO_SUBALLOC;
       flags &= ~RADEON_FLAG_SPARSE;
       break;
    }
@@ -919,7 +913,7 @@ static inline int radeon_get_heap_index(enum radeon_bo_domain domain, enum radeo
    /* These are unsupported flags. */
    /* RADEON_FLAG_DRIVER_INTERNAL is ignored. It doesn't affect allocators. */
    if (flags & (RADEON_FLAG_NO_SUBALLOC | RADEON_FLAG_SPARSE |
-                RADEON_FLAG_DISCARDABLE | RADEON_FLAG_CLEAR_VRAM))
+                RADEON_FLAG_DISCARDABLE))
       return -1;
 
    int heap = 0;

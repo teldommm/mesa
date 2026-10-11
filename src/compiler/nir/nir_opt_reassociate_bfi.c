@@ -63,9 +63,13 @@
 
 static bool
 nir_opt_reassociate_bfi_instr(nir_builder *b,
-                              nir_alu_instr *bfiCD0,
+                              nir_instr *instr,
                               UNUSED void *cb_data)
 {
+   if (instr->type != nir_instr_type_alu)
+      return false;
+
+   nir_alu_instr *bfiCD0 = nir_instr_as_alu(instr);
    if (bfiCD0->op != nir_op_bfi || bfiCD0->def.num_components != 1)
       return false;
 
@@ -130,6 +134,10 @@ nir_opt_reassociate_bfi_instr(nir_builder *b,
 bool
 nir_opt_reassociate_bfi(nir_shader *shader)
 {
-   return nir_shader_alu_pass(shader, nir_opt_reassociate_bfi_instr,
-                              nir_metadata_control_flow, NULL);
+   bool progress = nir_shader_instructions_pass(shader,
+                                                nir_opt_reassociate_bfi_instr,
+                                                nir_metadata_control_flow,
+                                                NULL);
+
+   return progress;
 }

@@ -214,10 +214,10 @@ fn validate_matching_buffer_flags(mem: &MemBase, flags: cl_mem_flags) -> CLResul
 }
 
 #[cl_info_entrypoint(clGetMemObjectInfo)]
-unsafe impl CLInfo<cl_mem_info> for cl_mem {
-    fn query(&self, q: cl_mem_info, v: CLInfoValue) -> CLResult<CLInfoRes> {
+impl CLInfo<cl_mem_info> for cl_mem {
+    fn query(&self, q: cl_mem_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         let mem = MemBase::ref_from_raw(*self)?;
-        match *q {
+        Ok(match *q {
             CL_MEM_ASSOCIATED_MEMOBJECT => {
                 let ptr = match mem.parent.as_ref() {
                     // Note we use as_ptr here which doesn't increase the reference count.
@@ -225,35 +225,35 @@ unsafe impl CLInfo<cl_mem_info> for cl_mem {
                     Some(Mem::Image(image)) => cl_mem::from_ptr(Arc::as_ptr(image)),
                     None => ptr::null_mut(),
                 };
-                v.write::<cl_mem>(ptr.cast())
+                cl_prop::<cl_mem>(ptr.cast())
             }
             CL_MEM_CONTEXT => {
                 // Note we use as_ptr here which doesn't increase the reference count.
                 let ptr = Arc::as_ptr(&mem.context);
-                v.write::<cl_context>(cl_context::from_ptr(ptr))
+                cl_prop::<cl_context>(cl_context::from_ptr(ptr))
             }
-            CL_MEM_FLAGS => v.write::<cl_mem_flags>(mem.flags),
+            CL_MEM_FLAGS => cl_prop::<cl_mem_flags>(mem.flags),
             // TODO debugging feature
-            CL_MEM_MAP_COUNT => v.write::<cl_uint>(0),
-            CL_MEM_HOST_PTR => v.write::<*mut c_void>(mem.host_ptr()),
-            CL_MEM_OFFSET => v.write::<usize>(if mem.is_buffer() {
+            CL_MEM_MAP_COUNT => cl_prop::<cl_uint>(0),
+            CL_MEM_HOST_PTR => cl_prop::<*mut c_void>(mem.host_ptr()),
+            CL_MEM_OFFSET => cl_prop::<usize>(if mem.is_buffer() {
                 Buffer::ref_from_raw(*self)?.offset
             } else {
                 0
             }),
-            CL_MEM_PROPERTIES => v.write::<&Properties<cl_mem_properties>>(&mem.props),
-            CL_MEM_REFERENCE_COUNT => v.write::<cl_uint>(if mem.is_buffer() {
+            CL_MEM_PROPERTIES => cl_prop::<&Vec<cl_mem_properties>>(&mem.props),
+            CL_MEM_REFERENCE_COUNT => cl_prop::<cl_uint>(if mem.is_buffer() {
                 Buffer::refcnt(*self)?
             } else {
                 Image::refcnt(*self)?
             }),
-            CL_MEM_SIZE => v.write::<usize>(mem.size),
-            CL_MEM_TYPE => v.write::<cl_mem_object_type>(mem.mem_type),
+            CL_MEM_SIZE => cl_prop::<usize>(mem.size),
+            CL_MEM_TYPE => cl_prop::<cl_mem_object_type>(mem.mem_type),
             CL_MEM_USES_SVM_POINTER | CL_MEM_USES_SVM_POINTER_ARM => {
-                v.write::<cl_bool>(mem.is_svm().into())
+                cl_prop::<cl_bool>(mem.is_svm().into())
             }
-            _ => Err(CL_INVALID_VALUE),
-        }
+            _ => return Err(CL_INVALID_VALUE),
+        })
     }
 }
 
@@ -287,7 +287,7 @@ fn create_buffer_with_properties(
     if let Some((svm_ptr, svm_layout)) = c.find_svm_alloc(host_ptr as usize) {
         // SAFETY: they are part of the same allocation, and because host_ptr >= svm_ptr we can cast
         // to usize.
-        let diff = unsafe { host_ptr.byte_offset_from(svm_ptr) } as usize;
+        let diff = unsafe { host_ptr.offset_from(svm_ptr) } as usize;
 
         // technically we don't have to account for the offset, but it's almost for free.
         if size > svm_layout - diff {
@@ -295,14 +295,12 @@ fn create_buffer_with_properties(
         }
     }
 
-    // CL_INVALID_PROPERTY [...] if the same property name is specified more than once.
-    let props = unsafe { Properties::new(properties) }.ok_or(CL_INVALID_PROPERTY)?;
-
+    let props = Properties::from_ptr_raw(properties);
     // CL_INVALID_PROPERTY if a property name in properties is not a supported property name, if
     // the value specified for a supported property name is not valid, or if the same property name
     // is specified more than once.
-    if !props.is_empty() {
-        // we don't support any properties
+    if props.len() > 1 {
+        // we don't support any properties besides the 0 property
         return Err(CL_INVALID_PROPERTY);
     }
 
@@ -395,12 +393,6 @@ fn validate_image_format<'a>(
     let pixel_size = format
         .pixel_size()
         .ok_or(CL_INVALID_IMAGE_FORMAT_DESCRIPTOR)?;
-
-    // Depth images with an image channel order of CL_DEPTH_STENCIL can only be created using the
-    // clCreateFromGLTexture API
-    if format.image_channel_order == CL_DEPTH_STENCIL {
-        return Err(CL_INVALID_IMAGE_FORMAT_DESCRIPTOR);
-    }
 
     // special validation
     let valid_combination = match format.image_channel_data_type {
@@ -733,27 +725,27 @@ fn validate_buffer(
 }
 
 #[cl_info_entrypoint(clGetImageInfo)]
-unsafe impl CLInfo<cl_image_info> for cl_mem {
-    fn query(&self, q: cl_image_info, v: CLInfoValue) -> CLResult<CLInfoRes> {
+impl CLInfo<cl_image_info> for cl_mem {
+    fn query(&self, q: cl_image_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         let mem = Image::ref_from_raw(*self)?;
-        match *q {
-            CL_IMAGE_ARRAY_SIZE => v.write::<usize>(mem.image_desc.image_array_size),
-            CL_IMAGE_BUFFER => v.write::<cl_mem>(unsafe { mem.image_desc.anon_1.buffer }),
-            CL_IMAGE_DEPTH => v.write::<usize>(mem.image_desc.image_depth),
-            CL_IMAGE_ELEMENT_SIZE => v.write::<usize>(mem.image_elem_size.into()),
-            CL_IMAGE_FORMAT => v.write::<cl_image_format>(mem.image_format),
-            CL_IMAGE_HEIGHT => v.write::<usize>(mem.image_desc.image_height),
-            CL_IMAGE_NUM_MIP_LEVELS => v.write::<cl_uint>(mem.image_desc.num_mip_levels),
-            CL_IMAGE_NUM_SAMPLES => v.write::<cl_uint>(mem.image_desc.num_samples),
-            CL_IMAGE_ROW_PITCH => v.write::<usize>(mem.image_desc.image_row_pitch),
-            CL_IMAGE_SLICE_PITCH => v.write::<usize>(if mem.image_desc.dims() == 1 {
+        Ok(match *q {
+            CL_IMAGE_ARRAY_SIZE => cl_prop::<usize>(mem.image_desc.image_array_size),
+            CL_IMAGE_BUFFER => cl_prop::<cl_mem>(unsafe { mem.image_desc.anon_1.buffer }),
+            CL_IMAGE_DEPTH => cl_prop::<usize>(mem.image_desc.image_depth),
+            CL_IMAGE_ELEMENT_SIZE => cl_prop::<usize>(mem.image_elem_size.into()),
+            CL_IMAGE_FORMAT => cl_prop::<cl_image_format>(mem.image_format),
+            CL_IMAGE_HEIGHT => cl_prop::<usize>(mem.image_desc.image_height),
+            CL_IMAGE_NUM_MIP_LEVELS => cl_prop::<cl_uint>(mem.image_desc.num_mip_levels),
+            CL_IMAGE_NUM_SAMPLES => cl_prop::<cl_uint>(mem.image_desc.num_samples),
+            CL_IMAGE_ROW_PITCH => cl_prop::<usize>(mem.image_desc.image_row_pitch),
+            CL_IMAGE_SLICE_PITCH => cl_prop::<usize>(if mem.image_desc.dims() == 1 {
                 0
             } else {
                 mem.image_desc.image_slice_pitch
             }),
-            CL_IMAGE_WIDTH => v.write::<usize>(mem.image_desc.image_width),
-            _ => Err(CL_INVALID_VALUE),
-        }
+            CL_IMAGE_WIDTH => cl_prop::<usize>(mem.image_desc.image_width),
+            _ => return Err(CL_INVALID_VALUE),
+        })
     }
 }
 
@@ -800,14 +792,12 @@ fn create_image_with_properties(
         .find(|f| *f & filtered_flags == filtered_flags)
         .ok_or(CL_IMAGE_FORMAT_NOT_SUPPORTED)?;
 
-    // CL_INVALID_PROPERTY [...] if the same property name is specified more than once.
-    let props = unsafe { Properties::new(properties) }.ok_or(CL_INVALID_PROPERTY)?;
-
+    let props = Properties::from_ptr_raw(properties);
     // CL_INVALID_PROPERTY if a property name in properties is not a supported property name, if
     // the value specified for a supported property name is not valid, or if the same property name
     // is specified more than once.
-    if !props.is_empty() {
-        // we don't support any properties
+    if props.len() > 1 {
+        // we don't support any properties besides the 0 property
         return Err(CL_INVALID_PROPERTY);
     }
 
@@ -935,23 +925,25 @@ fn get_supported_image_formats(
 }
 
 #[cl_info_entrypoint(clGetSamplerInfo)]
-unsafe impl CLInfo<cl_sampler_info> for cl_sampler {
-    fn query(&self, q: cl_sampler_info, v: CLInfoValue) -> CLResult<CLInfoRes> {
+impl CLInfo<cl_sampler_info> for cl_sampler {
+    fn query(&self, q: cl_sampler_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         let sampler = Sampler::ref_from_raw(*self)?;
-        match q {
-            CL_SAMPLER_ADDRESSING_MODE => v.write::<cl_addressing_mode>(sampler.addressing_mode),
+        Ok(match q {
+            CL_SAMPLER_ADDRESSING_MODE => cl_prop::<cl_addressing_mode>(sampler.addressing_mode),
             CL_SAMPLER_CONTEXT => {
                 // Note we use as_ptr here which doesn't increase the reference count.
                 let ptr = Arc::as_ptr(&sampler.context);
-                v.write::<cl_context>(cl_context::from_ptr(ptr))
+                cl_prop::<cl_context>(cl_context::from_ptr(ptr))
             }
-            CL_SAMPLER_FILTER_MODE => v.write::<cl_filter_mode>(sampler.filter_mode),
-            CL_SAMPLER_NORMALIZED_COORDS => v.write::<bool>(sampler.normalized_coords),
-            CL_SAMPLER_REFERENCE_COUNT => v.write::<cl_uint>(Sampler::refcnt(*self)?),
-            CL_SAMPLER_PROPERTIES => v.write::<&Properties<cl_sampler_properties>>(&sampler.props),
+            CL_SAMPLER_FILTER_MODE => cl_prop::<cl_filter_mode>(sampler.filter_mode),
+            CL_SAMPLER_NORMALIZED_COORDS => cl_prop::<bool>(sampler.normalized_coords),
+            CL_SAMPLER_REFERENCE_COUNT => cl_prop::<cl_uint>(Sampler::refcnt(*self)?),
+            CL_SAMPLER_PROPERTIES => {
+                cl_prop::<&Option<Properties<cl_sampler_properties>>>(&sampler.props)
+            }
             // CL_INVALID_VALUE if param_name is not one of the supported values
-            _ => Err(CL_INVALID_VALUE),
-        }
+            _ => return Err(CL_INVALID_VALUE),
+        })
     }
 }
 
@@ -960,7 +952,7 @@ fn create_sampler_impl(
     normalized_coords: cl_bool,
     addressing_mode: cl_addressing_mode,
     filter_mode: cl_filter_mode,
-    props: Properties<cl_sampler_properties>,
+    props: Option<Properties<cl_sampler_properties>>,
 ) -> CLResult<cl_sampler> {
     let c = Context::arc_from_raw(context)?;
 
@@ -998,7 +990,7 @@ fn create_sampler(
         normalized_coords,
         addressing_mode,
         filter_mode,
-        Properties::default(),
+        None,
     )
 }
 
@@ -1012,19 +1004,23 @@ fn create_sampler_with_properties(
     let mut filter_mode = CL_FILTER_NEAREST;
 
     // CL_INVALID_VALUE if the same property name is specified more than once.
-    // SAFETY: sampler_properties is a 0 terminated array by spec.
-    let sampler_properties =
-        unsafe { Properties::new(sampler_properties) }.ok_or(CL_INVALID_VALUE)?;
-    for (&key, &val) in sampler_properties.iter() {
-        match key as u32 {
-            CL_SAMPLER_ADDRESSING_MODE => addressing_mode = val as u32,
-            CL_SAMPLER_FILTER_MODE => filter_mode = val as u32,
-            CL_SAMPLER_NORMALIZED_COORDS => normalized_coords = val as u32,
-            // CL_INVALID_VALUE if the property name in sampler_properties is not a supported
-            // property name
-            _ => return Err(CL_INVALID_VALUE),
+    let sampler_properties = if sampler_properties.is_null() {
+        None
+    } else {
+        let sampler_properties =
+            Properties::from_ptr(sampler_properties).ok_or(CL_INVALID_VALUE)?;
+        for p in &sampler_properties.props {
+            match p.0 as u32 {
+                CL_SAMPLER_ADDRESSING_MODE => addressing_mode = p.1 as u32,
+                CL_SAMPLER_FILTER_MODE => filter_mode = p.1 as u32,
+                CL_SAMPLER_NORMALIZED_COORDS => normalized_coords = p.1 as u32,
+                // CL_INVALID_VALUE if the property name in sampler_properties is not a supported
+                // property name
+                _ => return Err(CL_INVALID_VALUE),
+            }
         }
-    }
+        Some(sampler_properties)
+    };
 
     create_sampler_impl(
         context,
@@ -1718,11 +1714,6 @@ fn enqueue_read_image(
         return Err(CL_INVALID_OPERATION);
     }
 
-    // Not supported with depth stencil or msaa images.
-    if i.image_format.image_channel_order == CL_DEPTH_STENCIL || i.image_desc.num_samples > 0 {
-        return Err(CL_INVALID_OPERATION);
-    }
-
     // CL_INVALID_VALUE if origin or region is NULL.
     // CL_INVALID_VALUE if ptr is NULL.
     if origin.is_null() || region.is_null() || ptr.is_null() {
@@ -1802,11 +1793,6 @@ fn enqueue_write_image(
         return Err(CL_INVALID_OPERATION);
     }
 
-    // Not supported with depth stencil or msaa images.
-    if i.image_format.image_channel_order == CL_DEPTH_STENCIL || i.image_desc.num_samples > 0 {
-        return Err(CL_INVALID_OPERATION);
-    }
-
     // CL_INVALID_VALUE if origin or region is NULL.
     // CL_INVALID_VALUE if ptr is NULL.
     if origin.is_null() || region.is_null() || ptr.is_null() {
@@ -1882,15 +1868,6 @@ fn enqueue_copy_image(
         return Err(CL_IMAGE_FORMAT_MISMATCH);
     }
 
-    // Not supported with depth stencil or msaa images.
-    if src_image.image_format.image_channel_order == CL_DEPTH_STENCIL
-        || dst_image.image_format.image_channel_order == CL_DEPTH_STENCIL
-        || src_image.image_desc.num_samples > 0
-        || dst_image.image_desc.num_samples > 0
-    {
-        return Err(CL_INVALID_OPERATION);
-    }
-
     // CL_INVALID_VALUE if src_origin, dst_origin, or region is NULL.
     if src_origin.is_null() || dst_origin.is_null() || region.is_null() {
         return Err(CL_INVALID_VALUE);
@@ -1945,11 +1922,6 @@ fn enqueue_fill_image(
         return Err(CL_INVALID_CONTEXT);
     }
 
-    // Not supported with depth stencil or msaa images.
-    if i.image_format.image_channel_order == CL_DEPTH_STENCIL || i.image_desc.num_samples > 0 {
-        return Err(CL_INVALID_OPERATION);
-    }
-
     // CL_INVALID_VALUE if fill_color is NULL.
     // CL_INVALID_VALUE if origin or region is NULL.
     if fill_color.is_null() || origin.is_null() || region.is_null() {
@@ -1965,25 +1937,16 @@ fn enqueue_fill_image(
     // description for origin and region.
     validate_image_bounds(&i, origin, region)?;
 
-    // The fill color is a single floating-point value if the channel order is CL_DEPTH. Otherwise,
-    // the fill color is a four component RGBA floating-point color value if the image channel data
-    // type is not an unnormalized signed or unsigned integer type, is a four component signed
-    // integer value if the image channel data type is an unnormalized signed integer type and is a
-    // four component unsigned integer value if the image channel data type is an unnormalized
-    // unsigned integer type.
-    let fill_color = if i.image_format.image_channel_order == CL_DEPTH {
-        [unsafe { fill_color.cast::<u32>().read() }, 0, 0, 0]
-    } else {
-        unsafe { fill_color.cast::<[u32; 4]>().read() }
-    };
-
+    // we have to copy memory and it's always a 4 component int value
+    // TODO but not for CL_DEPTH
+    let fill_color = unsafe { slice::from_raw_parts(fill_color.cast(), 4).to_vec() };
     create_and_queue(
         q,
         CL_COMMAND_FILL_BUFFER,
         evs,
         event,
         false,
-        Box::new(move |q, ctx| i.fill(q, ctx, fill_color, &origin, &region)),
+        Box::new(move |q, ctx| i.fill(q, ctx, &fill_color, &origin, &region)),
     )
 
     //• CL_INVALID_IMAGE_SIZE if image dimensions (image width, height, specified or compute row and/or slice pitch) for image are not supported by device associated with queue.
@@ -2012,11 +1975,6 @@ fn enqueue_copy_buffer_to_image(
     // are not the same
     if q.context != src.context || q.context != dst.context {
         return Err(CL_INVALID_CONTEXT);
-    }
-
-    // Not supported with depth stencil or msaa images.
-    if dst.image_format.image_channel_order == CL_DEPTH_STENCIL || dst.image_desc.num_samples > 0 {
-        return Err(CL_INVALID_OPERATION);
     }
 
     // CL_INVALID_VALUE if dst_origin or region is NULL.
@@ -2072,11 +2030,6 @@ fn enqueue_copy_image_to_buffer(
     // are not the same
     if q.context != src.context || q.context != dst.context {
         return Err(CL_INVALID_CONTEXT);
-    }
-
-    // Not supported with depth stencil or msaa images.
-    if src.image_format.image_channel_order == CL_DEPTH_STENCIL || src.image_desc.num_samples > 0 {
-        return Err(CL_INVALID_OPERATION);
     }
 
     // CL_INVALID_VALUE if src_origin or region is NULL.
@@ -2137,11 +2090,6 @@ fn enqueue_map_image(
     // CL_INVALID_CONTEXT if context associated with command_queue and image are not the same
     if i.context != q.context {
         return Err(CL_INVALID_CONTEXT);
-    }
-
-    // Not supported with depth stencil or msaa images.
-    if i.image_format.image_channel_order == CL_DEPTH_STENCIL || i.image_desc.num_samples > 0 {
-        return Err(CL_INVALID_OPERATION);
     }
 
     // CL_INVALID_VALUE if origin or region is NULL.
@@ -2314,8 +2262,8 @@ fn enqueue_migrate_mem_objects(
 }
 
 #[cl_info_entrypoint(clGetPipeInfo)]
-unsafe impl CLInfo<cl_pipe_info> for cl_mem {
-    fn query(&self, _q: cl_pipe_info, _v: CLInfoValue) -> CLResult<CLInfoRes> {
+impl CLInfo<cl_pipe_info> for cl_mem {
+    fn query(&self, _q: cl_pipe_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         // CL_INVALID_MEM_OBJECT if pipe is a not a valid pipe object.
         Err(CL_INVALID_MEM_OBJECT)
     }
@@ -3016,19 +2964,19 @@ fn create_pipe(
 }
 
 #[cl_info_entrypoint(clGetGLTextureInfo)]
-unsafe impl CLInfo<cl_gl_texture_info> for cl_mem {
-    fn query(&self, q: cl_gl_texture_info, v: CLInfoValue) -> CLResult<CLInfoRes> {
+impl CLInfo<cl_gl_texture_info> for cl_mem {
+    fn query(&self, q: cl_gl_texture_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         let mem = MemBase::ref_from_raw(*self)?;
-        match *q {
-            CL_GL_MIPMAP_LEVEL => v.write::<cl_GLint>(0),
-            CL_GL_TEXTURE_TARGET => v.write::<cl_GLenum>(
+        Ok(match *q {
+            CL_GL_MIPMAP_LEVEL => cl_prop::<cl_GLint>(0),
+            CL_GL_TEXTURE_TARGET => cl_prop::<cl_GLenum>(
                 mem.gl_obj
                     .as_ref()
                     .ok_or(CL_INVALID_GL_OBJECT)?
                     .gl_object_target,
             ),
-            _ => Err(CL_INVALID_VALUE),
-        }
+            _ => return Err(CL_INVALID_VALUE),
+        })
     }
 }
 
