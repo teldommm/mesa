@@ -6,3 +6,6 @@
 /build
 .venv/
 *.patch
+/build-wrapper
+/.wrapper-cache
+/out

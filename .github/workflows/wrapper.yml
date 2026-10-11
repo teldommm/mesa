@@ -1,0 +1,115 @@
+name: Vulkan wrapper (aarch64, Mesa 25)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: meson buildtype
+        type: choice
+        options: [release, debugoptimized, debug]
+        default: release
+  push:
+    branches: ['**']
+    tags: ['wrapper-*']
+    paths:
+      - 'src/vulkan/**'
+      - 'src/util/**'
+      - 'src/android_stub/**'
+      - 'include/vulkan/**'
+      - 'subprojects/libadrenotools.wrap'
+      - 'meson.build'
+      - 'meson_options.txt'
+      - '.github/wrapper/**'
+      - '.github/workflows/wrapper.yml'
+  pull_request:
+    paths:
+      - 'src/vulkan/**'
+      - 'src/util/**'
+      - 'src/android_stub/**'
+      - '.github/wrapper/**'
+      - '.github/workflows/wrapper.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wrapper-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: r27c
+  # The runner image presets ANDROID_NDK_HOME; clear it so build.sh uses the
+  # pinned (and cached) NDK instead of whatever the image ships.
+  ANDROID_NDK_HOME: ''
+  BUILD_TYPE: ${{ inputs.build_type || 'release' }}
+  WORK_DIR: ${{ github.workspace }}/.wrapper-cache
+  OUT_DIR: ${{ github.workspace }}/out
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            ninja-build pkg-config bison flex glslang-tools zstd unzip
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python packages
+        run: pip install meson mako pyyaml packaging
+
+      - name: Cache NDK and Termux packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            .wrapper-cache/android-ndk-${{ env.NDK_VERSION }}
+            .wrapper-cache/debs
+          key: wrapper25-deps-${{ env.NDK_VERSION }}-${{ hashFiles('.github/wrapper/build.sh') }}
+
+      - name: Cache libadrenotools subproject
+        uses: actions/cache@v4
+        with:
+          path: subprojects/libadrenotools
+          key: adrenotools25-${{ hashFiles('subprojects/libadrenotools.wrap') }}
+
+      - name: Build
+        run: bash .github/wrapper/build.sh
+
+      - name: Short SHA
+        id: ver
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrapper-${{ env.BUILD_TYPE }}-${{ steps.ver.outputs.sha }}
+          path: |
+            out/wrapper.tzst
+            out/libvulkan_wrapper.so
+          if-no-files-found: error
+
+      - name: Upload unstripped library
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrapper-unstripped-${{ env.BUILD_TYPE }}-${{ steps.ver.outputs.sha }}
+          path: out/libvulkan_wrapper.so.unstripped
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/wrapper-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Mesa $(cat VERSION) Vulkan wrapper, ${BUILD_TYPE}, $(git rev-parse --short HEAD)" \
+            out/wrapper.tzst out/libvulkan_wrapper.so out/libvulkan_wrapper.so.unstripped
