@@ -605,9 +605,18 @@ wsi_swapchain_init(const struct wsi_device *wsi,
       goto fail;
 
 #ifdef HAVE_LIBDRM
-   result = wsi_drm_init_swapchain_implicit_sync(chain);
-   if (result != VK_SUCCESS)
-      goto fail;
+   /* AHardwareBuffer images have no dma-buf fd to attach a sync file to:
+    * wsi_signal_dma_buf_from_semaphore() would fail every present with
+    * VK_ERROR_FEATURE_NOT_PRESENT.  The X server side waits on the XSync
+    * fence instead. */
+#ifdef VK_WSI_ANDROID_AHB
+   if (chain->image_info.image_type != WSI_IMAGE_TYPE_ANDROID)
+#endif
+   {
+      result = wsi_drm_init_swapchain_implicit_sync(chain);
+      if (result != VK_SUCCESS)
+         goto fail;
+   }
 #endif
 
    if ((pCreateInfo->flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) ||
@@ -930,8 +939,8 @@ wsi_create_image(const struct wsi_swapchain *chain,
 
 #ifdef VK_WSI_ANDROID_AHB
    if (info->ahardware_buffer_desc != NULL &&
-       AHardwareBuffer_allocate(info->ahardware_buffer_desc,
-                                &image->ahardware_buffer) != 0) {
+       wsi_android_allocate_ahardware_buffer(info->ahardware_buffer_desc,
+                                             &image->ahardware_buffer) != 0) {
       mesa_loge("wsi: failed to allocate %ux%u AHardwareBuffer (format %u)",
                 info->ahardware_buffer_desc->width,
                 info->ahardware_buffer_desc->height,

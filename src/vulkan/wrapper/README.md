@@ -81,6 +81,10 @@ AHardwareBuffers:
 | `WRAPPER_EXTENSION_BLACKLIST` | comma separated device extensions to hide |
 | `WRAPPER_VK_VERSION`, `WRAPPER_DEVICE_NAME`, `WRAPPER_DEVICE_ID`, `WRAPPER_VENDOR_ID`, `WRAPPER_DRIVER_ID` | spoof device properties |
 | `WRAPPER_VMEM_MAX_SIZE` | override the size of memory heap 0 (MiB) |
+| `WRAPPER_MEMORY_BUDGET` | emulate `VK_EXT_memory_budget` when the driver lacks it (default on) |
+| `WRAPPER_MEMORY_BUDGET_RESERVE` | memory (MiB) kept out of the emulated budget for the system, default 1024 |
+| `WRAPPER_SUBGROUP_OPS` | `1`/`0`: report or hide the driver's subgroup operations (default: reported on Turnip, hidden elsewhere) |
+| `WRAPPER_AHB_UBWC` | Qualcomm driver: allocate swapchain buffers GPU-only with the UBWC usage bit (experimental) |
 | `WRAPPER_SAFE_CREATE_DEVICE` | retry vkCreateDevice with an empty pNext (default on) |
 | `WRAPPER_DEVICE_FAULT` | enable VK_EXT_device_fault reports on device loss |
 | `WRAPPER_LOG_LEVEL` | `info,error,shader,validation,apidump` |

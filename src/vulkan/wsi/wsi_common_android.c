@@ -25,6 +25,29 @@
  * AHardwareBuffer backed pixmaps. */
 #define WSI_AHB_DRM_MODIFIER 1255
 
+#define WSI_AHB_CPU_USAGE (AHARDWAREBUFFER_USAGE_CPU_READ_MASK | \
+                           AHARDWAREBUFFER_USAGE_CPU_WRITE_MASK)
+
+#define WSI_AHB_DEFAULT_USAGE (AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | \
+                               AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER | \
+                               AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY | \
+                               AHARDWAREBUFFER_USAGE_CPU_READ_RARELY | \
+                               AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN)
+
+int
+wsi_android_allocate_ahardware_buffer(const AHardwareBuffer_Desc *desc,
+                                      AHardwareBuffer **buffer)
+{
+   int ret = AHardwareBuffer_allocate(desc, buffer);
+   if (ret == 0 || desc->usage == WSI_AHB_DEFAULT_USAGE)
+      return ret;
+
+   /* The GPU-only usage was rejected, use the regular one. */
+   AHardwareBuffer_Desc fallback = *desc;
+   fallback.usage = WSI_AHB_DEFAULT_USAGE;
+   return AHardwareBuffer_allocate(&fallback, buffer);
+}
+
 enum wsi_swapchain_blit_type
 wsi_get_android_blit_type(const struct wsi_device *wsi,
                           const struct wsi_base_image_params *params,
@@ -305,12 +328,17 @@ wsi_configure_android_image(const struct wsi_swapchain *chain,
       .height = pCreateInfo->imageExtent.height,
       .layers = pCreateInfo->imageArrayLayers,
       .format = ahb_format,
-      .usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-               AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
-               AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
-               AHARDWAREBUFFER_USAGE_CPU_READ_RARELY |
-               AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+      .usage = WSI_AHB_DEFAULT_USAGE,
    };
+
+   /* The emulator samples the presented buffer on the GPU, CPU access isn't
+    * needed on that path; without it the allocator may compress the buffer.
+    * See wsi_android_allocate_ahardware_buffer() for the fallback. */
+   if (!blit && chain->wsi->ahb_gpu_only) {
+      info->ahardware_buffer_desc->usage =
+         (WSI_AHB_DEFAULT_USAGE & ~WSI_AHB_CPU_USAGE) |
+         chain->wsi->ahb_extra_usage;
+   }
 
    if (blit) {
       wsi_configure_image_blit_image(chain, info);

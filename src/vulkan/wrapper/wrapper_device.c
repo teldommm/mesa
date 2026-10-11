@@ -15,7 +15,12 @@
 #include "vk_util.h"
 #include "util/list.h"
 #include "util/simple_mtx.h"
+#include "util/u_atomic.h"
 #include "util/u_debug.h"
+
+/* Stack storage for the per-frame submits, bigger batches use the heap */
+#define WRAPPER_STACK_SUBMITS 8
+#define WRAPPER_STACK_COMMAND_BUFFERS 64
 
 const struct vk_device_extension_table wrapper_device_extensions =
 {
@@ -268,6 +273,15 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
       return vk_error(physical_device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
+   if (physical_device->emulate_memory_budget) {
+      device->budget_table = _mesa_hash_table_u64_create(NULL);
+      if (!device->budget_table) {
+         _mesa_hash_table_u64_destroy(device->memory_table);
+         vk_free2(&physical_device->instance->vk.alloc, pAllocator, device);
+         return vk_error(physical_device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+   }
+
    simple_mtx_init(&device->resource_mutex, mtx_plain);
    device->physical = physical_device;
 
@@ -283,6 +297,8 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
    if (result != VK_SUCCESS) {
       WRAPPER_LOG(error, "Failed to init Vulkan device, res %d", result);
       _mesa_hash_table_u64_destroy(device->memory_table);
+      if (device->budget_table)
+         _mesa_hash_table_u64_destroy(device->budget_table);
       simple_mtx_destroy(&device->resource_mutex);
       vk_free2(&physical_device->instance->vk.alloc, pAllocator, device);
       return vk_error(physical_device, result);
@@ -400,16 +416,20 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
    /* Without the placed-map emulation the memory entrypoints go straight to
     * the driver. */
    if (!physical_device->vk.supported_features.memoryMapPlaced) {
-      device->vk.dispatch_table.AllocateMemory =
-         wrapper_device_trampolines.AllocateMemory;
       device->vk.dispatch_table.MapMemory2 =
          wrapper_device_trampolines.MapMemory2;
       device->vk.dispatch_table.UnmapMemory =
          wrapper_device_trampolines.UnmapMemory;
       device->vk.dispatch_table.UnmapMemory2 =
          wrapper_device_trampolines.UnmapMemory2;
-      device->vk.dispatch_table.FreeMemory =
-         wrapper_device_trampolines.FreeMemory;
+
+      /* The emulated memory budget still needs to see every allocation. */
+      if (!device->budget_table) {
+         device->vk.dispatch_table.AllocateMemory =
+            wrapper_device_trampolines.AllocateMemory;
+         device->vk.dispatch_table.FreeMemory =
+            wrapper_device_trampolines.FreeMemory;
+      }
    }
 
    *pDevice = wrapper_device_to_handle(device);
@@ -531,23 +551,27 @@ wrapper_QueueSubmit(VkQueue _queue, uint32_t submitCount,
                     const VkSubmitInfo* pSubmits, VkFence fence)
 {
    VK_FROM_HANDLE(wrapper_queue, queue, _queue);
-   VkSubmitInfo *wrapper_submits = NULL;
-   VkCommandBuffer *command_buffers = NULL;
+   VkSubmitInfo stack_submits[WRAPPER_STACK_SUBMITS];
+   VkCommandBuffer stack_command_buffers[WRAPPER_STACK_COMMAND_BUFFERS];
+   VkSubmitInfo *wrapper_submits = stack_submits;
+   VkCommandBuffer *command_buffers = stack_command_buffers;
    uint32_t total_command_buffers = 0;
    VkResult result;
 
    for (uint32_t i = 0; i < submitCount; i++)
       total_command_buffers += pSubmits[i].commandBufferCount;
 
-   if (submitCount) {
+   /* Submits happen every frame, only go to the heap for big batches. */
+   if (submitCount > ARRAY_SIZE(stack_submits))
       wrapper_submits = malloc(sizeof(*wrapper_submits) * submitCount);
-      command_buffers = malloc(sizeof(*command_buffers) *
-                               MAX2(total_command_buffers, 1));
-      if (!wrapper_submits || !command_buffers) {
+   if (total_command_buffers > ARRAY_SIZE(stack_command_buffers))
+      command_buffers = malloc(sizeof(*command_buffers) * total_command_buffers);
+   if (!wrapper_submits || !command_buffers) {
+      if (wrapper_submits != stack_submits)
          free(wrapper_submits);
+      if (command_buffers != stack_command_buffers)
          free(command_buffers);
-         return vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
-      }
+      return vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    uint32_t cb = 0;
@@ -565,8 +589,10 @@ wrapper_QueueSubmit(VkQueue _queue, uint32_t submitCount,
    if (result == VK_ERROR_DEVICE_LOST)
       wrapper_log_device_fault(queue->device);
 
-   free(wrapper_submits);
-   free(command_buffers);
+   if (wrapper_submits != stack_submits)
+      free(wrapper_submits);
+   if (command_buffers != stack_command_buffers)
+      free(command_buffers);
 
    return result;
 }
@@ -691,17 +717,21 @@ wrapper_QueueSubmit2(VkQueue _queue, uint32_t submitCount,
    for (uint32_t i = 0; i < submitCount; i++)
       total_command_buffers += pSubmits[i].commandBufferInfoCount;
 
-   VkSubmitInfo2 *wrapper_submits = NULL;
-   VkCommandBufferSubmitInfo *command_buffers = NULL;
-   if (submitCount) {
+   VkSubmitInfo2 stack_submits[WRAPPER_STACK_SUBMITS];
+   VkCommandBufferSubmitInfo stack_command_buffers[WRAPPER_STACK_COMMAND_BUFFERS];
+   VkSubmitInfo2 *wrapper_submits = stack_submits;
+   VkCommandBufferSubmitInfo *command_buffers = stack_command_buffers;
+
+   if (submitCount > ARRAY_SIZE(stack_submits))
       wrapper_submits = malloc(sizeof(*wrapper_submits) * submitCount);
-      command_buffers = malloc(sizeof(*command_buffers) *
-                               MAX2(total_command_buffers, 1));
-      if (!wrapper_submits || !command_buffers) {
+   if (total_command_buffers > ARRAY_SIZE(stack_command_buffers))
+      command_buffers = malloc(sizeof(*command_buffers) * total_command_buffers);
+   if (!wrapper_submits || !command_buffers) {
+      if (wrapper_submits != stack_submits)
          free(wrapper_submits);
+      if (command_buffers != stack_command_buffers)
          free(command_buffers);
-         return vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
-      }
+      return vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    uint32_t cb = 0;
@@ -722,8 +752,10 @@ wrapper_QueueSubmit2(VkQueue _queue, uint32_t submitCount,
    if (result == VK_ERROR_DEVICE_LOST)
       wrapper_log_device_fault(queue->device);
 
-   free(wrapper_submits);
-   free(command_buffers);
+   if (wrapper_submits != stack_submits)
+      free(wrapper_submits);
+   if (command_buffers != stack_command_buffers)
+      free(command_buffers);
 
    return result;
 }
@@ -922,6 +954,16 @@ wrapper_DestroyDevice(VkDevice _device, const VkAllocationCallbacks* pAllocator)
    if (device->dispatch_handle != VK_NULL_HANDLE) {
       device->dispatch_table.DestroyDevice(device->dispatch_handle,
                                            pAllocator);
+   }
+
+   /* Allocations the application leaked go away with the device */
+   if (device->budget_table) {
+      hash_table_u64_foreach(device->budget_table, entry) {
+         const uintptr_t packed = (uintptr_t)entry.data;
+         p_atomic_add(&device->physical->heap_usage[packed & 0xf],
+                      -(int64_t)(packed >> 4));
+      }
+      _mesa_hash_table_u64_destroy(device->budget_table);
    }
 
    _mesa_hash_table_u64_destroy(device->memory_table);

@@ -46,6 +46,16 @@ struct wrapper_physical_device {
    struct vk_features base_supported_features;
    struct vk_device_extension_table base_supported_extensions;
    struct vk_physical_device_dispatch_table dispatch_table;
+
+   /* Report the driver's subgroup operations (WRAPPER_SUBGROUP_OPS) */
+   bool expose_subgroup_ops;
+
+   /* VK_EXT_memory_budget emulated for drivers without it (Adreno): usage is
+    * tracked per heap at vkAllocateMemory/vkFreeMemory time, the budget is
+    * derived from MemAvailable minus a reserve (WRAPPER_MEMORY_BUDGET*). */
+   bool emulate_memory_budget;
+   uint64_t memory_budget_reserve;
+   uint64_t heap_usage[VK_MAX_MEMORY_HEAPS];
 };
 
 VK_DEFINE_HANDLE_CASTS(wrapper_physical_device, vk.base, VkPhysicalDevice,
@@ -70,6 +80,9 @@ struct wrapper_device {
    struct list_head device_memory_list;
    /* VkDeviceMemory -> struct wrapper_device_memory (emulated placed maps) */
    struct hash_table_u64 *memory_table;
+   /* VkDeviceMemory -> size << 4 | heap index, for the emulated
+    * VK_EXT_memory_budget (NULL when not emulated) */
+   struct hash_table_u64 *budget_table;
    struct wrapper_physical_device *physical;
    struct vk_device_dispatch_table dispatch_table;
 

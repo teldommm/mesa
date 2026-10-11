@@ -169,6 +169,13 @@ struct wsi_device {
     * (MESA_VK_WSI_DEBUG=blit or WRAPPER_BLIT=1). */
    bool needs_blit;
 
+   /* AHardwareBuffer swapchain images (VK_WSI_ANDROID_AHB): allocate them
+    * without CPU usage and with ahb_extra_usage added, so the allocator may
+    * pick a compressed layout (UBWC with the Qualcomm gralloc).  Only used for
+    * directly rendered images, the blit path needs a linear buffer. */
+   bool ahb_gpu_only;
+   uint64_t ahb_extra_usage;
+
    /* Set to true if the implementation is ok with linear WSI images. */
    bool wants_linear;
 

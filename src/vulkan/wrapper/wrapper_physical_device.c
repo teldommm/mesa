@@ -1,8 +1,11 @@
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include <android/hardware_buffer.h>
 
 #include "wrapper_private.h"
 #include "wrapper_log.h"
@@ -15,7 +18,10 @@
 #include "vk_physical_device.h"
 #include "vk_util.h"
 #include "wsi_common.h"
+#include "util/macros.h"
 #include "util/os_misc.h"
+#include "util/os_time.h"
+#include "util/u_atomic.h"
 #include "util/u_debug.h"
 
 static uint32_t
@@ -169,6 +175,123 @@ wrapper_apply_qualcomm_workarounds(struct wrapper_physical_device *pdevice,
    pdevice->vk.supported_extensions.KHR_shader_float_controls = false;
 }
 
+/* Subgroup operations used to be hidden for every driver (that caps
+ * vkd3d-proton at shader model 5.1).  Turnip's are known good and exposed by
+ * default; the Qualcomm driver's need WRAPPER_SUBGROUP_OPS=1 until verified.
+ * WRAPPER_SUBGROUP_OPS=0/1 forces either way. */
+static void
+wrapper_setup_subgroup_ops(struct wrapper_physical_device *pdevice)
+{
+   const VkDriverId driver_id = pdevice->driver_properties.driverID;
+   bool expose = driver_id == VK_DRIVER_ID_MESA_TURNIP;
+
+   const char *env = getenv("WRAPPER_SUBGROUP_OPS");
+   if (env && *env)
+      expose = debug_get_bool_option("WRAPPER_SUBGROUP_OPS", expose);
+
+   pdevice->expose_subgroup_ops = expose;
+   WRAPPER_LOG(info, "%s subgroup operations",
+               expose ? "Exposing" : "Hiding");
+}
+
+static void
+wrapper_setup_memory_budget(struct wrapper_physical_device *pdevice)
+{
+   if (pdevice->base_supported_extensions.EXT_memory_budget)
+      return;
+
+   if (!debug_get_bool_option("WRAPPER_MEMORY_BUDGET", true))
+      return;
+
+   pdevice->emulate_memory_budget = true;
+   pdevice->memory_budget_reserve =
+      (uint64_t)debug_get_num_option("WRAPPER_MEMORY_BUDGET_RESERVE", 1024) *
+      1048576;
+   pdevice->vk.supported_extensions.EXT_memory_budget = true;
+   WRAPPER_LOG(info, "Emulating VK_EXT_memory_budget (reserve %" PRIu64 " MiB)",
+               pdevice->memory_budget_reserve / 1048576);
+}
+
+/* WRAPPER_AHB_UBWC=1: allocate the swapchain AHardwareBuffers for GPU access
+ * only and with GRALLOC_USAGE_PRIVATE_ALLOC_UBWC (vendor usage bit 0 of the
+ * Qualcomm gralloc), so they can be UBWC compressed. */
+static void
+wrapper_setup_ahb_usage(struct wrapper_physical_device *pdevice)
+{
+   if (!debug_get_bool_option("WRAPPER_AHB_UBWC", false))
+      return;
+
+   if (pdevice->driver_properties.driverID != VK_DRIVER_ID_QUALCOMM_PROPRIETARY) {
+      WRAPPER_LOG(info, "WRAPPER_AHB_UBWC is only supported on the Qualcomm driver");
+      return;
+   }
+
+   pdevice->wsi_device.ahb_gpu_only = true;
+   pdevice->wsi_device.ahb_extra_usage = AHARDWAREBUFFER_USAGE_VENDOR_0;
+   WRAPPER_LOG(info, "Allocating UBWC swapchain buffers");
+}
+
+/* Bytes the kernel considers available, cached for 100 ms. */
+static uint64_t
+wrapper_get_mem_available(void)
+{
+   static uint64_t cached_value;
+   static int64_t cached_time;
+
+   const int64_t now = os_time_get_nano();
+   if (cached_time && now - p_atomic_read(&cached_time) < 100000000ll)
+      return p_atomic_read(&cached_value);
+
+   uint64_t value = 0;
+   int fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+   if (fd >= 0) {
+      char buf[1024];
+      ssize_t len = read(fd, buf, sizeof(buf) - 1);
+      close(fd);
+      if (len > 0) {
+         buf[len] = '\0';
+         const char *line = strstr(buf, "MemAvailable:");
+         if (line)
+            value = strtoull(line + strlen("MemAvailable:"), NULL, 10) * 1024;
+      }
+   }
+
+   p_atomic_set(&cached_value, value);
+   p_atomic_set(&cached_time, now);
+   return value;
+}
+
+static void
+wrapper_fill_memory_budget(struct wrapper_physical_device *pdevice,
+                           const VkPhysicalDeviceMemoryProperties *props,
+                           VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget)
+{
+   const uint64_t available = wrapper_get_mem_available();
+   const uint64_t spare = available > pdevice->memory_budget_reserve ?
+      available - pdevice->memory_budget_reserve : 0;
+
+   for (uint32_t i = 0; i < VK_MAX_MEMORY_HEAPS; i++) {
+      if (i >= props->memoryHeapCount) {
+         budget->heapUsage[i] = 0;
+         budget->heapBudget[i] = 0;
+         continue;
+      }
+
+      const uint64_t size = props->memoryHeaps[i].size;
+      const uint64_t usage = p_atomic_read(&pdevice->heap_usage[i]);
+
+      /* Without /proc/meminfo, report the whole heap like the driver would
+       * implicitly do. */
+      uint64_t heap_budget = available ? usage + spare : size;
+      heap_budget = MIN2(heap_budget, size);
+      if (heap_budget == 0)
+         heap_budget = MIN2(size, 64ull * 1048576);
+
+      budget->heapUsage[i] = usage;
+      budget->heapBudget[i] = heap_budget;
+   }
+}
+
 static VkResult
 wrapper_physical_device_init(struct wrapper_instance *instance,
                              VkPhysicalDevice dispatch_handle,
@@ -314,6 +437,10 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    if (pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
       wrapper_apply_qualcomm_workarounds(pdevice, app_name, engine_name,
                                          engine_version);
+
+   wrapper_setup_subgroup_ops(pdevice);
+   wrapper_setup_memory_budget(pdevice);
+   wrapper_setup_ahb_usage(pdevice);
 
    if (wrapper_dmaheap_cached == -1)
       wrapper_dmaheap_cached = debug_get_bool_option("WRAPPER_DMAHEAP_CACHED", false);
@@ -521,6 +648,9 @@ wrapper_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES: {
+         if (pdevice->expose_subgroup_ops)
+            break;
+
          VkPhysicalDeviceVulkan11Properties *vk11_prop = (void *)prop;
          vk11_prop->subgroupSupportedOperations = 0;
          vk11_prop->subgroupSupportedStages = 0;
@@ -560,6 +690,9 @@ wrapper_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
+         if (pdevice->expose_subgroup_ops)
+            break;
+
          VkPhysicalDeviceSubgroupProperties *subgroup_prop = (void *)prop;
          subgroup_prop->supportedOperations = 0;
          subgroup_prop->supportedStages = 0;
@@ -600,9 +733,32 @@ wrapper_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
                                            VkPhysicalDeviceMemoryProperties2 *pMemoryProperties)
 {
    VK_FROM_HANDLE(wrapper_physical_device, pdevice, physicalDevice);
+   VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget = NULL;
+   VkBaseOutStructure *budget_prev = NULL;
+
+   /* The driver doesn't know the emulated budget struct, hide it. */
+   if (pdevice->emulate_memory_budget) {
+      VkBaseOutStructure *prev = (VkBaseOutStructure *)pMemoryProperties;
+      vk_foreach_struct(ext, pMemoryProperties->pNext) {
+         if (ext->sType ==
+             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT) {
+            budget = (void *)ext;
+            budget_prev = prev;
+            prev->pNext = ext->pNext;
+            break;
+         }
+         prev = ext;
+      }
+   }
 
    pdevice->dispatch_table.GetPhysicalDeviceMemoryProperties2(
       pdevice->dispatch_handle, pMemoryProperties);
 
    wrapper_patch_memory_heap_size(&pMemoryProperties->memoryProperties);
+
+   if (budget) {
+      budget_prev->pNext = (VkBaseOutStructure *)budget;
+      wrapper_fill_memory_budget(pdevice, &pMemoryProperties->memoryProperties,
+                                 budget);
+   }
 }

@@ -632,6 +632,10 @@ wsi_get_android_blit_type(const struct wsi_device *wsi,
                           const struct wsi_base_image_params *params,
                           VkDevice device);
 
+int
+wsi_android_allocate_ahardware_buffer(const struct AHardwareBuffer_Desc *desc,
+                                      struct AHardwareBuffer **buffer);
+
 VkResult
 wsi_configure_android_image(const struct wsi_swapchain *chain,
                             const VkSwapchainCreateInfoKHR *pCreateInfo,
