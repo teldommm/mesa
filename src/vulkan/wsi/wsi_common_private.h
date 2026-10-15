@@ -42,7 +42,6 @@ struct wsi_swapchain;
 #define WSI_DEBUG_DXGI        (1ull << 4)
 #define WSI_DEBUG_NOWLTS      (1ull << 5)
 #define WSI_DEBUG_BLIT        (1ull << 8)
-#define WSI_DEBUG_FORCESYNC   (1ull << 9)
 
 extern uint64_t WSI_DEBUG;
 

@@ -72,7 +72,7 @@ AHardwareBuffers:
 | `ADRENOTOOLS_DRIVER_PATH`, `ADRENOTOOLS_DRIVER_NAME`, `ADRENOTOOLS_HOOKS_PATH`, `ADRENOTOOLS_REDIRECT_DIR` | custom driver loading |
 | `WRAPPER_SURFACE_FORMAT` | `bgra8` (default) or `rgba8` |
 | `WRAPPER_BLIT` / `MESA_VK_WSI_DEBUG=blit` | render to an intermediate image and blit |
-| `MESA_VK_WSI_DEBUG=forcesync` | wait for the image fence before each present |
+| `MESA_VK_WSI_NO_RENDER_WAIT=1` | X11 WSI: don't wait for the render fence in the present thread before PresentPixmap (upstream behaviour; frames may reach the compositor unfinished) |
 | `WRAPPER_MAX_IMAGE_COUNT` | pin the swapchain length |
 | `WRAPPER_DISABLE_PLACED` | don't emulate VK_EXT_map_memory_placed |
 | `WRAPPER_RESOURCE_TYPE` | `auto`, `dmabuf`, `ahb`, `opaque`: backing of placed allocations |

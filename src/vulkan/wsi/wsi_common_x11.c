@@ -2077,6 +2077,33 @@ x11_needs_wait_for_fences(const struct wsi_device *wsi_device,
    }
 }
 
+/**
+ * WinLite (Android): the X server here is a Vulkan compositor that imports our
+ * image as an AHardwareBuffer. There is no implicit sync between our queue and
+ * the compositor, so an image handed over with PresentPixmap must already be
+ * fully rendered, in every present mode - not just MAILBOX. Otherwise the
+ * compositor can sample a frame that is still being drawn (garbage/tearing),
+ * or show it a refresh later than it believes it did.
+ *
+ * The wait happens in the WSI present thread, so the application thread keeps
+ * recording/submitting the next frame (this replaces the old WSI_DEBUG=forcesync,
+ * which blocked vkQueuePresentKHR itself). It does not change image counts.
+ *
+ * MESA_VK_WSI_NO_RENDER_WAIT=1 restores the upstream behaviour.
+ */
+static bool
+x11_needs_render_wait(const struct wsi_device *wsi_device,
+                      struct wsi_x11_connection *wsi_conn,
+                      VkPresentModeKHR present_mode)
+{
+   static int disabled = -1;
+   if (disabled < 0)
+      disabled = debug_get_bool_option("MESA_VK_WSI_NO_RENDER_WAIT", false) ? 1 : 0;
+   if (!disabled)
+      return true;
+   return x11_needs_wait_for_fences(wsi_device, wsi_conn, present_mode);
+}
+
 static bool
 x11_swapchain_present_timing_is_out_of_order_completion(
       const struct x11_swapchain *chain,
@@ -2606,7 +2633,7 @@ x11_manage_present_queue(void *state)
 
       /* Not necessary to block when we have explicit sync */
       bool need_fence_wait =
-            x11_needs_wait_for_fences(chain->base.wsi, wsi_conn, present_mode) &&
+            x11_needs_render_wait(chain->base.wsi, wsi_conn, present_mode) &&
             !chain->base.image_info.explicit_sync;
 
       bool need_timing_fence_wait = x11_swapchain_present_timing_is_out_of_order_completion(

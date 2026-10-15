@@ -161,9 +161,6 @@ struct wsi_device {
 
    bool sw;
 
-   /* Wait for the swapchain image fence before each present
-    * (MESA_VK_WSI_DEBUG=forcesync). */
-   bool forcesync;
 
    /* Render into a regular image and blit into the presented one
     * (MESA_VK_WSI_DEBUG=blit or WRAPPER_BLIT=1). */
