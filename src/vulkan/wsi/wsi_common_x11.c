@@ -1277,7 +1277,11 @@ x11_acquire_next_image_poll_has_forward_progress(struct x11_swapchain *chain)
    unsigned application_owned_images = chain->present_poll_acquire_count - chain->present_queue_push_count;
    assert(application_owned_images <= chain->base.image_count);
 
-   const unsigned minimum_images = 2;
+   /* WinLite: IMMEDIATE now goes through the present thread (render wait), and a
+    * swapchain may be created with a single image (WRAPPER_MAX_IMAGE_COUNT=1).
+    * Requiring two images in flight would then never be satisfied and the first
+    * vkAcquireNextImageKHR that finds the image busy would block forever. */
+   const unsigned minimum_images = MIN2(2, chain->base.image_count);
 
    /* To observe an IDLE event, we must have submitted at least 2 present requests to X.
     * The first present may replace another swapchain's image, but it cannot IDLE one of our own.
@@ -1744,6 +1748,35 @@ x11_needs_wait_for_fences(const struct wsi_device *wsi_device,
 }
 
 /**
+ * WinLite (Android): the X server here is a Vulkan compositor that imports our
+ * image as an AHardwareBuffer. There is no implicit sync between our queue and
+ * the compositor, so an image handed over with PresentPixmap must already be
+ * fully rendered, in every present mode - not just MAILBOX. Otherwise the
+ * compositor can sample a frame that is still being drawn (garbage/tearing),
+ * or show it a refresh later than it believes it did.
+ *
+ * The wait happens in the WSI present thread, so the application thread keeps
+ * recording/submitting the next frame (this replaces the old WSI_DEBUG=forcesync,
+ * which blocked vkQueuePresentKHR itself). It does not change image counts.
+ *
+ * MESA_VK_WSI_NO_RENDER_WAIT=1 restores the upstream behaviour.
+ */
+static bool
+x11_needs_render_wait(const struct wsi_device *wsi_device,
+                      struct wsi_x11_connection *wsi_conn,
+                      VkPresentModeKHR present_mode)
+{
+   static int disabled = -1;
+   if (disabled < 0)
+      disabled = debug_get_bool_option("MESA_VK_WSI_NO_RENDER_WAIT", false) ? 1 : 0;
+   if (WSI_DEBUG & WSI_DEBUG_NOSYNC)
+      return false;
+   if (!disabled)
+      return true;
+   return x11_needs_wait_for_fences(wsi_device, wsi_conn, present_mode);
+}
+
+/**
  * The number of images that are not owned by X11:
  *  (1) in the ownership of the app, or
  *  (2) app to take ownership through an acquire, or
@@ -1804,8 +1837,8 @@ x11_manage_fifo_queues(void *state)
       /* Waiting for the GPU work to finish at this point in time is required in certain usage
        * scenarios. Otherwise we wait as usual in wsi_common_queue_present.
        */
-      if (x11_needs_wait_for_fences(chain->base.wsi, wsi_conn,
-                                    chain->base.present_mode)) {
+      if (x11_needs_render_wait(chain->base.wsi, wsi_conn,
+                                chain->base.present_mode)) {
          MESA_TRACE_SCOPE("wait fence");
          result = chain->base.wsi->WaitForFences(chain->base.device, 1,
                                         &chain->base.fences[image_index],
@@ -2623,8 +2656,8 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
     */
    if ((chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR ||
         chain->base.present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ||
-        x11_needs_wait_for_fences(wsi_device, wsi_conn,
-                                  chain->base.present_mode)) &&
+        x11_needs_render_wait(wsi_device, wsi_conn,
+                              chain->base.present_mode)) &&
        !wsi_device->sw) {
       chain->has_present_queue = true;
 
