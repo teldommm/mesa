@@ -181,7 +181,6 @@ struct wsi_device {
    } win32;
 
    bool sw;
-   bool forcesync;
 
    bool needs_blit;
 

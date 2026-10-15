@@ -62,7 +62,6 @@ static const struct debug_control debug_control[] = {
    { "dxgi",         WSI_DEBUG_DXGI },
    { "nowlts",       WSI_DEBUG_NOWLTS },
    { "blit",         WSI_DEBUG_BLIT },
-   { "forcesync",    WSI_DEBUG_FORCESYNC },
    { NULL, },
 };
 
@@ -92,7 +91,6 @@ wsi_device_init(struct wsi_device *wsi,
    wsi->pdevice = pdevice;
    wsi->supports_scanout = true;
    wsi->sw = device_options->sw_device || (WSI_DEBUG & WSI_DEBUG_SW);
-   wsi->forcesync = (WSI_DEBUG & WSI_DEBUG_FORCESYNC) != 0;
    wsi->wants_linear = (WSI_DEBUG & WSI_DEBUG_LINEAR) != 0;
    wsi->x11.extra_xwayland_image = device_options->extra_xwayland_image;
    wsi->wayland.disable_timestamps = (WSI_DEBUG & WSI_DEBUG_NOWLTS) != 0;
@@ -1626,7 +1624,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
 #endif
       }
 
-      if (wsi->sw || wsi->forcesync)
+      if (wsi->sw)
 	      wsi->WaitForFences(device, 1, &swapchain->fences[image_index],
 				 true, ~0ull);
 
