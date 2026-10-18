@@ -119,7 +119,12 @@ AHardwareBuffers:
 | `WRAPPER_DMAHEAP_CACHED` | use the cached dma-buf heap |
 | `WRAPPER_DISABLE_PRESENT_WAIT` | hide VK_KHR_present_wait(2) |
 | `WRAPPER_EXTENSION_BLACKLIST` | comma separated device extensions to hide |
-| `WRAPPER_VK_VERSION`, `WRAPPER_DEVICE_NAME`, `WRAPPER_DEVICE_ID`, `WRAPPER_VENDOR_ID`, `WRAPPER_DRIVER_ID` | spoof device properties |
+| `WRAPPER_VENDOR_ID`, `WRAPPER_DEVICE_ID` | spoof vendorID / deviceID (decimal or `0x` hex; unset/0 = real value) |
+| `WRAPPER_DEVICE_NAME` | spoof deviceName as is (default: `Wrapper(<real name>)`) |
+| `WRAPPER_DRIVER_ID` | spoof `VkDriverId` (e.g. `4` = NVIDIA_PROPRIETARY) in VkPhysicalDeviceDriverProperties and VkPhysicalDeviceVulkan12Properties. Note: DXVK / vkd3d-proton select driver specific paths from it |
+| `WRAPPER_DRIVER_NAME`, `WRAPPER_DRIVER_INFO` | spoof driverName / driverInfo in both structs (default: `Wrapper driver` / the driver version) |
+| `WRAPPER_DRIVER_VERSION` | spoof driverVersion: a raw number, or a dotted version encoded for the reported vendor (NVIDIA 10.8.8.6 bits, `VK_MAKE_VERSION` layout otherwise); a dotted value is also the default driverInfo |
+| `WRAPPER_VK_VERSION` | spoof apiVersion (`1.3.280`) |
 | `WRAPPER_VMEM_MAX_SIZE` | override the size of memory heap 0 (MiB) |
 | `WRAPPER_MEMORY_BUDGET` | emulate `VK_EXT_memory_budget` when the driver lacks it (default on) |
 | `WRAPPER_MEMORY_BUDGET_RESERVE` | memory (MiB) kept out of the emulated budget for the system, default 1024 |

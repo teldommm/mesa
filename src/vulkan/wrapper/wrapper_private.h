@@ -66,8 +66,32 @@ wrapper_bcn_format_bit(VkFormat format)
       1u << (format - WRAPPER_BCN_FIRST_FORMAT) : 0;
 }
 
+/* Device identity reported to the application (WRAPPER_VENDOR_ID,
+ * WRAPPER_DEVICE_ID, WRAPPER_DEVICE_NAME, WRAPPER_DRIVER_ID,
+ * WRAPPER_DRIVER_NAME, WRAPPER_DRIVER_INFO, WRAPPER_DRIVER_VERSION,
+ * WRAPPER_VK_VERSION), resolved once per physical device by
+ * wrapper_setup_identity().  Only what vkGetPhysicalDeviceProperties(2)
+ * returns is changed: the wrapper's own decisions keep using properties2 /
+ * driver_properties, the values of the real driver. */
+struct wrapper_identity {
+   /* 0: not spoofed */
+   uint32_t vendor_id;
+   uint32_t device_id;
+   uint32_t driver_version;
+   uint32_t api_version;
+   VkDriverId driver_id;
+
+   /* Always valid: the spoofed strings, or the wrapper defaults
+    * ("Wrapper(<real name>)", "Wrapper driver", the driver version). */
+   char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+   char driver_name[VK_MAX_DRIVER_NAME_SIZE];
+   char driver_info[VK_MAX_DRIVER_INFO_SIZE];
+};
+
 struct wrapper_physical_device {
    struct vk_physical_device vk;
+
+   struct wrapper_identity identity;
 
    int dma_heap_fd;
    const char *resource_type;
