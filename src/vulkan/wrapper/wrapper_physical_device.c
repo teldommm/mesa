@@ -173,6 +173,43 @@ wrapper_apply_qualcomm_workarounds(struct wrapper_physical_device *pdevice,
    pdevice->vk.supported_extensions.KHR_shader_float_controls = false;
 }
 
+/* Workarounds for the proprietary ARM (Mali, MediaTek Dimensity, ...) driver,
+ * ported from the Mesa 25 based wrapper.  The faked features are masked with
+ * what the driver supports in wrapper_CreateDevice(), the SPIR-V side is in
+ * wrapper_CreateShaderModule(). */
+static void
+wrapper_apply_arm_workarounds(struct wrapper_physical_device *pdevice,
+                              const char *engine_name)
+{
+   struct vk_features *supported_features = &pdevice->vk.supported_features;
+
+   if (engine_is(engine_name, "DXVK")) {
+      /* DXVK 2.x requires VK_EXT_robustness2.  Only the extension is
+       * advertised (as in the Mesa 25 wrapper), the features stay the
+       * driver's; the feature struct is dropped from vkCreateDevice when the
+       * driver lacks the extension. */
+      if (!pdevice->vk.supported_extensions.EXT_robustness2 &&
+          !pdevice->vk.supported_extensions.KHR_robustness2) {
+         WRAPPER_LOG(info, "Faking VK_EXT_robustness2");
+         pdevice->vk.supported_extensions.EXT_robustness2 = true;
+      }
+
+      /* Needed for D3D11 feature level 11.0 */
+      WRAPPER_LOG(info, "Faking dualSrcBlend feature");
+      supported_features->dualSrcBlend = true;
+      WRAPPER_LOG(info, "Faking multiDrawIndirect feature");
+      supported_features->multiDrawIndirect = true;
+   }
+
+   WRAPPER_LOG(info, "Disabling VK_EXT/KHR_calibrated_timestamps");
+   pdevice->vk.supported_extensions.EXT_calibrated_timestamps = false;
+   pdevice->vk.supported_extensions.KHR_calibrated_timestamps = false;
+
+   WRAPPER_LOG(info, "Disabling VK_EXT_extended_dynamic_state and VK_EXT_extended_dynamic_state2");
+   pdevice->vk.supported_extensions.EXT_extended_dynamic_state = false;
+   pdevice->vk.supported_extensions.EXT_extended_dynamic_state2 = false;
+}
+
 /* Subgroup operations used to be hidden for every driver (that caps
  * vkd3d-proton at shader model 5.1).  They are reported on Adreno, both with
  * Turnip and the Qualcomm driver, and still hidden for other GPUs.
@@ -416,6 +453,11 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    if (pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
       wrapper_apply_qualcomm_workarounds(pdevice, app_name, engine_name,
                                          engine_version);
+   else if (pdevice->driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY)
+      wrapper_apply_arm_workarounds(pdevice, engine_name);
+
+   /* BCn formats (WRAPPER_EMULATE_BCN, see wrapper_bcn.c) */
+   wrapper_bcn_setup_physical_device(pdevice);
 
    wrapper_setup_subgroup_ops(pdevice);
    wrapper_setup_memory_budget(pdevice);
@@ -435,12 +477,19 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    pdevice->resource_type = wrapper_resource_type ? wrapper_resource_type : "auto";
 
    /* Channel order the emulator's X server consumes, see
-    * get_sorted_vk_formats() in wsi_common_x11.c. */
-   pdevice->wsi_device.force_bgra8_unorm_first = true;
+    * get_sorted_vk_formats() in wsi_common_x11.c.  RGBA8 by default on Mali,
+    * BGRA8 elsewhere; WRAPPER_SURFACE_FORMAT=rgba8/bgra8 overrides. */
+   const bool rgba_default =
+      pdevice->driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+   pdevice->wsi_device.force_rgba8_unorm_first = rgba_default;
+   pdevice->wsi_device.force_bgra8_unorm_first = !rgba_default;
    const char *wrapper_surface_format = getenv("WRAPPER_SURFACE_FORMAT");
    if (wrapper_surface_format && !strcmp(wrapper_surface_format, "rgba8")) {
       pdevice->wsi_device.force_rgba8_unorm_first = true;
       pdevice->wsi_device.force_bgra8_unorm_first = false;
+   } else if (wrapper_surface_format && !strcmp(wrapper_surface_format, "bgra8")) {
+      pdevice->wsi_device.force_rgba8_unorm_first = false;
+      pdevice->wsi_device.force_bgra8_unorm_first = true;
    }
 
    /* Last, so the extensions the wrapper adds or emulates above (placed

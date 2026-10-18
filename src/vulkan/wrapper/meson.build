@@ -63,6 +63,8 @@ adrenotools_dep = declare_dependency(
 
 wrapper_files = files(
   'graphicsenv_hook.cpp',
+  'spirv_patcher.cpp',
+  'wrapper_bcn.c',
   'wrapper_device.c',
   'wrapper_device_memory.c',
   'wrapper_instance.c',

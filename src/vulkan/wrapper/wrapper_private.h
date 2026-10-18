@@ -31,6 +31,41 @@ struct wrapper_instance {
 VK_DEFINE_HANDLE_CASTS(wrapper_instance, vk.base, VkInstance,
                        VK_OBJECT_TYPE_INSTANCE)
 
+/* BCn texture support for drivers that lack it (WRAPPER_EMULATE_BCN):
+ *
+ *  0  off
+ *  1  report the BCn formats as supported, the driver decodes them itself
+ *     (hardware that can, behind a driver that doesn't say so)
+ *  2  decompress every BCn format on the CPU
+ *  3  auto (default): per format, native when the driver samples it,
+ *     decompressed otherwise; off on Turnip; Qualcomm >= 512.530 reports
+ *     the formats when the driver hides textureCompressionBC.
+ */
+enum wrapper_bcn_mode {
+   WRAPPER_BCN_OFF = 0,
+   WRAPPER_BCN_FAKE = 1,
+   WRAPPER_BCN_FULL = 2,
+   WRAPPER_BCN_AUTO = 3,
+};
+
+/* VK_FORMAT_BC1_RGB_UNORM_BLOCK .. VK_FORMAT_BC7_SRGB_BLOCK are contiguous */
+#define WRAPPER_BCN_FIRST_FORMAT VK_FORMAT_BC1_RGB_UNORM_BLOCK
+#define WRAPPER_BCN_LAST_FORMAT  VK_FORMAT_BC7_SRGB_BLOCK
+
+static inline bool
+wrapper_is_bcn_format(VkFormat format)
+{
+   return format >= WRAPPER_BCN_FIRST_FORMAT &&
+          format <= WRAPPER_BCN_LAST_FORMAT;
+}
+
+static inline uint32_t
+wrapper_bcn_format_bit(VkFormat format)
+{
+   return wrapper_is_bcn_format(format) ?
+      1u << (format - WRAPPER_BCN_FIRST_FORMAT) : 0;
+}
+
 struct wrapper_physical_device {
    struct vk_physical_device vk;
 
@@ -56,7 +91,21 @@ struct wrapper_physical_device {
    bool emulate_memory_budget;
    uint64_t memory_budget_reserve;
    uint64_t heap_usage[VK_MAX_MEMORY_HEAPS];
+
+   /* Resolved WRAPPER_EMULATE_BCN mode and, per BCn format
+    * (wrapper_bcn_format_bit()), the formats whose properties the wrapper
+    * reports and the ones it decompresses on the CPU. */
+   enum wrapper_bcn_mode bcn_mode;
+   uint32_t bcn_fake_mask;
+   uint32_t bcn_emulate_mask;
 };
+
+static inline bool
+wrapper_bcn_is_emulated(const struct wrapper_physical_device *pdevice,
+                        VkFormat format)
+{
+   return (pdevice->bcn_emulate_mask & wrapper_bcn_format_bit(format)) != 0;
+}
 
 VK_DEFINE_HANDLE_CASTS(wrapper_physical_device, vk.base, VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
@@ -91,6 +140,20 @@ struct wrapper_device {
    bool has_queue_submit2;
    /* VK_EXT_device_fault was enabled on the driver's device */
    bool device_fault_enabled;
+
+   /* CPU BCn decompression (physical->bcn_emulate_mask != 0), see
+    * wrapper_bcn.c.  All tables are protected by resource_mutex. */
+   bool bcn_active;
+   /* VkImage -> struct wrapper_bcn_image (emulated BCn images only) */
+   struct hash_table_u64 *bcn_image_table;
+   /* VkBuffer -> struct wrapper_bcn_buffer (memory binding) */
+   struct hash_table_u64 *bcn_buffer_table;
+   /* VkDeviceMemory -> host address of offset 0, for memory the
+    * application currently has mapped */
+   struct hash_table_u64 *map_table;
+   /* Command buffers holding staging buffers (wrapper_command_buffer::
+    * staging_link) */
+   struct list_head bcn_staging_cmd_list;
 };
 
 VK_DEFINE_HANDLE_CASTS(wrapper_device, vk.base, VkDevice,
@@ -103,6 +166,13 @@ struct wrapper_command_buffer {
    struct list_head link;
    VkCommandPool pool;
    VkCommandBuffer dispatch_handle;
+
+   /* Staging buffers with decompressed BCn data recorded into this command
+    * buffer (struct wrapper_bcn_staging); released when the command buffer
+    * is reset, begun again or freed. */
+   struct list_head staging_list;
+   struct list_head staging_link;
+   bool on_staging_list;
 };
 
 VK_DEFINE_HANDLE_CASTS(wrapper_command_buffer, vk.base, VkCommandBuffer,
@@ -130,5 +200,26 @@ wrapper_setup_device_features(struct wrapper_physical_device *physical_device);
 
 void
 wrapper_device_memory_destroy(struct wrapper_device_memory *mem);
+
+/* wrapper_bcn.c */
+void
+wrapper_bcn_setup_physical_device(struct wrapper_physical_device *pdevice);
+
+VkResult
+wrapper_bcn_device_init(struct wrapper_device *device);
+
+void
+wrapper_bcn_device_finish(struct wrapper_device *device);
+
+/* Called with resource_mutex held */
+void
+wrapper_bcn_release_staging(struct wrapper_command_buffer *wcb);
+
+void
+wrapper_bcn_track_map(struct wrapper_device *device, VkDeviceMemory memory,
+                      VkDeviceSize offset, void *ptr);
+
+void
+wrapper_bcn_untrack_map(struct wrapper_device *device, VkDeviceMemory memory);
 
 #endif

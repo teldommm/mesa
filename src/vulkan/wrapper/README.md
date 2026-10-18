@@ -5,8 +5,48 @@ system one, or a custom one through libadrenotools) and adds the common Mesa
 WSI on top, so X11 surfaces work in the emulator's X server.
 
 Ported from the 25.0-based mesa-wrapper / GameNative wrapper to Mesa 26.2.4,
-keeping only the generic parts and the Adreno (Qualcomm proprietary driver)
-workarounds.
+with all its vendor workarounds:
+
+* Adreno (Qualcomm proprietary driver): line rasterization hidden and
+  VK_KHR_pipeline_library faked for DXVK, shader float controls hidden,
+  globalPriorityQuery off for clvk on 512.744+;
+* Mali / MediaTek (ARM proprietary driver): VK_EXT_robustness2,
+  dualSrcBlend and multiDrawIndirect faked for DXVK, calibrated timestamps
+  and extended dynamic state 1/2 hidden, SPIR-V patches
+  (`spirv_patcher.cpp`), RGBA8 surfaces by default;
+* BCn textures for drivers without them (`wrapper_bcn.c`): old Adreno
+  drivers (< 512.530), Mali, PowerVR, and Xclipse (Exynos) for the formats its
+  driver lacks;
+* PowerVR: swapchain AHardwareBuffers with CPU_READ_RARELY.
+
+## BCn emulation
+
+`WRAPPER_EMULATE_BCN` selects the mode:
+
+| Value | Mode |
+|---|---|
+| `0` | off |
+| `1` | report the BCn formats as supported, the driver decodes them (hardware that can, driver that doesn't say so) |
+| `2` | decompress every BCn format on the CPU |
+| `3` | auto (default): per format, native when the driver samples it, decompressed on the CPU otherwise; off on Turnip; mode 1 on the Qualcomm driver >= 512.530 when it hides textureCompressionBC, off when it has it |
+
+Emulated images are created with an uncompressed format (RGBA8 for BC1-3/7,
+R8 / RG8 for BC4 / BC5, RGBA16F for BC6H), their format properties are the
+driver's for that format.  vkCmdCopyBufferToImage(2) decompresses the source
+data into a staging buffer owned by the command buffer (released when it is
+begun again, reset or freed).  The data is read when the copy is recorded, so
+it must already be in the buffer then.  VK_EXT_host_image_copy is hidden while
+formats are emulated.
+
+## SPIR-V patches
+
+On Mali: OpConstantComposite of spec-constant bool vectors becomes
+OpSpecConstantComposite (`WRAPPER_NO_PATCH_OPCONSTCOMP=1` disables) and the
+ClipDistance / CullDistance builtins are removed
+(`WRAPPER_NO_REMOVE_CLIP_DISTANCE=1` disables).  On every driver the builtins
+are also removed when the driver lacks shaderClipDistance / shaderCullDistance,
+which the wrapper advertises regardless.  Only modules created with
+vkCreateShaderModule are patched (not ones chained into pipeline stages).
 
 ## Build
 
@@ -70,7 +110,7 @@ AHardwareBuffers:
 | Variable | Meaning |
 |---|---|
 | `ADRENOTOOLS_DRIVER_PATH`, `ADRENOTOOLS_DRIVER_NAME`, `ADRENOTOOLS_HOOKS_PATH`, `ADRENOTOOLS_REDIRECT_DIR` | custom driver loading |
-| `WRAPPER_SURFACE_FORMAT` | `bgra8` (default) or `rgba8` |
+| `WRAPPER_SURFACE_FORMAT` | `bgra8` or `rgba8` (default: `rgba8` on Mali, `bgra8` elsewhere) |
 | `WRAPPER_BLIT` / `MESA_VK_WSI_DEBUG=blit` | render to an intermediate image and blit |
 | `MESA_VK_WSI_NO_RENDER_WAIT=1` | X11 WSI: don't wait for the render fence in the present thread before PresentPixmap (upstream behaviour; frames may reach the compositor unfinished) |
 | `WRAPPER_MAX_IMAGE_COUNT` | pin the swapchain length |
@@ -86,6 +126,13 @@ AHardwareBuffers:
 | `WRAPPER_SUBGROUP_OPS` | `1`/`0`: report or hide the driver's subgroup operations (default: reported on Adreno — Turnip and the Qualcomm driver — hidden elsewhere) |
 | `WRAPPER_SAFE_CREATE_DEVICE` | retry vkCreateDevice with an empty pNext (default on) |
 | `WRAPPER_DEVICE_FAULT` | enable VK_EXT_device_fault reports on device loss |
-| `WRAPPER_LOG_LEVEL` | `info,error,shader,validation,apidump` |
+| `WRAPPER_EMULATE_BCN` | BCn mode, see above (default 3) |
+| `WRAPPER_USE_BCN_CACHE` | keep decompressed textures in `WRAPPER_CACHE_PATH` |
+| `WRAPPER_CACHE_PATH` | directory of the BCn cache |
+| `WRAPPER_NO_BCN_THREAD` | decompress on the calling thread only |
+| `WRAPPER_MARK_BCN` | fill emulated textures with a per format color (debug) |
+| `WRAPPER_NO_PATCH_OPCONSTCOMP` | Mali: skip the OpSpecConstantComposite patch |
+| `WRAPPER_NO_REMOVE_CLIP_DISTANCE` | Mali: keep ClipDistance / CullDistance |
+| `WRAPPER_LOG_LEVEL` | `info,error,shader,validation,bcn,apidump` |
 | `WRAPPER_LOG_FILE` | log file path, or `stdout` / `stderr` |
 | `WRAPPER_LAYER_PATH` | where the validation / api_dump layers are |

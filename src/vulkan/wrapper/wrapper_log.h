@@ -9,6 +9,7 @@
 #define WRAPPER_LOG_ERROR      (1ull << 1)
 #define WRAPPER_LOG_SHADER     (1ull << 2)
 #define WRAPPER_LOG_VALIDATION (1ull << 3)
+#define WRAPPER_LOG_BCN        (1ull << 4)
 #define WRAPPER_LOG_APIDUMP    (1ull << 5)
 
 #ifdef __cplusplus
@@ -16,7 +17,7 @@ extern "C" {
 #endif
 
 /* Parses WRAPPER_LOG_LEVEL (comma separated: info,error,shader,validation,
- * apidump).  Called once before anything else is logged. */
+ * bcn,apidump).  Called once before anything else is logged. */
 void
 init_wrapper_logging(void);
 

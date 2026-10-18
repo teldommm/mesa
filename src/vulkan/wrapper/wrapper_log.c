@@ -29,6 +29,7 @@ static const struct wrapper_log_option wrapper_log_options[] = {
    { "error",      WRAPPER_LOG_ERROR },
    { "shader",     WRAPPER_LOG_SHADER },
    { "validation", WRAPPER_LOG_VALIDATION },
+   { "bcn",        WRAPPER_LOG_BCN },
    { "apidump",    WRAPPER_LOG_APIDUMP },
    { NULL, 0 },
 };

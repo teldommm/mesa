@@ -641,6 +641,9 @@ wrapper_FreeMemory(VkDevice _device, VkDeviceMemory _memory,
    if (device->budget_table)
       wrapper_budget_untrack(device, _memory);
 
+   /* Freeing implicitly unmaps */
+   wrapper_bcn_untrack_map(device, _memory);
+
    wrapper_free_memory(_device, _memory, pAllocator);
 }
 
@@ -683,9 +686,13 @@ wrapper_MapMemory2KHR(VkDevice _device,
    struct wrapper_device_memory *mem =
       wrapper_device_memory_lookup(device, pMemoryMapInfo->memory);
    if (!placed_info || !mem) {
-      return device->dispatch_table.MapMemory(device->dispatch_handle,
+      result = device->dispatch_table.MapMemory(device->dispatch_handle,
          pMemoryMapInfo->memory, pMemoryMapInfo->offset, pMemoryMapInfo->size,
          0, ppData);
+      if (result == VK_SUCCESS)
+         wrapper_bcn_track_map(device, pMemoryMapInfo->memory,
+                               pMemoryMapInfo->offset, *ppData);
+      return result;
    }
 
    WRAPPER_LOG(info, "Emulating vkMapMemory2KHR");
@@ -735,6 +742,8 @@ wrapper_MapMemory2KHR(VkDevice _device,
 out:
    *ppData = mem->map_address;
    simple_mtx_unlock(&device->resource_mutex);
+   wrapper_bcn_track_map(device, pMemoryMapInfo->memory,
+                         pMemoryMapInfo->offset, mem->map_address);
    return VK_SUCCESS;
 
 fail:
@@ -753,6 +762,8 @@ wrapper_UnmapMemory2KHR(VkDevice _device,
                         const VkMemoryUnmapInfoKHR* pMemoryUnmapInfo)
 {
    VK_FROM_HANDLE(wrapper_device, device, _device);
+
+   wrapper_bcn_untrack_map(device, pMemoryUnmapInfo->memory);
 
    struct wrapper_device_memory *mem =
       wrapper_device_memory_lookup(device, pMemoryUnmapInfo->memory);

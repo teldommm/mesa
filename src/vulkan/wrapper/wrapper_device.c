@@ -4,6 +4,7 @@
 
 #include "wrapper_private.h"
 #include "wrapper_log.h"
+#include "spirv_patcher.hpp"
 #include "wrapper_entrypoints.h"
 #include "wrapper_trampolines.h"
 #include "vk_alloc.h"
@@ -267,6 +268,7 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
 
    list_inithead(&device->command_buffer_list);
    list_inithead(&device->device_memory_list);
+   list_inithead(&device->bcn_staging_cmd_list);
    device->memory_table = _mesa_hash_table_u64_create(NULL);
    if (!device->memory_table) {
       vk_free2(&physical_device->instance->vk.alloc, pAllocator, device);
@@ -349,6 +351,11 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
    DISABLE_FEATURE(fillModeNonSolid);
    DISABLE_FEATURE(shaderClipDistance);
    DISABLE_FEATURE(shaderCullDistance);
+   /* BCn: emulated or reported only (wrapper_bcn.c) */
+   DISABLE_FEATURE(textureCompressionBC);
+   /* Faked on Mali for DXVK (wrapper_apply_arm_workarounds()) */
+   DISABLE_FEATURE(dualSrcBlend);
+   DISABLE_FEATURE(multiDrawIndirect);
 #undef DISABLE_FEATURE
 
    process_device_pnext_chain((VkBaseInStructure *)&wrapper_create_info,
@@ -413,9 +420,17 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
       return vk_error(physical_device, result);
    }
 
+   result = wrapper_bcn_device_init(device);
+   if (result != VK_SUCCESS) {
+      wrapper_DestroyDevice(wrapper_device_to_handle(device), pAllocator);
+      return vk_error(physical_device, result);
+   }
+
    /* Without the placed-map emulation the memory entrypoints go straight to
-    * the driver. */
-   if (!physical_device->vk.supported_features.memoryMapPlaced) {
+    * the driver, unless the BCn emulation has to know the application's
+    * mappings. */
+   if (!physical_device->vk.supported_features.memoryMapPlaced &&
+       !device->bcn_active) {
       device->vk.dispatch_table.MapMemory2 =
          wrapper_device_trampolines.MapMemory2;
       device->vk.dispatch_table.UnmapMemory =
@@ -785,6 +800,74 @@ wrapper_CmdExecuteCommands(VkCommandBuffer commandBuffer,
       free(command_buffers);
 }
 
+/* SPIR-V workarounds (spirv_patcher.cpp):
+ *
+ *  - Mali (ARM proprietary): OpConstantComposite -> OpSpecConstantComposite
+ *    (WRAPPER_NO_PATCH_OPCONSTCOMP=1 disables) and ClipDistance /
+ *    CullDistance removal (WRAPPER_NO_REMOVE_CLIP_DISTANCE=1 disables), as in
+ *    the Mesa 25 based wrapper;
+ *  - any driver: ClipDistance / CullDistance are removed when the driver
+ *    lacks shaderClipDistance / shaderCullDistance, which the wrapper
+ *    advertises anyway. */
+static bool
+wrapper_patch_shader_code(struct wrapper_device *device,
+                          const VkShaderModuleCreateInfo *info,
+                          uint32_t **out_code, size_t *out_size)
+{
+   static int no_remove_clip_distance = -1;
+   static int no_patch_spec_composite = -1;
+   const struct wrapper_physical_device *pdevice = device->physical;
+   const bool is_arm =
+      pdevice->driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+
+   if (no_remove_clip_distance == -1)
+      no_remove_clip_distance = debug_get_bool_option("WRAPPER_NO_REMOVE_CLIP_DISTANCE", false);
+   if (no_patch_spec_composite == -1)
+      no_patch_spec_composite = debug_get_bool_option("WRAPPER_NO_PATCH_OPCONSTCOMP", false);
+
+   bool remove_clip = !pdevice->base_supported_features.shaderClipDistance;
+   bool remove_cull = !pdevice->base_supported_features.shaderCullDistance;
+   if (is_arm && !no_remove_clip_distance)
+      remove_clip = remove_cull = true;
+   const bool patch_spec = is_arm && !no_patch_spec_composite;
+
+   if (!remove_clip && !remove_cull && !patch_spec)
+      return false;
+
+   const uint32_t *words = info->pCode;
+   size_t word_count = info->codeSize / sizeof(uint32_t);
+
+   bool has_clip = false, has_cull = false;
+   if (remove_clip || remove_cull)
+      spirv_scan_clip_cull_distance(words, word_count, &has_clip, &has_cull);
+   remove_clip &= has_clip;
+   remove_cull &= has_cull;
+
+   if (!remove_clip && !remove_cull && !patch_spec)
+      return false;
+
+   uint32_t *code = malloc(word_count * sizeof(uint32_t));
+   if (!code)
+      return false;
+   memcpy(code, words, word_count * sizeof(uint32_t));
+
+   bool changed = false;
+   if (patch_spec)
+      changed |= spirv_patch_spec_constant_composites(code, word_count);
+   if (remove_clip || remove_cull)
+      changed |= spirv_remove_clip_cull_distance(code, &word_count,
+                                                 remove_clip, remove_cull);
+
+   if (!changed) {
+      free(code);
+      return false;
+   }
+
+   *out_code = code;
+   *out_size = word_count * sizeof(uint32_t);
+   return true;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 wrapper_CreateShaderModule(VkDevice _device,
                            const VkShaderModuleCreateInfo *pCreateInfo,
@@ -792,12 +875,23 @@ wrapper_CreateShaderModule(VkDevice _device,
                            VkShaderModule *pShaderModule)
 {
    VK_FROM_HANDLE(wrapper_device, device, _device);
+   VkShaderModuleCreateInfo create_info = *pCreateInfo;
+   uint32_t *patched = NULL;
+   size_t patched_size;
+
+   if (wrapper_patch_shader_code(device, pCreateInfo, &patched, &patched_size)) {
+      create_info.pCode = patched;
+      create_info.codeSize = patched_size;
+   }
 
    if (WRAPPER_LOG_LEVEL(shader))
-      dump_shader_code(pCreateInfo->pCode, pCreateInfo->codeSize);
+      dump_shader_code(create_info.pCode, create_info.codeSize);
 
-   return device->dispatch_table.CreateShaderModule(
-      device->dispatch_handle, pCreateInfo, pAllocator, pShaderModule);
+   VkResult result = device->dispatch_table.CreateShaderModule(
+      device->dispatch_handle, &create_info, pAllocator, pShaderModule);
+
+   free(patched);
+   return result;
 }
 
 static VkResult
@@ -816,6 +910,7 @@ wrapper_command_buffer_create(struct wrapper_device *device,
    wcb->device = device;
    wcb->pool = pool;
    wcb->dispatch_handle = dispatch_handle;
+   list_inithead(&wcb->staging_list);
    list_add(&wcb->link, &device->command_buffer_list);
 
    *pCommandBuffer = wrapper_command_buffer_to_handle(wcb);
@@ -831,6 +926,9 @@ wrapper_command_buffer_destroy(struct wrapper_device *device,
 {
    if (wcb == NULL)
       return;
+
+   /* Staging buffers of the BCn emulation (wrapper_bcn.c) */
+   wrapper_bcn_release_staging(wcb);
 
    if (free_dispatch) {
       device->dispatch_table.FreeCommandBuffers(
@@ -950,6 +1048,8 @@ wrapper_DestroyDevice(VkDevice _device, const VkAllocationCallbacks* pAllocator)
       vk_queue_finish(queue);
       vk_free(&device->vk.alloc, queue);
    }
+
+   wrapper_bcn_device_finish(device);
 
    if (device->dispatch_handle != VK_NULL_HANDLE) {
       device->dispatch_table.DestroyDevice(device->dispatch_handle,
