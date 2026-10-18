@@ -691,7 +691,8 @@ wrapper_MapMemory2KHR(VkDevice _device,
          0, ppData);
       if (result == VK_SUCCESS)
          wrapper_bcn_track_map(device, pMemoryMapInfo->memory,
-                               pMemoryMapInfo->offset, *ppData);
+                               pMemoryMapInfo->offset, pMemoryMapInfo->size,
+                               *ppData);
       return result;
    }
 
@@ -743,7 +744,8 @@ out:
    *ppData = mem->map_address;
    simple_mtx_unlock(&device->resource_mutex);
    wrapper_bcn_track_map(device, pMemoryMapInfo->memory,
-                         pMemoryMapInfo->offset, mem->map_address);
+                         pMemoryMapInfo->offset, mem->map_size,
+                         mem->map_address);
    return VK_SUCCESS;
 
 fail:

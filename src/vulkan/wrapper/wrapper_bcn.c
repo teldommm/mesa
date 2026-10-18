@@ -48,6 +48,7 @@
 #include "util/macros.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
+#include "util/u_atomic.h"
 
 #define XXH_STATIC_LINKING_ONLY
 #define XXH_IMPLEMENTATION
@@ -83,6 +84,13 @@ struct wrapper_bcn_image {
 struct wrapper_bcn_buffer {
    VkDeviceMemory memory;
    VkDeviceSize offset;
+};
+
+/* A mapping of the application (VkDeviceMemory -> host address) */
+struct wrapper_bcn_map {
+   uint8_t *ptr;             /* host address of `offset` */
+   VkDeviceSize offset;
+   VkDeviceSize size;        /* VK_WHOLE_SIZE: up to the end */
 };
 
 struct wrapper_bcn_staging {
@@ -163,6 +171,12 @@ bcn_translate_format(const struct wrapper_physical_device *pdevice,
    return wrapper_bcn_is_emulated(pdevice, format) ?
       bcn_decompressed_format(format) : format;
 }
+
+static void
+bcn_translate_format_list(const struct wrapper_physical_device *pdevice,
+                          const VkImageFormatListCreateInfo *list,
+                          VkFormat image_format,
+                          VkFormat *formats, uint32_t *count);
 
 /* ------------------------------------------------------------------------ */
 /* Physical device                                                          */
@@ -456,14 +470,50 @@ wrapper_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice,
       VkPhysicalDeviceImageFormatInfo2 info = *pImageFormatInfo;
       info.format = bcn_decompressed_format(pImageFormatInfo->format);
       info.flags = bcn_translate_image_flags(pImageFormatInfo->flags);
-      return pdevice->dispatch_table.GetPhysicalDeviceImageFormatProperties2(
+
+      /* A format list (DXVK passes the view formats) must name the
+       * uncompressed formats too; patched in place and restored. */
+      VkImageFormatListCreateInfo *list = (VkImageFormatListCreateInfo *)
+         vk_find_struct_const(pImageFormatInfo->pNext, IMAGE_FORMAT_LIST_CREATE_INFO);
+      VkFormat formats[WRAPPER_BCN_MAX_VIEW_FORMATS];
+      uint32_t saved_count = 0, count = 0;
+      const VkFormat *saved_formats = NULL;
+      if (list) {
+         bcn_translate_format_list(pdevice, list, info.format, formats, &count);
+         saved_count = list->viewFormatCount;
+         saved_formats = list->pViewFormats;
+         list->viewFormatCount = count;
+         list->pViewFormats = formats;
+         if (count <= 1)
+            info.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+      }
+
+      VkResult result = pdevice->dispatch_table.GetPhysicalDeviceImageFormatProperties2(
          pdevice->dispatch_handle, &info, pImageFormatProperties);
+
+      if (list) {
+         list->viewFormatCount = saved_count;
+         list->pViewFormats = saved_formats;
+      }
+      return result;
    }
 
    if (bit & pdevice->bcn_fake_mask) {
-      /* External memory, YCbCr, ... aren't supported for these. */
-      if (pImageFormatInfo->pNext != NULL)
+      /* External memory isn't supported for these, other input structs
+       * (format lists, usage, ...) don't change the answer. */
+      const VkPhysicalDeviceExternalImageFormatInfo *external =
+         vk_find_struct_const(pImageFormatInfo->pNext,
+                              PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+      if (external && external->handleType)
          return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+      vk_foreach_struct(ext, pImageFormatProperties->pNext) {
+         if (ext->sType == VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES) {
+            VkExternalImageFormatProperties *props = (void *)ext;
+            memset(&props->externalMemoryProperties, 0,
+                   sizeof(props->externalMemoryProperties));
+         }
+      }
       return bcn_fake_image_format_properties(pdevice, pImageFormatInfo->type,
                                               pImageFormatInfo->tiling,
                                               pImageFormatInfo->usage,
@@ -516,8 +566,7 @@ wrapper_bcn_device_finish(struct wrapper_device *device)
 {
    bcn_free_table(device, device->bcn_image_table);
    bcn_free_table(device, device->bcn_buffer_table);
-   if (device->map_table)
-      _mesa_hash_table_u64_destroy(device->map_table);
+   bcn_free_table(device, device->map_table);
    device->bcn_image_table = NULL;
    device->bcn_buffer_table = NULL;
    device->map_table = NULL;
@@ -526,15 +575,27 @@ wrapper_bcn_device_finish(struct wrapper_device *device)
 
 void
 wrapper_bcn_track_map(struct wrapper_device *device, VkDeviceMemory memory,
-                      VkDeviceSize offset, void *ptr)
+                      VkDeviceSize offset, VkDeviceSize size, void *ptr)
 {
    if (!device->bcn_active || ptr == NULL)
       return;
 
+   struct wrapper_bcn_map *map =
+      vk_alloc(&device->vk.alloc, sizeof(*map), 8,
+               VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!map)
+      return;
+   map->ptr = ptr;
+   map->offset = offset;
+   map->size = size;
+
    simple_mtx_lock(&device->resource_mutex);
-   _mesa_hash_table_u64_insert(device->map_table, (uint64_t)(uintptr_t)memory,
-                               (char *)ptr - offset);
+   struct wrapper_bcn_map *old =
+      _mesa_hash_table_u64_search(device->map_table, (uint64_t)(uintptr_t)memory);
+   _mesa_hash_table_u64_insert(device->map_table, (uint64_t)(uintptr_t)memory, map);
    simple_mtx_unlock(&device->resource_mutex);
+
+   vk_free(&device->vk.alloc, old);
 }
 
 void
@@ -544,8 +605,13 @@ wrapper_bcn_untrack_map(struct wrapper_device *device, VkDeviceMemory memory)
       return;
 
    simple_mtx_lock(&device->resource_mutex);
-   _mesa_hash_table_u64_remove(device->map_table, (uint64_t)(uintptr_t)memory);
+   struct wrapper_bcn_map *map =
+      _mesa_hash_table_u64_search(device->map_table, (uint64_t)(uintptr_t)memory);
+   if (map)
+      _mesa_hash_table_u64_remove(device->map_table, (uint64_t)(uintptr_t)memory);
    simple_mtx_unlock(&device->resource_mutex);
+
+   vk_free(&device->vk.alloc, map);
 }
 
 /* Called with resource_mutex held */
@@ -1352,11 +1418,12 @@ bcn_attach_staging(struct wrapper_command_buffer *wcb,
    simple_mtx_unlock(&device->resource_mutex);
 }
 
-/* Host address of the source buffer's data.  *temp_memory is set when the
- * memory had to be mapped here (unmap after use). */
+/* Host address of the source buffer's data, `needed` bytes from its start
+ * must be readable.  *temp_memory is set when the memory had to be mapped
+ * here (unmap after use). */
 static const uint8_t *
 bcn_map_source(struct wrapper_device *device, VkBuffer buffer,
-               VkDeviceMemory *temp_memory)
+               VkDeviceSize needed, VkDeviceMemory *temp_memory)
 {
    *temp_memory = VK_NULL_HANDLE;
 
@@ -1366,9 +1433,10 @@ bcn_map_source(struct wrapper_device *device, VkBuffer buffer,
                                   (uint64_t)(uintptr_t)buffer);
    VkDeviceMemory memory = record ? record->memory : VK_NULL_HANDLE;
    VkDeviceSize offset = record ? record->offset : 0;
-   uint8_t *base = memory ?
+   struct wrapper_bcn_map *app_map = memory ?
       _mesa_hash_table_u64_search(device->map_table, (uint64_t)(uintptr_t)memory) :
       NULL;
+   struct wrapper_bcn_map map = app_map ? *app_map : (struct wrapper_bcn_map) { 0 };
    simple_mtx_unlock(&device->resource_mutex);
 
    if (!record) {
@@ -1377,8 +1445,16 @@ bcn_map_source(struct wrapper_device *device, VkBuffer buffer,
       return NULL;
    }
 
-   if (base)
-      return base + offset;
+   if (app_map) {
+      /* The application's mapping has to cover the data, the memory can't
+       * be mapped a second time. */
+      if (offset < map.offset ||
+          (map.size != VK_WHOLE_SIZE && offset + needed > map.offset + map.size)) {
+         WRAPPER_LOG(error, "BCn: source data outside the mapped range");
+         return NULL;
+      }
+      return map.ptr + (offset - map.offset);
+   }
 
    /* Not mapped by the application, the memory must be host visible */
    void *ptr = NULL;
@@ -1391,9 +1467,16 @@ bcn_map_source(struct wrapper_device *device, VkBuffer buffer,
    return (const uint8_t *)ptr + offset;
 }
 
-/* Common part of vkCmdCopyBufferToImage(2).  Returns false when the copy has
- * to go to the driver unchanged. */
-static bool
+enum bcn_copy_result {
+   BCN_COPY_PASSTHROUGH,   /* not an emulated image, give it to the driver */
+   BCN_COPY_DONE,          /* recorded from the staging buffer */
+   BCN_COPY_SKIP,          /* emulated image, but the data couldn't be
+                            * decompressed: the compressed copy would read
+                            * past the end of the source buffer */
+};
+
+/* Common part of vkCmdCopyBufferToImage(2) */
+static enum bcn_copy_result
 bcn_copy_buffer_to_image(struct wrapper_command_buffer *wcb,
                          VkBuffer src_buffer, VkImage dst_image,
                          uint32_t region_count,
@@ -1408,11 +1491,11 @@ bcn_copy_buffer_to_image(struct wrapper_command_buffer *wcb,
    struct wrapper_device *device = wcb->device;
 
    if (!device->bcn_active || region_count == 0)
-      return false;
+      return BCN_COPY_PASSTHROUGH;
 
    struct wrapper_bcn_image image_record;
    if (!bcn_lookup_image(device, dst_image, &image_record))
-      return false;
+      return BCN_COPY_PASSTHROUGH;
    const struct wrapper_bcn_image *image = &image_record;
 
    const struct bcn_options *options = bcn_get_options();
@@ -1422,20 +1505,25 @@ bcn_copy_buffer_to_image(struct wrapper_command_buffer *wcb,
    if (region_count > ARRAY_SIZE(stack_regions)) {
       regions = malloc(sizeof(*regions) * region_count);
       if (!regions)
-         return false;
+         return BCN_COPY_SKIP;
    }
 
-   VkDeviceSize staging_size = 0;
+   VkDeviceSize staging_size = 0, src_end = 0;
    for (uint32_t i = 0; i < region_count; i++) {
       bcn_setup_region(image, buffer_offsets[i], row_lengths[i],
                        image_heights[i], &subresources[i], extents[i],
                        &staging_size, &regions[i]);
       staging_offsets[i] = regions[i].dst_offset;
+      const VkDeviceSize last_slice =
+         (VkDeviceSize)(regions[i].slices - 1) * regions[i].src_slice_pitch;
+      const VkDeviceSize slice_size =
+         (VkDeviceSize)DIV_ROUND_UP(regions[i].height, 4) * regions[i].src_row_pitch;
+      src_end = MAX2(src_end, regions[i].src_offset + last_slice + slice_size);
    }
 
-   bool handled = false;
+   enum bcn_copy_result handled = BCN_COPY_SKIP;
    VkDeviceMemory temp_memory;
-   const uint8_t *src = bcn_map_source(device, src_buffer, &temp_memory);
+   const uint8_t *src = bcn_map_source(device, src_buffer, src_end, &temp_memory);
    if (!src)
       goto out;
 
@@ -1467,7 +1555,7 @@ bcn_copy_buffer_to_image(struct wrapper_command_buffer *wcb,
 
    bcn_attach_staging(wcb, staging);
    *staging_buffer = staging->buffer;
-   handled = true;
+   handled = BCN_COPY_DONE;
 
 out_unmap:
    if (temp_memory != VK_NULL_HANDLE)
@@ -1475,6 +1563,8 @@ out_unmap:
 out:
    if (regions != stack_regions)
       free(regions);
+   if (handled == BCN_COPY_SKIP)
+      WRAPPER_LOG(error, "BCn: dropping a copy to an emulated %d image", image->format);
    return handled;
 }
 
@@ -1498,7 +1588,7 @@ wrapper_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
    VkExtent3D *extents = malloc(sizeof(*extents) * regionCount);
    VkBufferImageCopy *regions = malloc(sizeof(*regions) * regionCount);
    VkBuffer staging = VK_NULL_HANDLE;
-   bool handled = false;
+   enum bcn_copy_result handled = BCN_COPY_PASSTHROUGH;
 
    if (offsets && pitches && subresources && extents && regions) {
       for (uint32_t i = 0; i < regionCount; i++) {
@@ -1513,7 +1603,7 @@ wrapper_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
                                          offsets, pitches, pitches + regionCount,
                                          subresources, extents,
                                          offsets + regionCount, &staging);
-      if (handled) {
+      if (handled == BCN_COPY_DONE) {
          for (uint32_t i = 0; i < regionCount; i++) {
             regions[i] = pRegions[i];
             regions[i].bufferOffset = offsets[regionCount + i];
@@ -1533,7 +1623,7 @@ wrapper_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
    free(extents);
    free(regions);
 
-   if (handled)
+   if (handled != BCN_COPY_PASSTHROUGH)
       return;
 
 passthrough:
@@ -1560,7 +1650,7 @@ wrapper_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
    VkExtent3D *extents = malloc(sizeof(*extents) * count);
    VkBufferImageCopy2 *regions = malloc(sizeof(*regions) * count);
    VkBuffer staging = VK_NULL_HANDLE;
-   bool handled = false;
+   enum bcn_copy_result handled = BCN_COPY_PASSTHROUGH;
 
    if (offsets && pitches && subresources && extents && regions) {
       for (uint32_t i = 0; i < count; i++) {
@@ -1575,7 +1665,7 @@ wrapper_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
                                          count, offsets, pitches,
                                          pitches + count, subresources,
                                          extents, offsets + count, &staging);
-      if (handled) {
+      if (handled == BCN_COPY_DONE) {
          for (uint32_t i = 0; i < count; i++) {
             regions[i] = info->pRegions[i];
             /* VkCopyCommandTransformInfoQCOM etc. don't apply anymore */
@@ -1613,7 +1703,7 @@ wrapper_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
    free(extents);
    free(regions);
 
-   if (handled)
+   if (handled != BCN_COPY_PASSTHROUGH)
       return;
 
 passthrough:
@@ -1677,4 +1767,107 @@ wrapper_ResetCommandPool(VkDevice _device, VkCommandPool commandPool,
 
    return device->dispatch_table.ResetCommandPool(device->dispatch_handle,
                                                   commandPool, flags);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Copies out of / between emulated images                                  */
+/* ------------------------------------------------------------------------ */
+
+/* An emulated image holds uncompressed texels while the application sized
+ * its buffers / regions for the compressed format: a copy to a buffer would
+ * write up to 8x (16x for BC6H) past the region the application meant, and
+ * so would a copy between an emulated and a regular image (BCn <-> the
+ * size-compatible uncompressed format).  Such copies are dropped. */
+static bool
+bcn_is_emulated_image(struct wrapper_device *device, VkImage image)
+{
+   return device->bcn_active && bcn_lookup_image(device, image, NULL);
+}
+
+static void
+bcn_log_dropped(const char *what)
+{
+   static int logged;
+   if (!p_atomic_xchg(&logged, 1))
+      WRAPPER_LOG(error, "BCn: dropping %s (emulated BCn image), further ones not logged", what);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+wrapper_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage srcImage,
+                             VkImageLayout srcImageLayout, VkBuffer dstBuffer,
+                             uint32_t regionCount,
+                             const VkBufferImageCopy *pRegions)
+{
+   VK_FROM_HANDLE(wrapper_command_buffer, wcb, commandBuffer);
+   struct wrapper_device *device = wcb->device;
+
+   if (bcn_is_emulated_image(device, srcImage)) {
+      bcn_log_dropped("vkCmdCopyImageToBuffer");
+      return;
+   }
+
+   device->dispatch_table.CmdCopyImageToBuffer(wcb->dispatch_handle, srcImage,
+                                               srcImageLayout, dstBuffer,
+                                               regionCount, pRegions);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+wrapper_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
+                              const VkCopyImageToBufferInfo2 *pCopyImageToBufferInfo)
+{
+   VK_FROM_HANDLE(wrapper_command_buffer, wcb, commandBuffer);
+   struct wrapper_device *device = wcb->device;
+
+   if (bcn_is_emulated_image(device, pCopyImageToBufferInfo->srcImage)) {
+      bcn_log_dropped("vkCmdCopyImageToBuffer2");
+      return;
+   }
+
+   device->dispatch_table.CmdCopyImageToBuffer2(wcb->dispatch_handle,
+                                                pCopyImageToBufferInfo);
+}
+
+/* Copies between two emulated images (or two regular ones) are fine: both
+ * sides use the same texel addressing. */
+static bool
+bcn_image_copy_mismatch(struct wrapper_device *device, VkImage src, VkImage dst)
+{
+   if (!device->bcn_active)
+      return false;
+   return bcn_lookup_image(device, src, NULL) != bcn_lookup_image(device, dst, NULL);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+wrapper_CmdCopyImage(VkCommandBuffer commandBuffer, VkImage srcImage,
+                     VkImageLayout srcImageLayout, VkImage dstImage,
+                     VkImageLayout dstImageLayout, uint32_t regionCount,
+                     const VkImageCopy *pRegions)
+{
+   VK_FROM_HANDLE(wrapper_command_buffer, wcb, commandBuffer);
+   struct wrapper_device *device = wcb->device;
+
+   if (bcn_image_copy_mismatch(device, srcImage, dstImage)) {
+      bcn_log_dropped("vkCmdCopyImage");
+      return;
+   }
+
+   device->dispatch_table.CmdCopyImage(wcb->dispatch_handle, srcImage,
+                                       srcImageLayout, dstImage, dstImageLayout,
+                                       regionCount, pRegions);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+wrapper_CmdCopyImage2(VkCommandBuffer commandBuffer,
+                      const VkCopyImageInfo2 *pCopyImageInfo)
+{
+   VK_FROM_HANDLE(wrapper_command_buffer, wcb, commandBuffer);
+   struct wrapper_device *device = wcb->device;
+
+   if (bcn_image_copy_mismatch(device, pCopyImageInfo->srcImage,
+                               pCopyImageInfo->dstImage)) {
+      bcn_log_dropped("vkCmdCopyImage2");
+      return;
+   }
+
+   device->dispatch_table.CmdCopyImage2(wcb->dispatch_handle, pCopyImageInfo);
 }

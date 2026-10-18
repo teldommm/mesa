@@ -217,7 +217,7 @@ wrapper_bcn_release_staging(struct wrapper_command_buffer *wcb);
 
 void
 wrapper_bcn_track_map(struct wrapper_device *device, VkDeviceMemory memory,
-                      VkDeviceSize offset, void *ptr);
+                      VkDeviceSize offset, VkDeviceSize size, void *ptr);
 
 void
 wrapper_bcn_untrack_map(struct wrapper_device *device, VkDeviceMemory memory);
