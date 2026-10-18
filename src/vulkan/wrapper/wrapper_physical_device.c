@@ -1,5 +1,10 @@
+#include <errno.h>
 #include <math.h>
 #include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "wrapper_private.h"
 #include "wrapper_entrypoints.h"
@@ -48,6 +53,218 @@ wrapper_clamp_api_version(const struct wrapper_physical_device *pdevice,
       version = WRAPPER_MAX_API_VERSION;
 
    return version;
+}
+
+/*
+ * Device identity spoofing.
+ *
+ *   WRAPPER_VENDOR_ID       vendorID                    0x10de / 4318
+ *   WRAPPER_DEVICE_ID       deviceID                    0x2684
+ *   WRAPPER_DEVICE_NAME     deviceName, as is           NVIDIA GeForce RTX 4090
+ *   WRAPPER_DRIVER_ID       VkDriverId                  4 (NVIDIA_PROPRIETARY)
+ *   WRAPPER_DRIVER_NAME     driverName                  NVIDIA
+ *   WRAPPER_DRIVER_INFO     driverInfo                  560.94
+ *   WRAPPER_DRIVER_VERSION  driverVersion               560.94 or 0x8c178000
+ *   (WRAPPER_VK_VERSION     apiVersion, see wrapper_clamp_api_version())
+ *
+ * Numbers are decimal or 0x hexadecimal; a leading 0 is not octal.  Unset,
+ * empty, 0 or malformed (logged) values are not spoofed and the driver's own
+ * value is reported.  The ID / name / info of the driver are applied to both
+ * VkPhysicalDeviceDriverProperties and VkPhysicalDeviceVulkan12Properties.
+ *
+ * WRAPPER_DRIVER_VERSION given as a dotted version is encoded the way the
+ * reported vendor does it: NVIDIA packs major.minor.sub.patch as 10.8.8.6
+ * bits, everything else uses the VK_MAKE_VERSION layout.  When
+ * WRAPPER_DRIVER_INFO is unset, the spoofed version also becomes driverInfo.
+ */
+
+#define WRAPPER_VENDOR_ID_NVIDIA 0x10de
+
+static bool
+wrapper_parse_u32(const char *str, uint32_t *out)
+{
+   while (*str == ' ' || *str == '\t')
+      str++;
+
+   int base = 10;
+   if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
+      base = 16;
+      str += 2;
+   }
+   if (!*str)
+      return false;
+
+   char *end;
+   errno = 0;
+   const unsigned long long value = strtoull(str, &end, base);
+   while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')
+      end++;
+
+   if (errno || end == str || *end || value > UINT32_MAX)
+      return false;
+
+   *out = value;
+   return true;
+}
+
+static uint32_t
+wrapper_get_u32_env(const char *name)
+{
+   const char *str = getenv(name);
+   uint32_t value = 0;
+
+   if (!str || !*str)
+      return 0;
+
+   if (!wrapper_parse_u32(str, &value)) {
+      WLOGE("Ignoring %s=%s: not a number", name, str);
+      return 0;
+   }
+
+   return value;
+}
+
+static const char *
+wrapper_get_string_env(const char *name)
+{
+   const char *str = getenv(name);
+   return str && *str ? str : NULL;
+}
+
+/* "a.b[.c[.d]]" -> parts, returns the number of parts (0 if not dotted) */
+static unsigned
+wrapper_parse_dotted_version(const char *str, unsigned parts[4])
+{
+   char tail;
+
+   parts[0] = parts[1] = parts[2] = parts[3] = 0;
+   if (!strchr(str, '.'))
+      return 0;
+
+   const int n = sscanf(str, "%u.%u.%u.%u%c",
+                        &parts[0], &parts[1], &parts[2], &parts[3], &tail);
+   return n >= 2 && n <= 4 ? n : 0;
+}
+
+static uint32_t
+wrapper_encode_driver_version(uint32_t vendor_id, const unsigned parts[4])
+{
+   if (vendor_id == WRAPPER_VENDOR_ID_NVIDIA) {
+      return (parts[0] & 0x3ff) << 22 | (parts[1] & 0xff) << 14 |
+             (parts[2] & 0xff) << 6 | (parts[3] & 0x3f);
+   }
+
+   /* VK_MAKE_VERSION layout (10.10.12 bits): unlike VK_MAKE_API_VERSION it
+    * keeps majors >= 128, e.g. the Qualcomm driver's 512.x */
+   return (parts[0] & 0x3ff) << 22 | (parts[1] & 0x3ff) << 12 |
+          (parts[2] & 0xfff);
+}
+
+static void
+wrapper_format_driver_version(uint32_t vendor_id, uint32_t version,
+                              char *buf, size_t size)
+{
+   if (vendor_id == WRAPPER_VENDOR_ID_NVIDIA) {
+      const unsigned sub = (version >> 6) & 0xff, patch = version & 0x3f;
+
+      if (sub || patch)
+         snprintf(buf, size, "%u.%u.%u.%u", version >> 22,
+                  (version >> 14) & 0xff, sub, patch);
+      else
+         snprintf(buf, size, "%u.%02u", version >> 22, (version >> 14) & 0xff);
+      return;
+   }
+
+   snprintf(buf, size, "%u.%u.%u",
+            version >> 22, (version >> 12) & 0x3ff, version & 0xfff);
+}
+
+static void
+wrapper_setup_identity(struct wrapper_physical_device *pdevice)
+{
+   struct wrapper_identity *id = &pdevice->identity;
+   const VkPhysicalDeviceProperties *real = &pdevice->properties2.properties;
+
+   memset(id, 0, sizeof(*id));
+
+   id->vendor_id = wrapper_get_u32_env("WRAPPER_VENDOR_ID");
+   id->device_id = wrapper_get_u32_env("WRAPPER_DEVICE_ID");
+   id->driver_id = (VkDriverId)wrapper_get_u32_env("WRAPPER_DRIVER_ID");
+
+   /* The vendor the application will see decides the version encoding */
+   const uint32_t vendor_id = id->vendor_id ? id->vendor_id : real->vendorID;
+
+   const char *driver_version = wrapper_get_string_env("WRAPPER_DRIVER_VERSION");
+   const char *driver_version_info = NULL;
+   if (driver_version) {
+      unsigned parts[4];
+      uint32_t value;
+
+      if (wrapper_parse_dotted_version(driver_version, parts)) {
+         id->driver_version = wrapper_encode_driver_version(vendor_id, parts);
+         driver_version_info = driver_version;
+      } else if (wrapper_parse_u32(driver_version, &value)) {
+         id->driver_version = value;
+      } else {
+         WLOGE("Ignoring WRAPPER_DRIVER_VERSION=%s", driver_version);
+      }
+   }
+
+   const char *device_name = wrapper_get_string_env("WRAPPER_DEVICE_NAME");
+   if (device_name)
+      snprintf(id->device_name, sizeof(id->device_name), "%s", device_name);
+
+   const char *driver_name = wrapper_get_string_env("WRAPPER_DRIVER_NAME");
+   if (driver_name)
+      snprintf(id->driver_name, sizeof(id->driver_name), "%s", driver_name);
+
+   const char *driver_info = wrapper_get_string_env("WRAPPER_DRIVER_INFO");
+   if (driver_info)
+      snprintf(id->driver_info, sizeof(id->driver_info), "%s", driver_info);
+   else if (driver_version_info)
+      snprintf(id->driver_info, sizeof(id->driver_info), "%s",
+               driver_version_info);
+   else if (id->driver_version)
+      wrapper_format_driver_version(vendor_id, id->driver_version,
+                                    id->driver_info, sizeof(id->driver_info));
+
+   if (id->vendor_id || id->device_id || id->driver_id || id->driver_version ||
+       id->device_name[0] || id->driver_name[0] || id->driver_info[0]) {
+      WLOG("Spoofing identity: vendor 0x%04x device 0x%04x name \"%s\" "
+           "driverID %d driver \"%s\" info \"%s\" driverVersion 0x%08x",
+           id->vendor_id ? id->vendor_id : real->vendorID,
+           id->device_id ? id->device_id : real->deviceID,
+           id->device_name[0] ? id->device_name : real->deviceName,
+           id->driver_id ? id->driver_id : pdevice->driver_properties.driverID,
+           id->driver_name[0] ? id->driver_name
+                              : pdevice->driver_properties.driverName,
+           id->driver_info[0] ? id->driver_info
+                              : pdevice->driver_properties.driverInfo,
+           id->driver_version ? id->driver_version : real->driverVersion);
+   }
+}
+
+/* VkPhysicalDeviceDriverProperties and VkPhysicalDeviceVulkan12Properties */
+static void
+wrapper_apply_driver_identity(const struct wrapper_physical_device *pdevice,
+                              VkDriverId *driver_id,
+                              char driver_name[VK_MAX_DRIVER_NAME_SIZE],
+                              char driver_info[VK_MAX_DRIVER_INFO_SIZE])
+{
+   const struct wrapper_identity *id = &pdevice->identity;
+
+   if (id->driver_id)
+      *driver_id = id->driver_id;
+
+   if (id->driver_name[0]) {
+      memset(driver_name, 0, VK_MAX_DRIVER_NAME_SIZE);
+      snprintf(driver_name, VK_MAX_DRIVER_NAME_SIZE, "%s", id->driver_name);
+   }
+
+   if (id->driver_info[0]) {
+      memset(driver_info, 0, VK_MAX_DRIVER_INFO_SIZE);
+      snprintf(driver_info, VK_MAX_DRIVER_INFO_SIZE, "%s", id->driver_info);
+   }
 }
 
 static VkResult
@@ -257,6 +474,7 @@ VkResult enumerate_physical_device(struct vk_instance *_instance)
       const uint32_t driver_version = pdevice->properties2.properties.driverVersion;
       pdevice->is_qcom = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
       pdevice->api_version_override = parse_vk_version_from_env();
+      wrapper_setup_identity(pdevice);
       pdevice->disable_placed = ENV_INT("WRAPPER_DISABLE_PLACED", 0) != 0;
       pdevice->resource_type = getenv("WRAPPER_RESOURCE_TYPE");
       if (!pdevice->resource_type || !*pdevice->resource_type)
@@ -513,18 +731,22 @@ static void
 wrapper_patch_device_identity(struct wrapper_physical_device *pdevice,
                               VkPhysicalDeviceProperties *props)
 {
+   const struct wrapper_identity *id = &pdevice->identity;
+
    props->apiVersion = wrapper_clamp_api_version(pdevice, props->apiVersion);
 
-   const char *device_name = getenv("WRAPPER_DEVICE_NAME");
-   if (device_name && *device_name)
-      snprintf(props->deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE, "%s", device_name);
+   if (id->vendor_id)
+      props->vendorID = id->vendor_id;
+   if (id->device_id)
+      props->deviceID = id->device_id;
+   if (id->driver_version)
+      props->driverVersion = id->driver_version;
 
-   int device_id = ENV_INT("WRAPPER_DEVICE_ID", 0);
-   int vendor_id = ENV_INT("WRAPPER_VENDOR_ID", 0);
-   if (device_id > 0)
-      props->deviceID = device_id;
-   if (vendor_id > 0)
-      props->vendorID = vendor_id;
+   if (id->device_name[0]) {
+      memset(props->deviceName, 0, sizeof(props->deviceName));
+      snprintf(props->deviceName, sizeof(props->deviceName), "%s",
+               id->device_name);
+   }
 }
 
 WRAPPER_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
@@ -565,7 +787,6 @@ WRAPPER_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
    const bool expose_subgroups = ENV_INT("WRAPPER_EXPOSE_SUBGROUPS", 0) != 0;
    const bool patch_float_controls = pdevice->is_qcom ||
                                      ENV_INT("WRAPPER_NO_FLOAT_CONTROLS", 0);
-   const int driver_id_override = ENV_INT("WRAPPER_DRIVER_ID", 0);
 
    vk_foreach_struct(prop, pProperties->pNext) {
       switch (prop->sType) {
@@ -644,14 +865,17 @@ WRAPPER_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
                                          &p->shaderSignedZeroInfNanPreserveFloat16,
                                          &p->shaderSignedZeroInfNanPreserveFloat32);
          }
-         if (driver_id_override > 0)
-            p->driverID = driver_id_override;
+         wrapper_apply_driver_identity(pdevice, &p->driverID,
+                                       p->driverName, p->driverInfo);
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES:
       {
-         if (driver_id_override > 0)
-            ((VkPhysicalDeviceDriverProperties *)prop)->driverID = driver_id_override;
+         VkPhysicalDeviceDriverProperties *driver_prop =
+              (VkPhysicalDeviceDriverProperties *)prop;
+         wrapper_apply_driver_identity(pdevice, &driver_prop->driverID,
+                                       driver_prop->driverName,
+                                       driver_prop->driverInfo);
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES:
