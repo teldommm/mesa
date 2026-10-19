@@ -109,12 +109,18 @@ struct wrapper_physical_device {
    /* Report the driver's subgroup operations (WRAPPER_SUBGROUP_OPS) */
    bool expose_subgroup_ops;
 
-   /* VK_EXT_memory_budget emulated for drivers without it (Adreno): usage is
-    * tracked per heap at vkAllocateMemory/vkFreeMemory time, the budget is
-    * derived from MemAvailable minus a reserve (WRAPPER_MEMORY_BUDGET*). */
+   /* VK_EXT_memory_budget emulated for drivers without it, and in place of
+    * the Qualcomm driver's own one: usage is tracked per heap at
+    * vkAllocateMemory/vkFreeMemory time, the budget is derived from
+    * MemAvailable minus a reserve (WRAPPER_MEMORY_BUDGET*). */
    bool emulate_memory_budget;
    uint64_t memory_budget_reserve;
    uint64_t heap_usage[VK_MAX_MEMORY_HEAPS];
+
+   /* WRAPPER_VMEM_MAX_SIZE resolved at init: size reported for heap
+    * vmem_heap (the first device-local one), 0 = not overridden. */
+   uint32_t vmem_heap;
+   uint64_t vmem_size;
 
    /* Resolved WRAPPER_EMULATE_BCN mode and, per BCn format
     * (wrapper_bcn_format_bit()), the formats whose properties the wrapper

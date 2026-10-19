@@ -829,8 +829,8 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
    caps->surfaceCapabilities.maxImageCount = 0;
 
 #ifdef VK_WSI_ANDROID_AHB
-   /* Lets the emulator pin the swapchain length, e.g. 1 for its
-    * "immediate" present mode. */
+   /* WRAPPER_MAX_IMAGE_COUNT pins the swapchain length (manual setting, the
+    * emulator itself no longer pins any present mode). */
    static int wrapper_max_image_count = -1;
    if (wrapper_max_image_count == -1)
       wrapper_max_image_count =
