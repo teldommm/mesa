@@ -595,8 +595,8 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
       }
    }
 
-   /* Wrapper: WRAPPER_MAX_IMAGE_COUNT pins the swapchain length (the
-    * emulator sets 1 for its "immediate" present mode). */
+   /* Wrapper: WRAPPER_MAX_IMAGE_COUNT pins the swapchain length (manual
+    * setting, the emulator itself no longer pins any present mode). */
    static int wrapper_max_image_count = -1;
    if (wrapper_max_image_count == -1) {
       const char *env = getenv("WRAPPER_MAX_IMAGE_COUNT");

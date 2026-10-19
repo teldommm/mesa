@@ -6,6 +6,7 @@
 // #undef native_handle_t
 // #undef buffer_handle_t
 #include "util/os_file.h"
+#include "util/u_atomic.h"
 #include "vk_util.h"
 #include "vk_printers.h"
 #include "wrapper_checks.h"
@@ -442,6 +443,47 @@ static const char *backend_names[] = { "dmabuf-export", "dma-heap", "ahb", "opaq
 
 _Atomic static uint64_t allocations;
 
+/* Emulated VK_EXT_memory_budget: per-heap usage of every allocation. */
+static void
+wrapper_budget_track(struct wrapper_device *device,
+                     const VkMemoryAllocateInfo *pAllocateInfo,
+                     VkDeviceMemory memory)
+{
+    const VkPhysicalDeviceMemoryProperties *props =
+        &device->physical->memory_properties;
+
+    if (pAllocateInfo->memoryTypeIndex >= props->memoryTypeCount)
+        return;
+
+    const uint32_t heap = props->memoryTypes[pAllocateInfo->memoryTypeIndex].heapIndex;
+    const uint64_t size = pAllocateInfo->allocationSize;
+    if (size == 0 || heap >= VK_MAX_MEMORY_HEAPS)
+        return;
+
+    simple_mtx_lock(&device->resource_mutex);
+    _mesa_hash_table_u64_insert(device->budget_table,
+                                (uint64_t)(uintptr_t) memory,
+                                (void *)(uintptr_t)(size << 4 | heap));
+    simple_mtx_unlock(&device->resource_mutex);
+
+    p_atomic_add(&device->physical->heap_usage[heap], (int64_t) size);
+}
+
+static void
+wrapper_budget_untrack(struct wrapper_device *device, VkDeviceMemory memory)
+{
+    simple_mtx_lock(&device->resource_mutex);
+    const uintptr_t packed = (uintptr_t)
+        _mesa_hash_table_u64_search(device->budget_table, (uint64_t)(uintptr_t) memory);
+    if (packed)
+        _mesa_hash_table_u64_remove(device->budget_table, (uint64_t)(uintptr_t) memory);
+    simple_mtx_unlock(&device->resource_mutex);
+
+    if (packed)
+        p_atomic_add(&device->physical->heap_usage[packed & 0xf],
+                     -(int64_t)(packed >> 4));
+}
+
 WRAPPER_AllocateMemory(VkDevice _device,
                        const VkMemoryAllocateInfo* pAllocateInfo,
                        const VkAllocationCallbacks* pAllocator,
@@ -521,6 +563,8 @@ fallback:
     if (debug) WLOGD("vkAllocateMemory returned %d", result);
 
 tracking:
+    if (result == VK_SUCCESS && device->budget_table)
+        wrapper_budget_track(device, &allocate_info, *pMemory);
     if (result == VK_SUCCESS) {
         allocations++;
         if (allocate_info.memoryTypeIndex < VK_MAX_MEMORY_TYPES)
@@ -547,6 +591,9 @@ WRAPPER_FreeMemory(VkDevice _device, VkDeviceMemory _memory,
 
     if (_memory == VK_NULL_HANDLE)
         return;
+
+    if (device->budget_table)
+        wrapper_budget_untrack(device, _memory);
 
     simple_mtx_lock(&device->resource_mutex);
     struct wrapper_device_memory *mem = wrapper_device_memory_lookup_locked(device, _memory);

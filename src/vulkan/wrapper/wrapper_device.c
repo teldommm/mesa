@@ -11,6 +11,7 @@
 #include "vk_printers.h"
 #include "util/list.h"
 #include "util/simple_mtx.h"
+#include "util/u_atomic.h"
 #include "vk_meta.h" // For vk_meta_create_image_view
 #include "vk_buffer.h"
 #include "wrapper_trampolines.h"
@@ -446,6 +447,8 @@ WRAPPER_CreateDevice(VkPhysicalDevice physicalDevice,
    device->command_pool_map = _mesa_hash_table_u64_create(NULL);
    device->memory_map = _mesa_hash_table_u64_create(NULL);
    device->fake_xfb_query_pools = _mesa_hash_table_u64_create(NULL);
+   if (physical_device->emulate_memory_budget)
+      device->budget_table = _mesa_hash_table_u64_create(NULL);
 
    simple_mtx_init(&device->resource_mutex, mtx_plain);
    device->physical = physical_device;
@@ -469,6 +472,8 @@ WRAPPER_CreateDevice(VkPhysicalDevice physicalDevice,
       _mesa_hash_table_u64_destroy(device->command_pool_map);
       _mesa_hash_table_u64_destroy(device->memory_map);
       _mesa_hash_table_u64_destroy(device->fake_xfb_query_pools);
+      if (device->budget_table)
+         _mesa_hash_table_u64_destroy(device->budget_table);
       simple_mtx_destroy(&device->resource_mutex);
       vk_free2(&physical_device->instance->vk.alloc, pAllocator,
                device);
@@ -813,6 +818,17 @@ WRAPPER_DestroyDevice(VkDevice _device, const VkAllocationCallbacks* pAllocator)
    device->memory_map = NULL;
    _mesa_hash_table_u64_destroy(device->fake_xfb_query_pools);
    device->fake_xfb_query_pools = NULL;
+
+   /* Allocations the application leaked go away with the device */
+   if (device->budget_table) {
+      hash_table_u64_foreach(device->budget_table, entry) {
+         const uintptr_t packed = (uintptr_t) entry.data;
+         p_atomic_add(&device->physical->heap_usage[packed & 0xf],
+                      -(int64_t) (packed >> 4));
+      }
+      _mesa_hash_table_u64_destroy(device->budget_table);
+      device->budget_table = NULL;
+   }
 
    list_for_each_entry_safe(struct vk_queue, queue, &device->vk.queues, link) {
       vk_queue_finish(queue);

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "wrapper_private.h"
 #include "wrapper_entrypoints.h"
@@ -17,6 +18,8 @@
 #include "vk_util.h"
 #include "wsi_common.h"
 #include "util/os_misc.h"
+#include "util/os_time.h"
+#include "util/u_atomic.h"
 #include "vk_printers.h"
 
 /* The runtime (and therefore every struct the wrapper knows how to patch)
@@ -265,6 +268,77 @@ wrapper_apply_driver_identity(const struct wrapper_physical_device *pdevice,
       memset(driver_info, 0, VK_MAX_DRIVER_INFO_SIZE);
       snprintf(driver_info, VK_MAX_DRIVER_INFO_SIZE, "%s", id->driver_info);
    }
+}
+
+/* The Qualcomm driver's own budget is replaced by the emulated one, other
+ * drivers that have the extension keep theirs (Turnip already derives it
+ * from the system memory). */
+static void
+wrapper_setup_memory_budget(struct wrapper_physical_device *pdevice)
+{
+   if (pdevice->base_supported_extensions.EXT_memory_budget && !pdevice->is_qcom)
+      return;
+
+   if (!ENV_INT("WRAPPER_MEMORY_BUDGET", 1))
+      return;
+
+   const int reserve_mb = ENV_INT("WRAPPER_MEMORY_BUDGET_RESERVE", 1024);
+   pdevice->emulate_memory_budget = true;
+   pdevice->memory_budget_reserve = (uint64_t) MAX2(reserve_mb, 0) * 1048576;
+   pdevice->vk.supported_extensions.EXT_memory_budget = true;
+   WLOG("Emulating VK_EXT_memory_budget (reserve %d MiB)", MAX2(reserve_mb, 0));
+}
+
+/* Mesa's GPU heap share of the physical memory (os_gpu_heap_size_calculate()
+ * in newer Mesa): 25% up to 1 GiB, 50% up to 4 GiB, 75% above. */
+static uint64_t
+wrapper_gpu_heap_share(uint64_t memory)
+{
+   uint64_t share;
+   if (memory <= 1ull << 30)
+      share = memory / 4;
+   else if (memory <= 4ull << 30)
+      share = memory / 2;
+   else
+      share = memory / 4 * 3;
+   return share & ~((1ull << 20) - 1);
+}
+
+/* WRAPPER_VMEM_MAX_SIZE (MiB): size reported for the first device-local
+ * heap (DXGI DedicatedVideoMemory, the 80% heuristics of DXVK and zink).
+ * Lowering always applies.  Turnip refuses allocations past its own heap, so
+ * there it can't be raised; other drivers may report a larger heap, up to
+ * the share of the physical memory Mesa uses for a GPU heap (75% above
+ * 4 GiB, like Turnip) or the driver's own heap if that is larger. */
+static void
+wrapper_setup_vmem_override(struct wrapper_physical_device *pdevice)
+{
+   const VkPhysicalDeviceMemoryProperties *props = &pdevice->memory_properties;
+   const int mib = ENV_INT("WRAPPER_VMEM_MAX_SIZE", 0);
+
+   pdevice->vmem_heap = 0;
+   pdevice->vmem_size = 0;
+   if (mib <= 0 || props->memoryHeapCount == 0)
+      return;
+
+   for (uint32_t i = 0; i < props->memoryHeapCount; i++) {
+      if (props->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+         pdevice->vmem_heap = i;
+         break;
+      }
+   }
+
+   const uint64_t driver_size = props->memoryHeaps[pdevice->vmem_heap].size;
+   uint64_t size = (uint64_t) mib * 1048576;
+   if (pdevice->driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP) {
+      size = MIN2(size, driver_size);
+   } else {
+      uint64_t total;
+      if (os_get_total_physical_memory(&total))
+         size = MIN2(size, MAX2(driver_size, wrapper_gpu_heap_share(total)));
+   }
+
+   pdevice->vmem_size = size;
 }
 
 static VkResult
@@ -583,8 +657,13 @@ VkResult enumerate_physical_device(struct vk_instance *_instance)
          pdevice->vk.supported_extensions.EXT_extended_dynamic_state3 = false;
       }
 
+      wrapper_setup_memory_budget(pdevice);
+      wrapper_setup_vmem_override(pdevice);
+
       /* Blacklist last so the user can also remove extensions we fake. */
       wrapper_apply_device_extension_blacklist(pdevice);
+      if (!pdevice->vk.supported_extensions.EXT_memory_budget)
+         pdevice->emulate_memory_budget = false;
 
       result = wsi_device_init(&pdevice->wsi_device,
                                wrapper_physical_device_to_handle(pdevice),
@@ -1049,20 +1128,73 @@ WRAPPER_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
 }
 
 static void
-wrapper_patch_memory_heaps(VkPhysicalDeviceMemoryProperties *props,
+wrapper_patch_memory_heap_size(const struct wrapper_physical_device *pdevice,
+                               VkPhysicalDeviceMemoryProperties *props)
+{
+   if (pdevice->vmem_size && pdevice->vmem_heap < props->memoryHeapCount)
+      props->memoryHeaps[pdevice->vmem_heap].size = pdevice->vmem_size;
+}
+
+/* Bytes the kernel considers available, cached for 100 ms. */
+static uint64_t
+wrapper_get_mem_available(void)
+{
+   static uint64_t cached_value;
+   static int64_t cached_time;
+
+   const int64_t now = os_time_get_nano();
+   if (p_atomic_read(&cached_time) && now - p_atomic_read(&cached_time) < 100000000ll)
+      return p_atomic_read(&cached_value);
+
+   uint64_t value = 0;
+   int fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+   if (fd >= 0) {
+      char buf[1024];
+      ssize_t len = read(fd, buf, sizeof(buf) - 1);
+      close(fd);
+      if (len > 0) {
+         buf[len] = '\0';
+         const char *line = strstr(buf, "MemAvailable:");
+         if (line)
+            value = strtoull(line + strlen("MemAvailable:"), NULL, 10) * 1024;
+      }
+   }
+
+   p_atomic_set(&cached_value, value);
+   p_atomic_set(&cached_time, now);
+   return value;
+}
+
+static void
+wrapper_fill_memory_budget(struct wrapper_physical_device *pdevice,
+                           const VkPhysicalDeviceMemoryProperties *props,
                            VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget)
 {
-   int vmem_mb = ENV_INT("WRAPPER_VMEM_MAX_SIZE", 0);
-   if (vmem_mb <= 0)
-      return;
+   const uint64_t available = wrapper_get_mem_available();
+   const uint64_t spare = available > pdevice->memory_budget_reserve ?
+      available - pdevice->memory_budget_reserve : 0;
 
-   VkDeviceSize size = (VkDeviceSize) vmem_mb * 1024ull * 1024ull;
-   for (uint32_t i = 0; i < props->memoryHeapCount; i++) {
-      if (!(props->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
+   for (uint32_t i = 0; i < VK_MAX_MEMORY_HEAPS; i++) {
+      if (i >= props->memoryHeapCount) {
+         budget->heapUsage[i] = 0;
+         budget->heapBudget[i] = 0;
          continue;
-      props->memoryHeaps[i].size = size;
-      if (budget && budget->heapBudget[i] > size)
-         budget->heapBudget[i] = size;
+      }
+
+      const uint64_t size = props->memoryHeaps[i].size;
+      const uint64_t usage = p_atomic_read(&pdevice->heap_usage[i]);
+
+      /* Without /proc/meminfo, report the whole heap like the driver would
+       * implicitly do. */
+      uint64_t heap_budget = available ? usage + spare : size;
+      heap_budget = MIN2(heap_budget, size);
+      if (heap_budget == 0)
+         heap_budget = MIN2(size, 64ull * 1048576);
+
+      /* Usage past a lowered heap is reported as the heap size: still over
+       * budget, but "size - usage" can't wrap around (zink's meminfo). */
+      budget->heapUsage[i] = MIN2(usage, size);
+      budget->heapBudget[i] = heap_budget;
    }
 }
 
@@ -1072,16 +1204,52 @@ WRAPPER_GetPhysicalDeviceMemoryProperties(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(wrapper_physical_device, pdevice, physicalDevice);
    pdevice->dispatch_table.GetPhysicalDeviceMemoryProperties(
       pdevice->dispatch_handle, pMemoryProperties);
-   wrapper_patch_memory_heaps(pMemoryProperties, NULL);
+   wrapper_patch_memory_heap_size(pdevice, pMemoryProperties);
 }
 
 WRAPPER_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
                                            VkPhysicalDeviceMemoryProperties2 *pMemoryProperties)
 {
    VK_FROM_HANDLE(wrapper_physical_device, pdevice, physicalDevice);
+   VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget = NULL;
+   VkBaseOutStructure *budget_prev = NULL;
+
+   /* The driver doesn't know the emulated budget struct, hide it. */
+   if (pdevice->emulate_memory_budget) {
+      VkBaseOutStructure *prev = (VkBaseOutStructure *) pMemoryProperties;
+      vk_foreach_struct(ext, pMemoryProperties->pNext) {
+         if (ext->sType ==
+             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT) {
+            budget = (void *) ext;
+            budget_prev = prev;
+            prev->pNext = ext->pNext;
+            break;
+         }
+         prev = ext;
+      }
+   }
+
    pdevice->dispatch_table.GetPhysicalDeviceMemoryProperties2(
       pdevice->dispatch_handle, pMemoryProperties);
-   VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget =
-      vk_find_struct(pMemoryProperties->pNext, PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT);
-   wrapper_patch_memory_heaps(&pMemoryProperties->memoryProperties, budget);
+
+   const VkPhysicalDeviceMemoryProperties *props =
+      &pMemoryProperties->memoryProperties;
+   wrapper_patch_memory_heap_size(pdevice, &pMemoryProperties->memoryProperties);
+
+   if (budget) {
+      budget_prev->pNext = (VkBaseOutStructure *) budget;
+      wrapper_fill_memory_budget(pdevice, props, budget);
+   } else {
+      /* The driver's own budget: heapBudget must not exceed the heap size,
+       * which WRAPPER_VMEM_MAX_SIZE may have lowered; usage past it is
+       * reported as the heap size, as in wrapper_fill_memory_budget(). */
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT *native =
+         vk_find_struct(pMemoryProperties->pNext,
+                        PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT);
+      for (uint32_t i = 0; native && i < props->memoryHeapCount; i++) {
+         const VkDeviceSize size = props->memoryHeaps[i].size;
+         native->heapBudget[i] = MIN2(native->heapBudget[i], size);
+         native->heapUsage[i] = MIN2(native->heapUsage[i], size);
+      }
+   }
 }

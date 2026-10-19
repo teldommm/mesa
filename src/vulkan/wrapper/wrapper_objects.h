@@ -74,6 +74,17 @@ struct wrapper_physical_device {
    uint32_t api_version_override;    /* WRAPPER_VK_VERSION */
    bool is_dxvk;
    bool is_qcom;
+   /* VK_EXT_memory_budget emulated for drivers without it, and in place of
+    * the Qualcomm driver's own one: usage is tracked per heap at
+    * vkAllocateMemory/vkFreeMemory time, the budget is derived from
+    * MemAvailable minus a reserve (WRAPPER_MEMORY_BUDGET*). */
+   bool emulate_memory_budget;
+   uint64_t memory_budget_reserve;
+   uint64_t heap_usage[VK_MAX_MEMORY_HEAPS];
+   /* WRAPPER_VMEM_MAX_SIZE resolved at init: size reported for heap
+    * vmem_heap (the first device-local one), 0 = not overridden. */
+   uint32_t vmem_heap;
+   uint64_t vmem_size;
    struct wsi_device wsi_device;
    struct wrapper_instance *instance;
    struct vk_features base_supported_features;
@@ -124,6 +135,9 @@ struct wrapper_device {
     struct hash_table_u64* command_pool_map;
     struct hash_table_u64* memory_map; /* VkDeviceMemory -> emulated wrapper_device_memory */
     struct hash_table_u64* fake_xfb_query_pools; /* VkQueryPool -> (void*)1 when xfb is faked */
+    /* VkDeviceMemory -> size << 4 | heap index, for the emulated
+     * VK_EXT_memory_budget (NULL when not emulated) */
+    struct hash_table_u64* budget_table;
 
     struct wrapper_physical_device *physical;
     struct vk_device_dispatch_table dispatch_table;
