@@ -260,6 +260,31 @@ wsi_vk_format_to_ahardware_buffer_format(VkFormat format)
    }
 }
 
+/* Usage of a swapchain AHardwareBuffer.
+ *
+ * Qualcomm's gralloc compresses (UBWC) an RGBA8888 buffer only when both hold:
+ *  - no CPU usage bit is set: any of them makes it allocate a linear buffer;
+ *  - GRALLOC_USAGE_PRIVATE_ALLOC_UBWC is set, which the NDK exposes as VENDOR_0:
+ *    without it the buffer is linear even when no CPU bit is set.
+ * The blit path binds a linear image to its buffer, so it never gets this.
+ * Everything else keeps the CPU bits the emulator's CPU drawing needs.
+ */
+static uint64_t
+wsi_android_image_usage(const struct wsi_device *wsi, bool blit,
+                        uint32_t ahb_format)
+{
+   const uint64_t usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                          AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+                          AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
+
+   if (!blit && wsi->android_ahb_ubwc &&
+       ahb_format == AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM)
+      return usage | AHARDWAREBUFFER_USAGE_VENDOR_0;
+
+   return usage | AHARDWAREBUFFER_USAGE_CPU_READ_RARELY |
+                  AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+}
+
 VkResult
 wsi_configure_android_image(const struct wsi_swapchain *chain,
                             const VkSwapchainCreateInfoKHR *pCreateInfo,
@@ -305,11 +330,7 @@ wsi_configure_android_image(const struct wsi_swapchain *chain,
       .height = pCreateInfo->imageExtent.height,
       .layers = pCreateInfo->imageArrayLayers,
       .format = ahb_format,
-      .usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-               AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
-               AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
-               AHARDWAREBUFFER_USAGE_CPU_READ_RARELY |
-               AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+      .usage = wsi_android_image_usage(chain->wsi, blit, ahb_format),
    };
 
    if (blit) {

@@ -102,6 +102,11 @@ struct wsi_device {
    bool force_bgra8_unorm_first;
    bool force_rgba8_unorm_first;
 
+   /* Android: allocate the R8G8B8A8 swapchain AHardwareBuffers UBWC compressed
+    * (Qualcomm gralloc).  Set by the wrapper only for the proprietary Adreno
+    * driver, when asked for with WRAPPER_AHB_UBWC. */
+   bool android_ahb_ubwc;
+
    /* Cached result for wsi_drm_check_dma_buf_sync_file_import_export(). */
    uint32_t cached_sync_file_import_export_result;
 

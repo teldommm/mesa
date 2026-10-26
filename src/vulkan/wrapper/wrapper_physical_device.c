@@ -753,21 +753,22 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    const char *wrapper_resource_type = getenv("WRAPPER_RESOURCE_TYPE");
    pdevice->resource_type = wrapper_resource_type ? wrapper_resource_type : "auto";
 
-   /* Channel order the emulator's X server consumes, see
-    * get_sorted_vk_formats() in wsi_common_x11.c.  RGBA8 by default on Mali,
-    * BGRA8 elsewhere; WRAPPER_SURFACE_FORMAT=rgba8/bgra8 overrides. */
-   const bool rgba_default =
-      pdevice->driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
-   pdevice->wsi_device.force_rgba8_unorm_first = rgba_default;
-   pdevice->wsi_device.force_bgra8_unorm_first = !rgba_default;
+   /* Channel order of the swapchain images, which must be the order of the emulator's own
+    * buffers, see get_sorted_vk_formats() in wsi_common_x11.c.  RGBA8 on every driver unless
+    * WRAPPER_SURFACE_FORMAT=bgra8. */
    const char *wrapper_surface_format = getenv("WRAPPER_SURFACE_FORMAT");
-   if (wrapper_surface_format && !strcmp(wrapper_surface_format, "rgba8")) {
-      pdevice->wsi_device.force_rgba8_unorm_first = true;
-      pdevice->wsi_device.force_bgra8_unorm_first = false;
-   } else if (wrapper_surface_format && !strcmp(wrapper_surface_format, "bgra8")) {
-      pdevice->wsi_device.force_rgba8_unorm_first = false;
-      pdevice->wsi_device.force_bgra8_unorm_first = true;
-   }
+   const bool wrapper_bgra = wrapper_surface_format && !strcmp(wrapper_surface_format, "bgra8");
+   pdevice->wsi_device.force_rgba8_unorm_first = !wrapper_bgra;
+   pdevice->wsi_device.force_bgra8_unorm_first = wrapper_bgra;
+
+   /* UBWC compressed swapchain images (WRAPPER_AHB_UBWC=1).  Only RGBA8888: a
+    * compressed BGRA buffer shows black in the emulator.  Only the proprietary
+    * Adreno driver: Turnip does not recognise UBWC in an imported AHardwareBuffer
+    * and draws artefacts.  Decided from pdevice->driver_properties, the real
+    * driver: what the WSI sees through the wrapper may be a spoofed identity. */
+   pdevice->wsi_device.android_ahb_ubwc =
+      debug_get_bool_option("WRAPPER_AHB_UBWC", false) && !wrapper_bgra &&
+      pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
 
    /* Last, so the extensions the wrapper adds or emulates above (placed
     * memory, map_memory2, memory_budget, pipeline_library, ...) can be

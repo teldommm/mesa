@@ -1045,8 +1045,9 @@ next_format:;
 
 #ifdef VK_WSI_ANDROID_AHB
    /* The emulator's X server consumes the pixmaps in a single, configured
-    * channel order (WRAPPER_SURFACE_FORMAT), so only expose that one.  The
-    * blit and sw paths always produce B8G8R8A8.
+    * channel order (WRAPPER_SURFACE_FORMAT), so only expose that one.  On the
+    * blit and sw paths the app renders B8G8R8A8 and the copy into the
+    * R8G8B8A8 AHB swaps the channels.
     */
    bool rgba_first = wsi_device->force_rgba8_unorm_first &&
                      !wsi_device->sw && !wsi_device->needs_blit;

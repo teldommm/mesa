@@ -102,7 +102,7 @@ AHardwareBuffers:
   server acks with one byte);
 * idle fences are plain XSync fences;
 * XFIXES is optional (damage regions are skipped without it);
-* only one channel order is exposed (`WRAPPER_SURFACE_FORMAT`);
+* only one channel order is exposed (`WRAPPER_SURFACE_FORMAT`, R8G8B8A8 by default);
 * `_MESA_DRV*` window properties instead of `_VARIABLE_REFRESH`.
 
 ## Environment variables
@@ -110,7 +110,8 @@ AHardwareBuffers:
 | Variable | Meaning |
 |---|---|
 | `ADRENOTOOLS_DRIVER_PATH`, `ADRENOTOOLS_DRIVER_NAME`, `ADRENOTOOLS_HOOKS_PATH`, `ADRENOTOOLS_REDIRECT_DIR` | custom driver loading |
-| `WRAPPER_SURFACE_FORMAT` | `bgra8` or `rgba8` (default: `rgba8` on Mali, `bgra8` elsewhere) |
+| `WRAPPER_SURFACE_FORMAT` | `rgba8` (default) or `bgra8`: channel order of the swapchain images, must match the emulator's buffers |
+| `WRAPPER_AHB_UBWC` | `1`: allocate the R8G8B8A8 swapchain images UBWC compressed (Qualcomm gralloc). Only with the proprietary Adreno driver and `rgba8`; ignored otherwise (default: off) |
 | `WRAPPER_BLIT` / `MESA_VK_WSI_DEBUG=blit` | render to an intermediate image and blit |
 | `MESA_VK_WSI_NO_RENDER_WAIT=1` | X11 WSI: don't wait for the render fence in the present thread before PresentPixmap (upstream behaviour; frames may reach the compositor unfinished) |
 | `WRAPPER_MAX_IMAGE_COUNT` | pin the swapchain length |
