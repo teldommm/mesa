@@ -728,7 +728,8 @@ get_sorted_vk_formats(VkIcdSurfaceBase *surface, struct wsi_device *wsi_device,
 next_format:;
    }
 
-   /* Wrapper: the software and blit paths always produce BGRA. */
+   /* Wrapper: on the software and blit paths the app renders B8G8R8A8 and the
+    * copy into the R8G8B8A8 AHB swaps the channels. */
    bool force_bgra8 = wsi_device->force_bgra8_unorm_first;
    bool force_rgba8 = wsi_device->force_rgba8_unorm_first;
    if (wsi_device->sw || wsi_device->needs_blit) {
@@ -737,9 +738,9 @@ next_format:;
    }
 
    if (force_rgba8) {
-      /* The X server drawable is RGBA (HAL_PIXEL_FORMAT_RGBA_8888): hand out
-       * RGBA formats only, otherwise the application may still pick BGRA and
-       * red/blue end up swapped. */
+      /* The emulator's buffers are RGBA8888: hand out RGBA formats only,
+       * otherwise the application may still pick BGRA and red/blue end up
+       * swapped. */
       for (unsigned i = 0; i < *count; i++) {
          if (sorted_formats[i] == VK_FORMAT_B8G8R8A8_UNORM)
             sorted_formats[i] = VK_FORMAT_R8G8B8A8_UNORM;

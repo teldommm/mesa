@@ -679,24 +679,21 @@ VkResult enumerate_physical_device(struct vk_instance *_instance)
       pdevice->wsi_device.wants_ahardware_buffer = true;
 #endif
 
-      /* Swapchain format order: the emulator passes WRAPPER_SURFACE_FORMAT
-       * matching its X server drawable (rgba8 for HAL_PIXEL_FORMAT_RGBA_8888),
-       * otherwise red/blue end up swapped. */
-      if (driver_id == VK_DRIVER_ID_ARM_PROPRIETARY)
-         pdevice->wsi_device.force_rgba8_unorm_first = true;
-      else
-         pdevice->wsi_device.force_bgra8_unorm_first = true;
-
+      /* Channel order of the swapchain images, which must be the order of the
+       * emulator's own buffers, see get_sorted_vk_formats() in wsi_common_x11.c.
+       * RGBA8 on every driver unless WRAPPER_SURFACE_FORMAT=bgra8. */
       const char *surface_format = getenv("WRAPPER_SURFACE_FORMAT");
-      if (surface_format) {
-         if (!strcmp(surface_format, "rgba8")) {
-            pdevice->wsi_device.force_rgba8_unorm_first = true;
-            pdevice->wsi_device.force_bgra8_unorm_first = false;
-         } else if (!strcmp(surface_format, "bgra8")) {
-            pdevice->wsi_device.force_rgba8_unorm_first = false;
-            pdevice->wsi_device.force_bgra8_unorm_first = true;
-         }
-      }
+      const bool bgra = surface_format && !strcmp(surface_format, "bgra8");
+      pdevice->wsi_device.force_rgba8_unorm_first = !bgra;
+      pdevice->wsi_device.force_bgra8_unorm_first = bgra;
+
+      /* UBWC compressed swapchain images (WRAPPER_AHB_UBWC=1).  Only RGBA8888: a
+       * compressed BGRA buffer shows black in the emulator.  Only the proprietary
+       * Adreno driver: Turnip does not recognise UBWC in an imported
+       * AHardwareBuffer and draws artefacts.  is_qcom comes from the real driver,
+       * not from the identity the wrapper may present. */
+      pdevice->wsi_device.android_ahb_ubwc =
+         ENV_INT("WRAPPER_AHB_UBWC", 0) != 0 && !bgra && pdevice->is_qcom;
 
       pdevice->dma_heap_fd = wrapper_open_dma_heap();
 

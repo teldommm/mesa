@@ -16,7 +16,9 @@ wsi_get_ahardware_buffer_blit_type(const struct wsi_device *wsi,
       .width = 500,
       .height = 500,
       .layers = 1,
-      .format = AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM,
+      /* probe with the order the swapchain images will have */
+      .format = wsi->force_bgra8_unorm_first ? AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM
+                                             : AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
       .usage = AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
                AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
                AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
@@ -259,6 +261,29 @@ wsi_create_ahardware_buffer_blit_context(const struct wsi_swapchain *chain,
    return VK_SUCCESS;
 }
 
+/* Usage bits added to what the driver reports for a swapchain AHardwareBuffer.
+ *
+ * Qualcomm's gralloc compresses (UBWC) an RGBA8888 buffer only when both hold:
+ *  - no CPU usage bit is set: any of them makes it allocate a linear buffer;
+ *  - GRALLOC_USAGE_PRIVATE_ALLOC_UBWC is set, which the NDK exposes as VENDOR_0:
+ *    without it the buffer is linear even when no CPU bit is set.
+ * The blit path binds a linear image to its buffer, so it never gets this.
+ * Everything else keeps the CPU bits the emulator's CPU drawing needs.
+ */
+static uint64_t
+wsi_ahardware_buffer_extra_usage(const struct wsi_device *wsi, bool blit,
+                                 uint32_t ahb_format)
+{
+   if (!blit && wsi->android_ahb_ubwc &&
+       ahb_format == AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM)
+      return AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+             AHARDWAREBUFFER_USAGE_VENDOR_0;
+
+   return AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+          AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
+          AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+}
+
 inline static uint32_t
 to_ahardware_buffer_format(VkFormat format) {
    switch (format) {
@@ -331,17 +356,16 @@ wsi_configure_ahardware_buffer_image(
       wsi_destroy_image_info(chain, info);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
+   const uint32_t ahb_format = blit
+      ? AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
+      : to_ahardware_buffer_format(info->create.format);
    *info->ahardware_buffer_desc = (AHardwareBuffer_Desc) {
       .width = pCreateInfo->imageExtent.width,
       .height = pCreateInfo->imageExtent.height,
       .layers = pCreateInfo->imageArrayLayers,
-      .format = blit
-         ? AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
-         : to_ahardware_buffer_format(info->create.format),
+      .format = ahb_format,
       .usage = ahardware_buffer_usage.androidHardwareBufferUsage |
-               AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
-               AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
-               AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+               wsi_ahardware_buffer_extra_usage(chain->wsi, blit, ahb_format),
    };
    if (info->ahardware_buffer_desc->usage & AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER)
       info->ahardware_buffer_desc->usage &= ~AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER;

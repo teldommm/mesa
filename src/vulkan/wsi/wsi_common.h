@@ -127,8 +127,13 @@ struct wsi_device {
    uint32_t optimalBufferCopyRowPitchAlignment;
    VkPresentModeKHR override_present_mode;
    bool force_bgra8_unorm_first;
-   /* Wrapper: put RGBA8 first (WRAPPER_SURFACE_FORMAT=rgba8 / Mali) */
+   /* Wrapper: put RGBA8 first (WRAPPER_SURFACE_FORMAT, rgba8 by default) */
    bool force_rgba8_unorm_first;
+
+   /* Android: allocate the R8G8B8A8 swapchain AHardwareBuffers UBWC compressed
+    * (Qualcomm gralloc).  Set by the wrapper only for the proprietary Adreno
+    * driver, when asked for with WRAPPER_AHB_UBWC. */
+   bool android_ahb_ubwc;
 
    /* Whether to enable adaptive sync for a swapchain if implemented and
     * available. Not all window systems might support this. */
