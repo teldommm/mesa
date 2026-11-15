@@ -307,6 +307,16 @@ wsi_configure_android_image(const struct wsi_swapchain *chain,
    /* wsi_configure_image() clears the whole info struct. */
    info->image_type = WSI_IMAGE_TYPE_ANDROID;
 
+   /* Frame generation (wsi_device::wl_fg) reads the game's images (a blit into its own
+    * pyramid) and renders into its outputs, which are images of this same info. */
+   if (chain->wsi->wl_fg && !blit) {
+      const VkImageUsageFlags fg_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                         VK_IMAGE_USAGE_SAMPLED_BIT;
+      info->create.usage |= fg_usage;
+      info->usage2.usage |= fg_usage;
+   }
+
    const uint32_t ahb_format = blit ?
       AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM :
       wsi_vk_format_to_ahardware_buffer_format(info->create.format);

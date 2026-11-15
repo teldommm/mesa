@@ -51,6 +51,7 @@
 
 #ifdef VK_WSI_ANDROID_AHB
 #include <android/hardware_buffer.h>
+#include "util/libsync.h"
 #include "util/log.h"
 #endif
 
@@ -617,6 +618,24 @@ wsi_swapchain_init(const struct wsi_device *wsi,
    }
 #endif
 
+#ifdef VK_WSI_ANDROID_AHB
+   if (chain->image_info.image_type == WSI_IMAGE_TYPE_ANDROID &&
+       wsi->GetSemaphoreFdKHR != NULL) {
+      const VkExportSemaphoreCreateInfo export_info = {
+         .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+         .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+      };
+      const VkSemaphoreCreateInfo sem_info = {
+         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+         .pNext = &export_info,
+      };
+      /* Optional: without it the backend waits for the image's fence on the CPU. */
+      if (wsi->CreateSemaphore(_device, &sem_info, &chain->alloc,
+                               &chain->sync_file_semaphore) != VK_SUCCESS)
+         chain->sync_file_semaphore = VK_NULL_HANDLE;
+   }
+#endif
+
    if ((pCreateInfo->flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) ||
        device->enabled_extensions.GOOGLE_display_timing) {
       ICD_FROM_HANDLE(VkIcdSurfaceBase, surface, pCreateInfo->surface);
@@ -715,6 +734,10 @@ wsi_swapchain_finish(struct wsi_swapchain *chain)
    }
    chain->wsi->DestroySemaphore(chain->device, chain->dma_buf_semaphore,
                                 &chain->alloc);
+#ifdef VK_WSI_ANDROID_AHB
+   chain->wsi->DestroySemaphore(chain->device, chain->sync_file_semaphore,
+                                &chain->alloc);
+#endif
    chain->wsi->DestroySemaphore(chain->device, chain->present_id_timeline,
                                 &chain->alloc);
 
@@ -934,6 +957,10 @@ wsi_create_image(const struct wsi_swapchain *chain,
    for (uint32_t i = 0; i < WSI_ES_COUNT; i++)
       image->explicit_sync[i].fd = -1;
 #endif
+#ifdef VK_WSI_ANDROID_AHB
+   image->present_sync_fd = -1;
+   image->acquire_fence_fd = -1;
+#endif
 
 #ifdef VK_WSI_ANDROID_AHB
    if (info->ahardware_buffer_desc != NULL &&
@@ -1083,6 +1110,13 @@ wsi_destroy_image(const struct wsi_swapchain *chain,
 #ifndef _WIN32
    if (image->dma_buf_fd >= 0)
       close(image->dma_buf_fd);
+#endif
+#ifdef VK_WSI_ANDROID_AHB
+   if (image->present_sync_fd >= 0)
+      close(image->present_sync_fd);
+   if (image->acquire_fence_fd >= 0)
+      close(image->acquire_fence_fd);
+   image->present_sync_fd = image->acquire_fence_fd = -1;
 #endif
 
    if (image->explicit_sync[WSI_ES_ACQUIRE].semaphore) {
@@ -2284,25 +2318,32 @@ static VkResult
 wsi_signal_semaphore_for_image(struct vk_device *device,
                                const struct wsi_swapchain *chain,
                                const struct wsi_image *image,
-                               VkSemaphore _semaphore)
+                               VkSemaphore _semaphore,
+                               int fd)
 {
    if (device->physical->supported_sync_types == NULL) {
       /* Layered drivers (the Vulkan wrapper) don't use vk_sync: the semaphore
-       * belongs to the underlying driver.  Signal it right away by importing
-       * an already-signaled sync file (fd == -1).
+       * belongs to the underlying driver.  Import the compositor's release
+       * fence (`fd`, consumed), or an already-signaled sync file (fd == -1).
        */
-      if (chain->wsi->ImportSemaphoreFdKHR == NULL)
+      if (chain->wsi->ImportSemaphoreFdKHR == NULL) {
+         assert(fd < 0);
          return VK_SUCCESS;
+      }
 
       const VkImportSemaphoreFdInfoKHR import_fd_info = {
          .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
          .semaphore = _semaphore,
          .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
          .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-         .fd = -1,
+         .fd = fd,
       };
-      return chain->wsi->ImportSemaphoreFdKHR(chain->device, &import_fd_info);
+      VkResult result = chain->wsi->ImportSemaphoreFdKHR(chain->device, &import_fd_info);
+      if (result != VK_SUCCESS && fd >= 0)
+         close(fd);
+      return result;
    }
+   assert(fd < 0);
 
    VK_FROM_HANDLE(vk_semaphore, semaphore, _semaphore);
 
@@ -2329,22 +2370,29 @@ static VkResult
 wsi_signal_fence_for_image(struct vk_device *device,
                            const struct wsi_swapchain *chain,
                            const struct wsi_image *image,
-                           VkFence _fence)
+                           VkFence _fence,
+                           int fd)
 {
    if (device->physical->supported_sync_types == NULL) {
       /* See wsi_signal_semaphore_for_image() */
-      if (chain->wsi->ImportFenceFdKHR == NULL)
+      if (chain->wsi->ImportFenceFdKHR == NULL) {
+         assert(fd < 0);
          return VK_SUCCESS;
+      }
 
       const VkImportFenceFdInfoKHR import_fd_info = {
          .sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR,
          .fence = _fence,
          .flags = VK_FENCE_IMPORT_TEMPORARY_BIT,
          .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
-         .fd = -1,
+         .fd = fd,
       };
-      return chain->wsi->ImportFenceFdKHR(chain->device, &import_fd_info);
+      VkResult result = chain->wsi->ImportFenceFdKHR(chain->device, &import_fd_info);
+      if (result != VK_SUCCESS && fd >= 0)
+         close(fd);
+      return result;
    }
+   assert(fd < 0);
 
    VK_FROM_HANDLE(vk_fence, fence, _fence);
 
@@ -2385,21 +2433,60 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
 
    image->acquired = true;
 
+   /* The compositor's release fence, if it still reads the image: the app's semaphore and
+    * fence get it. Where they cannot take a sync file, wait for it here. */
+   int release_fd = -1;
+#ifdef VK_WSI_ANDROID_AHB
+   release_fd = image->acquire_fence_fd;
+   image->acquire_fence_fd = -1;
+   if (release_fd >= 0) {
+      const bool sem_takes = pAcquireInfo->semaphore != VK_NULL_HANDLE &&
+                             wsi->ImportSemaphoreFdKHR != NULL;
+      const bool fence_takes = pAcquireInfo->fence != VK_NULL_HANDLE &&
+                               wsi->ImportFenceFdKHR != NULL;
+      if (device->physical->supported_sync_types != NULL ||
+          (pAcquireInfo->semaphore != VK_NULL_HANDLE && !sem_takes) ||
+          (pAcquireInfo->fence != VK_NULL_HANDLE && !fence_takes) ||
+          (!sem_takes && !fence_takes)) {
+         sync_wait(release_fd, -1);
+         close(release_fd);
+         release_fd = -1;
+      }
+   }
+#endif
+
    if (pAcquireInfo->semaphore != VK_NULL_HANDLE) {
+      int fd = -1;
+#ifdef VK_WSI_ANDROID_AHB
+      if (release_fd >= 0 && pAcquireInfo->fence == VK_NULL_HANDLE) {
+         fd = release_fd;
+         release_fd = -1;
+      } else if (release_fd >= 0) {
+         fd = os_dupfd_cloexec(release_fd);
+         if (fd < 0)
+            sync_wait(release_fd, -1);   /* no fd to spare: the semaphore gets a signaled one */
+      }
+#endif
       VkResult signal_result =
          wsi_signal_semaphore_for_image(device, swapchain, image,
-                                        pAcquireInfo->semaphore);
-      if (signal_result != VK_SUCCESS)
+                                        pAcquireInfo->semaphore, fd);
+      if (signal_result != VK_SUCCESS) {
+         if (release_fd >= 0)
+            close(release_fd);
          return signal_result;
+      }
    }
 
    if (pAcquireInfo->fence != VK_NULL_HANDLE) {
       VkResult signal_result =
          wsi_signal_fence_for_image(device, swapchain, image,
-                                    pAcquireInfo->fence);
+                                    pAcquireInfo->fence, release_fd);
+      release_fd = -1;
       if (signal_result != VK_SUCCESS)
          return signal_result;
    }
+   if (release_fd >= 0)
+      close(release_fd);
 
    if (wsi->set_memory_ownership)
       wsi->set_memory_ownership(swapchain->device, image->memory, true);
@@ -2503,7 +2590,7 @@ wsi_queue_submit2_unordered(const struct wsi_device *wsi,
 struct wsi_image_signal_info {
    uint64_t present_id;
    uint32_t semaphore_count;
-   VkSemaphoreSubmitInfo semaphore_infos[2];
+   VkSemaphoreSubmitInfo semaphore_infos[3];
    uint32_t fence_count;
    VkFence fences[2];
 };
@@ -2741,6 +2828,17 @@ wsi_common_queue_present(const struct wsi_device *wsi,
          wsi_image_signal_info_add_semaphore(&image_signal_infos[i], sem_info);
       }
 
+#ifdef VK_WSI_ANDROID_AHB
+      if (swapchain->sync_file_semaphore != VK_NULL_HANDLE) {
+         const VkSemaphoreSubmitInfo sem_info = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .semaphore = swapchain->sync_file_semaphore,
+         };
+         wsi_image_signal_info_add_semaphore(&image_signal_infos[i], sem_info);
+      }
+#endif
+
       uint64_t present_id = 0;
       if (present_ids && present_ids->pPresentIds)
          present_id = present_ids->pPresentIds[i];
@@ -2948,6 +3046,22 @@ wsi_common_queue_present(const struct wsi_device *wsi,
       struct wsi_image *image =
          swapchain->get_wsi_image(swapchain, image_index);
 
+#ifdef VK_WSI_ANDROID_AHB
+      if (results[i] == VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT &&
+          swapchain->sync_file_semaphore != VK_NULL_HANDLE) {
+         /* Signaled without a present: unsignal it (an export waits it) for the next one. */
+         const VkSemaphoreGetFdInfoKHR get_fd_info = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+            .semaphore = swapchain->sync_file_semaphore,
+            .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+         };
+         int fd = -1;
+         if (wsi->GetSemaphoreFdKHR(vk_device_to_handle(dev), &get_fd_info, &fd) == VK_SUCCESS &&
+             fd >= 0)
+            close(fd);
+      }
+#endif
+
       if (results[i] != VK_SUCCESS)
          continue;
 
@@ -2979,6 +3093,27 @@ wsi_common_queue_present(const struct wsi_device *wsi,
          UNREACHABLE("We shouldn't have a dma-buf semaphore without libdrm");
 #endif
       }
+
+#ifdef VK_WSI_ANDROID_AHB
+      if (swapchain->sync_file_semaphore != VK_NULL_HANDLE) {
+         /* The present submit signaled it: its sync file is this frame's acquire fence. */
+         const VkSemaphoreGetFdInfoKHR get_fd_info = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+            .semaphore = swapchain->sync_file_semaphore,
+            .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+         };
+         int fd = -1;
+         if (image->present_sync_fd >= 0)
+            close(image->present_sync_fd);
+         if (wsi->GetSemaphoreFdKHR(vk_device_to_handle(dev), &get_fd_info, &fd) != VK_SUCCESS)
+            fd = -1;
+         /* -1 from a successful export means "signaled already"; the backend cannot tell it
+          * from a failure, and both mean the same to it: wait for the image's fence. */
+         image->present_sync_fd = fd;
+      }
+      if (swapchain->wl_fg_frame)
+         swapchain->wl_fg_frame(swapchain, vk_queue_to_handle(queue), image_index);
+#endif
 
       if (wsi->sw) {
          wsi->WaitForFences(vk_device_to_handle(dev),

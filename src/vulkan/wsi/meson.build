@@ -12,6 +12,8 @@ endif
 if with_wrapper_vk
   # AHardwareBuffer-backed swapchain images for the Vulkan wrapper
   files_vulkan_wsi += files('wsi_common_android.c')
+  # WinLite: WL Direct client, wl.control, FPS limit (wsi_common_wl.h)
+  files_vulkan_wsi += files('wsi_common_wl.c')
 endif
 
 if with_platform_x11

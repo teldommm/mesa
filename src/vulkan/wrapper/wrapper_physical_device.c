@@ -770,6 +770,10 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
       debug_get_bool_option("WRAPPER_AHB_UBWC", false) && !wrapper_bgra &&
       pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
 
+   /* Frame generation (WFG, wrapper_fg.c) for the WL swapchain; it runs when wl.control asks
+    * for it (fg_mode). */
+   pdevice->wsi_device.wl_fg = &wrapper_wl_fg_ops;
+
    /* Last, so the extensions the wrapper adds or emulates above (placed
     * memory, map_memory2, memory_budget, pipeline_library, ...) can be
     * blacklisted too. */

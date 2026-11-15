@@ -107,6 +107,10 @@ struct wsi_device {
     * driver, when asked for with WRAPPER_AHB_UBWC. */
    bool android_ahb_ubwc;
 
+   /* WinLite: the frame generation engine of the layered driver for the WL swapchain
+    * (struct wsi_wl_fg_ops in wsi_common_wl.h), NULL when there is none. */
+   const struct wsi_wl_fg_ops *wl_fg;
+
    /* Cached result for wsi_drm_check_dma_buf_sync_file_import_export(). */
    uint32_t cached_sync_file_import_export_result;
 

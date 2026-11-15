@@ -231,6 +231,10 @@ wrapper_setup_device_features(struct wrapper_physical_device *physical_device);
 void
 wrapper_device_memory_destroy(struct wrapper_device_memory *mem);
 
+/* wrapper_fg.c: frame generation for the WL swapchain (wsi_device::wl_fg) */
+struct wsi_wl_fg_ops;
+extern const struct wsi_wl_fg_ops wrapper_wl_fg_ops;
+
 /* wrapper_bcn.c */
 void
 wrapper_bcn_setup_physical_device(struct wrapper_physical_device *pdevice);

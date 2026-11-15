@@ -103,7 +103,47 @@ AHardwareBuffers:
 * idle fences are plain XSync fences;
 * XFIXES is optional (damage regions are skipped without it);
 * only one channel order is exposed (`WRAPPER_SURFACE_FORMAT`, R8G8B8A8 by default);
-* `_MESA_DRV*` window properties instead of `_VARIABLE_REFRESH`.
+* `_MESA_DRV*` window properties instead of `_VARIABLE_REFRESH`;
+* the present thread always waits for the render fence before PresentPixmap
+  (the compositor has no implicit sync).
+
+## WL swapchain (WinLite)
+
+The X11 swapchain is also a WL swapchain (`wsi_common_wl.c`, protocol in
+`wsi/wl_proto.h`, shared with WinLite):
+
+* **WL Direct.** The swapchain connects to the emulator (`$WL_DIRECT_SOCK`, else
+  `$TMPDIR/.wl-direct`; a new try every 2 s while there is none) and hands it its
+  images. While the emulator grants it (the window alone on the screen), frames go
+  straight to the emulator's SurfaceFlinger layer with a sync file of the present's
+  GPU work (`wsi_swapchain::sync_file_semaphore`); everything else goes through X
+  as before. Images come back with SurfaceFlinger's release fence, which the next
+  vkAcquireNextImageKHR imports into the app's semaphore / fence. FIFO keeps at
+  most two frames with the server, so none is dropped; MAILBOX / IMMEDIATE let the
+  server keep the latest. One image more than asked for (not with
+  `vk_x11_strict_image_count`).
+* **FPS limit** in vkAcquireNextImageKHR, from wl.control (`fps_limit`): the
+  game waits for its slot before it draws. Intervals within 5% of a whole number
+  of refreshes snap to the display's refresh grid. The window gets
+  `_WL_SWAPCHAIN = 1`, so the emulator's X server does not limit it again.
+* **wl.control** (`$WL_CONTROL_PATH`, else `$TMPDIR/.wl-control`, 128 bytes,
+  mapped shared): settings from the emulator, its display clock, and the
+  swapchain's status (sink, grant reason, frame counters) for the HUD.
+* **Frame generation** (WFG, `wrapper_wfg.c` and `wfg_shaders/`, MIT,
+  Copyright 2026 qwertypower (DEVAR Entertainment LLC), see `LICENSE.wfg`;
+  moved here from WinLite's renderer). Driven by wl.control (`fg_mode` fixed xN
+  or a target rate, `fg_multiplier`, `fg_target_fps`, `fg_flow_side`, the fast
+  interpolation flag, `fg_min_fps` / `fg_resume_fps` for the adaptive floor).
+  In vkQueuePresentKHR, right after the present's own submit and on the same
+  queue (`wrapper_fg.c`), the game's image is analysed at its own resolution,
+  before any effect, and the frames between the previous game frame and it are
+  rendered into the swapchain's outputs: up to five extra images, made with the
+  swapchain while frame generation is on (turned on later, the swapchain returns
+  VK_SUBOPTIMAL_KHR once to be made again with them). The present thread then
+  shows the generated frames and the game frame evenly over the game's frame
+  interval, each on its refresh of the display grid (wl.control's clock):
+  WL Direct gets `desired_present_ns`, X gets the present at its time. The
+  status in wl.control carries `fg_state` and the generated frame count.
 
 ## Environment variables
 
@@ -113,7 +153,7 @@ AHardwareBuffers:
 | `WRAPPER_SURFACE_FORMAT` | `rgba8` (default) or `bgra8`: channel order of the swapchain images, must match the emulator's buffers |
 | `WRAPPER_AHB_UBWC` | `1`: allocate the R8G8B8A8 swapchain images UBWC compressed (Qualcomm gralloc). Only with the proprietary Adreno driver and `rgba8`; ignored otherwise (default: off) |
 | `WRAPPER_BLIT` / `MESA_VK_WSI_DEBUG=blit` | render to an intermediate image and blit |
-| `MESA_VK_WSI_NO_RENDER_WAIT=1` | X11 WSI: don't wait for the render fence in the present thread before PresentPixmap (upstream behaviour; frames may reach the compositor unfinished) |
+| `WL_DIRECT_SOCK`, `WL_CONTROL_PATH` | where the emulator's WL Direct socket and wl.control are (default: `$TMPDIR/.wl-direct`, `$TMPDIR/.wl-control`) |
 | `WRAPPER_MAX_IMAGE_COUNT` | pin the swapchain length |
 | `WRAPPER_DISABLE_PLACED` | don't emulate VK_EXT_map_memory_placed |
 | `WRAPPER_RESOURCE_TYPE` | `auto`, `dmabuf`, `ahb`, `opaque`: backing of placed allocations |

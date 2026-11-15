@@ -38,6 +38,8 @@
 #include <android/hardware_buffer.h>
 #include <sys/socket.h>
 #include <xcb/sync.h>
+#include "wsi_common_wl.h"
+#include "util/libsync.h"
 #endif
 
 #include "util/macros.h"
@@ -1297,6 +1299,25 @@ struct x11_image {
 #ifdef HAVE_DRI3_EXPLICIT_SYNC
    uint32_t                                  dri3_syncobj[WSI_ES_COUNT];
 #endif
+#ifdef VK_WSI_ANDROID_AHB
+   /* WL Direct (thread_state_lock): the emulator's compositor has the image... */
+   bool                                      wl_held;
+   /* ...or gave it back (no X idle fence to wait for), with its release fence or -1. */
+   bool                                      wl_returned;
+   int                                       wl_release_fd;
+   uint64_t                                  wl_frame_id;
+
+   /* Frame generation. An output (fg_output) is one of the swapchain's own images the engine
+    * renders generated frames into, never the app's; fg_free (thread_state_lock): nobody shows
+    * or renders it. A game image carries the batch made at its present (fg_count frames in
+    * fg_outputs, done when fg_fd signals), for the present thread to show before it. */
+   bool                                      fg_output;
+   bool                                      fg_free;
+   uint32_t                                  fg_count;
+   uint32_t                                  fg_outputs[WL_DIRECT_MAX_IMAGES];
+   int                                       fg_fd;
+   uint64_t                                  fg_interval_ns;
+#endif
 };
 
 struct x11_present_timing_entry {
@@ -1372,10 +1393,58 @@ struct x11_swapchain {
    bool                                         has_reliable_msc;
    bool                                         last_complete_is_flip;
 
+#ifdef VK_WSI_ANDROID_AHB
+   /* WL Direct: frames go to the emulator's SurfaceFlinger layer while it grants them.
+    * wl_link is the present thread's (destroy's once that thread is gone); the reader
+    * thread uses it until it is shut down. The rest is under thread_state_lock. */
+   struct wl_direct *                           wl_link;
+   thrd_t                                       wl_reader;
+   bool                                         wl_dead;
+   bool                                         wl_granted;
+   uint32_t                                     wl_reason;
+   uint64_t                                     wl_refresh_ns;
+   uint64_t                                     wl_next_try_ns;   /* present thread */
+   uint64_t                                     wl_sent_id;       /* frame ids of this link */
+   uint64_t                                     wl_done_id;
+   uint32_t                                     wl_held_count;
+#define X11_WL_FRAME_RING 16
+   struct {
+      uint64_t frame_id;
+      uint64_t present_id;
+      uint64_t timing_serial;
+      uint32_t image;
+   }                                            wl_frames[X11_WL_FRAME_RING];
+   uint64_t                                     wl_real_frames;
+   uint64_t                                     wl_dropped_frames;
+   xcb_atom_t                                   wl_atom;          /* _WL_SWAPCHAIN */
+   struct wl_limiter                            wl_limit;         /* the app's acquire */
+
+   /* Frame generation (wsi_device::wl_fg): the outputs are images[image_count ..
+    * image_count + fg_output_count - 1]; fg is NULL without them. */
+   uint32_t                                     fg_output_count;
+   struct wsi_wl_fg *                           fg;
+   bool                                         fg_possible;       /* outputs could be made */
+   bool                                         fg_asked_recreate;
+   uint32_t                                     fg_state;          /* enum wl_fg_state */
+   uint64_t                                     fg_generated;      /* thread_state_lock */
+   uint64_t                                     fg_last_real_ns;   /* present thread */
+#endif
+
    struct x11_image                             images[0];
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(x11_swapchain, base.base, VkSwapchainKHR,
                                VK_OBJECT_TYPE_SWAPCHAIN_KHR)
+
+/* Every image of the chain: the app's, then the frame generation outputs. */
+static inline uint32_t
+x11_image_total(const struct x11_swapchain *chain)
+{
+#ifdef VK_WSI_ANDROID_AHB
+   return chain->base.image_count + chain->fg_output_count;
+#else
+   return chain->base.image_count;
+#endif
+}
 
 static bool x11_refresh_rate_estimate_is_stable(struct x11_swapchain *swapchain, uint64_t base_rate)
 {
@@ -1709,8 +1778,15 @@ x11_handle_dri3_present_event(struct x11_swapchain *chain,
       xcb_present_idle_notify_event_t *idle = (void *) event;
 
       assert(!chain->base.image_info.explicit_sync);
-      for (unsigned i = 0; i < chain->base.image_count; i++) {
+      for (unsigned i = 0; i < x11_image_total(chain); i++) {
          if (chain->images[i].pixmap == idle->pixmap) {
+#ifdef VK_WSI_ANDROID_AHB
+            if (chain->images[i].fg_output) {
+               /* Free for the next batch; never the app's. */
+               chain->images[i].fg_free = true;
+               break;
+            }
+#endif
             chain->sent_image_count--;
             assert(chain->sent_image_count >= 0);
             wsi_queue_push(&chain->acquire_queue, i);
@@ -1739,7 +1815,7 @@ x11_handle_dri3_present_event(struct x11_swapchain *chain,
 
       if (complete->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
          unsigned i, j;
-         for (i = 0; i < chain->base.image_count; i++) {
+         for (i = 0; i < x11_image_total(chain); i++) {
             struct x11_image *image = &chain->images[i];
             for (j = 0; j < image->present_queued_count; j++) {
                if (image->pending_completions[j].serial == complete->serial) {
@@ -1817,7 +1893,7 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
 {
    struct x11_image *image = &chain->images[image_index];
 
-   assert(image_index < chain->base.image_count);
+   assert(image_index < x11_image_total(chain));
 
    uint32_t options = XCB_PRESENT_OPTION_NONE;
 
@@ -1844,7 +1920,8 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
       options |= XCB_PRESENT_OPTION_SUBOPTIMAL;
 
 #ifdef VK_WSI_ANDROID_AHB
-   if (!chain->base.image_info.explicit_sync) {
+   /* Outputs are not the app's: they come back through IdleNotify without counting. */
+   if (!chain->base.image_info.explicit_sync && !image->fg_output) {
       ++chain->sent_image_count;
       assert(chain->sent_image_count <= chain->base.image_count);
    }
@@ -2087,22 +2164,15 @@ x11_needs_wait_for_fences(const struct wsi_device *wsi_device,
  * or show it a refresh later than it believes it did.
  *
  * The wait happens in the WSI present thread, so the application thread keeps
- * recording/submitting the next frame (this replaces the old WSI_DEBUG=forcesync,
- * which blocked vkQueuePresentKHR itself). It does not change image counts.
- *
- * MESA_VK_WSI_NO_RENDER_WAIT=1 restores the upstream behaviour.
+ * recording/submitting the next frame. It does not change image counts.
+ * (WL Direct frames carry a sync file instead: SurfaceFlinger waits on it.)
  */
 static bool
 x11_needs_render_wait(const struct wsi_device *wsi_device,
                       struct wsi_x11_connection *wsi_conn,
                       VkPresentModeKHR present_mode)
 {
-   static int disabled = -1;
-   if (disabled < 0)
-      disabled = debug_get_bool_option("MESA_VK_WSI_NO_RENDER_WAIT", false) ? 1 : 0;
-   if (!disabled)
-      return true;
-   return x11_needs_wait_for_fences(wsi_device, wsi_conn, present_mode);
+   return true;
 }
 
 static bool
@@ -2198,6 +2268,609 @@ x11_present_to_x11(struct x11_swapchain *chain, uint32_t image_index,
    return result;
 }
 
+#ifdef VK_WSI_ANDROID_AHB
+/* ---------------------------------------------------------------- WL Direct */
+
+/* A frame of the link is over (shown, dropped or replaced): present wait and present timing
+ * learn about it. thread_state_lock held. */
+static void
+x11_wl_frame_done(struct x11_swapchain *chain, uint64_t frame_id, uint64_t present_ns)
+{
+   if (!frame_id)
+      return;
+   if (frame_id > chain->wl_done_id)
+      chain->wl_done_id = frame_id;
+
+   __typeof__(chain->wl_frames[0]) *f = &chain->wl_frames[frame_id % X11_WL_FRAME_RING];
+   if (f->frame_id != frame_id)
+      return;
+   f->frame_id = 0;
+
+   if (f->timing_serial) {
+      wsi_swapchain_present_timing_notify_completion(&chain->base, f->timing_serial,
+                                                     present_ns ? present_ns : os_time_get_nano(),
+                                                     &chain->images[f->image].base);
+   }
+   if (f->present_id) {
+      mtx_lock(&chain->present_progress_mutex);
+      if (f->present_id > chain->present_id) {
+         chain->present_id = f->present_id;
+         u_cnd_monotonic_broadcast(&chain->present_progress_cond);
+      }
+      mtx_unlock(&chain->present_progress_mutex);
+   }
+}
+
+/* The image is back from WL Direct (`fd`: its release fence, consumed, or -1). Lock held. */
+static void
+x11_wl_give_back(struct x11_swapchain *chain, uint32_t index, int fd)
+{
+   struct x11_image *image = &chain->images[index];
+   if (!image->wl_held) {
+      if (fd >= 0)
+         close(fd);
+      return;
+   }
+   image->wl_held = false;
+   chain->wl_held_count--;
+   if (image->wl_release_fd >= 0)
+      close(image->wl_release_fd);
+   image->wl_release_fd = fd;
+   x11_wl_frame_done(chain, image->wl_frame_id, 0);
+   if (image->fg_output) {
+      /* The next batch renders into it once the fence signals (wsi_wl_fg_ops::frame). */
+      image->fg_free = true;
+      return;
+   }
+   image->wl_returned = true;
+   wsi_queue_push(&chain->acquire_queue, index);
+}
+
+/* thread_state_lock held. */
+static void
+x11_wl_write_status(struct x11_swapchain *chain)
+{
+   const bool direct = chain->wl_link && !chain->wl_dead && chain->wl_granted;
+   uint32_t reason = chain->wl_reason;
+   if (!chain->wl_link || chain->wl_dead)
+      reason = WL_REASON_ERROR;   /* no emulator to talk to */
+   const struct wl_control_status status = {
+      .pid = (uint32_t)getpid(),
+      .sink = direct ? WL_SINK_DIRECT : WL_SINK_X,
+      .fg_state = chain->fg_state,
+      .reason = reason,
+      .real_frames = chain->wl_real_frames,
+      .generated_frames = chain->fg_generated,
+      .dropped_frames = chain->wl_dropped_frames,
+   };
+   wl_control_write_status_now(&status);
+}
+
+static int
+x11_wl_reader(void *state)
+{
+   struct x11_swapchain *chain = state;
+   struct wl_direct *link = chain->wl_link;
+   u_thread_setname("WSI WL Direct");
+
+   struct wl_direct_event ev;
+   int r;
+   while ((r = wl_direct_read(link, &ev)) > 0) {
+      mtx_lock(&chain->thread_state_lock);
+      switch (ev.type) {
+      case WL_DIRECT_GRANT:
+         if (chain->wl_granted != (ev.granted != 0) || chain->wl_reason != ev.reason)
+            mesa_logi("wsi(wl): window 0x%x: %s (reason %u)", chain->window,
+                      ev.granted ? "WL Direct" : "X", ev.reason);
+         chain->wl_granted = ev.granted != 0;
+         chain->wl_reason = ev.reason;
+         if (ev.refresh_ns)
+            __atomic_store_n(&chain->wl_refresh_ns, ev.refresh_ns, __ATOMIC_RELAXED);
+         break;
+      case WL_DIRECT_RELEASE:
+         if (ev.image < x11_image_total(chain)) {
+            x11_wl_give_back(chain, ev.image, ev.fd);
+            ev.fd = -1;
+         }
+         break;
+      case WL_DIRECT_TIMING:
+         if (!ev.present_ns)
+            chain->wl_dropped_frames++;
+         x11_wl_frame_done(chain, ev.frame_id, ev.present_ns);
+         break;
+      default:
+         break;
+      }
+      if (ev.fd >= 0)
+         close(ev.fd);
+      u_cnd_monotonic_broadcast(&chain->thread_state_cond);
+      mtx_unlock(&chain->thread_state_lock);
+   }
+   if (r < 0)
+      mesa_logw("wsi(wl): WL Direct link lost: %s", strerror(-r));
+
+   /* The server is gone (or we hung up): whatever it held is ours again. */
+   mtx_lock(&chain->thread_state_lock);
+   chain->wl_dead = true;
+   chain->wl_granted = false;
+   for (uint32_t i = 0; i < x11_image_total(chain); i++)
+      x11_wl_give_back(chain, i, -1);
+   u_cnd_monotonic_broadcast(&chain->thread_state_cond);
+   mtx_unlock(&chain->thread_state_lock);
+   return 0;
+}
+
+/* Present thread (or destroy, after it): hang up and wait for the reader. */
+static void
+x11_wl_drop(struct x11_swapchain *chain)
+{
+   struct wl_direct *link = chain->wl_link;
+   if (!link)
+      return;
+   wl_direct_shutdown(link);
+   thrd_join(chain->wl_reader, NULL);
+   wl_direct_close(link);
+   mtx_lock(&chain->thread_state_lock);
+   chain->wl_link = NULL;
+   chain->wl_granted = false;
+   mtx_unlock(&chain->thread_state_lock);
+   chain->wl_next_try_ns = os_time_get_nano() + WL_DIRECT_RECONNECT_MS * 1000000ull;
+}
+
+/* Present thread, no lock held: keep a link to the emulator (at most a try every
+ * WL_DIRECT_RECONNECT_MS). */
+static void
+x11_wl_maintain(struct x11_swapchain *chain)
+{
+   if (chain->wl_link) {
+      mtx_lock(&chain->thread_state_lock);
+      const bool dead = chain->wl_dead;
+      mtx_unlock(&chain->thread_state_lock);
+      if (!dead)
+         return;
+      x11_wl_drop(chain);
+   }
+   const uint64_t now = os_time_get_nano();
+   if (now < chain->wl_next_try_ns)
+      return;
+   chain->wl_next_try_ns = now + WL_DIRECT_RECONNECT_MS * 1000000ull;
+
+   const struct AHardwareBuffer_Desc *desc = chain->base.image_info.ahardware_buffer_desc;
+   const char *path = wl_direct_socket_path();
+   const uint32_t total = x11_image_total(chain);   /* the outputs too */
+   if (!desc || !path || total > WL_DIRECT_MAX_IMAGES) {
+      chain->wl_next_try_ns = UINT64_MAX;
+      return;
+   }
+   struct AHardwareBuffer *ahbs[WL_DIRECT_MAX_IMAGES];
+   for (uint32_t i = 0; i < total; i++) {
+      ahbs[i] = chain->images[i].base.ahardware_buffer;
+      if (!ahbs[i]) {
+         chain->wl_next_try_ns = UINT64_MAX;
+         return;
+      }
+   }
+
+   uint32_t granted = 0, reason = WL_REASON_ERROR;
+   struct wl_direct *link =
+      wl_direct_connect(path, chain->window, total, ahbs,
+                        desc->width, desc->height, desc->format, desc->usage,
+                        (desc->usage & AHARDWAREBUFFER_USAGE_VENDOR_0) != 0,
+                        &granted, &reason);
+   if (!link)
+      return;
+
+   mtx_lock(&chain->thread_state_lock);
+   chain->wl_link = link;
+   chain->wl_dead = false;
+   chain->wl_granted = granted != 0;
+   chain->wl_reason = reason;
+   chain->wl_sent_id = chain->wl_done_id = 0;
+   memset(chain->wl_frames, 0, sizeof(chain->wl_frames));
+   mtx_unlock(&chain->thread_state_lock);
+
+   if (thrd_create(&chain->wl_reader, x11_wl_reader, chain) != thrd_success) {
+      mtx_lock(&chain->thread_state_lock);
+      chain->wl_link = NULL;
+      chain->wl_granted = false;
+      mtx_unlock(&chain->thread_state_lock);
+      wl_direct_close(link);
+   }
+}
+
+static bool
+x11_wl_is_granted(struct x11_swapchain *chain)
+{
+   if (!chain->wl_link)
+      return false;
+   mtx_lock(&chain->thread_state_lock);
+   const bool granted = chain->wl_granted && !chain->wl_dead;
+   mtx_unlock(&chain->thread_state_lock);
+   return granted;
+}
+
+/* Present thread, no lock held: image `index` to WL Direct, if granted. `fd` (taken): the sync
+ * file its rendering signals; -1: `fence` is waited for on the CPU first (VK_NULL_HANDLE:
+ * rendered already). `paced`: at most two frames with the server, so it drops none (FIFO, and
+ * frame generation); `desired_ns`: its display time, 0 for its timing request's. true: sent;
+ * false: it goes to X. */
+static bool
+x11_wl_send(struct x11_swapchain *chain, uint32_t index, int fd, VkFence fence, bool paced,
+            uint64_t desired_ns, bool generated)
+{
+   struct x11_image *image = &chain->images[index];
+
+   if (!x11_wl_is_granted(chain))
+      goto to_x;
+
+   if (fd < 0 && fence != VK_NULL_HANDLE) {
+      /* No sync file: SurfaceFlinger gets the frame once it is rendered. */
+      MESA_TRACE_SCOPE("wait fence");
+      if (chain->base.wsi->WaitForFences(chain->base.device, 1, &fence, true,
+                                         UINT64_MAX) != VK_SUCCESS)
+         goto to_x;
+   }
+
+   mtx_lock(&chain->thread_state_lock);
+   if (paced) {
+      /* The server keeps one frame in flight and one pending, so a third waits here until one
+       * of them is shown or given back. */
+      MESA_TRACE_SCOPE("wait direct");
+      struct timespec deadline;
+      timespec_from_nsec(&deadline, os_time_get_nano() + 100000000ull);
+      while (chain->status >= 0 && chain->wl_granted && !chain->wl_dead &&
+             chain->wl_sent_id - chain->wl_done_id >= 2) {
+         if (u_cnd_monotonic_timedwait(&chain->thread_state_cond, &chain->thread_state_lock,
+                                       &deadline) == thrd_timedout)
+            break;
+      }
+   }
+   if (chain->status < 0 || !chain->wl_granted || chain->wl_dead) {
+      mtx_unlock(&chain->thread_state_lock);
+      goto to_x;
+   }
+
+   const uint64_t frame_id = ++chain->wl_sent_id;
+   image->wl_held = true;
+   image->wl_frame_id = frame_id;
+   chain->wl_held_count++;
+   if (generated)
+      chain->fg_generated++;
+   else
+      chain->wl_real_frames++;
+   __typeof__(chain->wl_frames[0]) *f = &chain->wl_frames[frame_id % X11_WL_FRAME_RING];
+   f->frame_id = frame_id;
+   f->present_id = image->present_id;
+   f->timing_serial = image->timing_request.serial;
+   f->image = index;
+   const struct wsi_image_timing_request *req = &image->timing_request;
+   uint64_t desired = desired_ns;
+   if (!desired && req->time && !(req->flags & VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT))
+      desired = req->time;
+   mtx_unlock(&chain->thread_state_lock);
+
+   int r = wl_direct_frame(chain->wl_link, index, fd, frame_id, desired, generated);
+   if (fd >= 0)
+      close(fd);
+
+   mtx_lock(&chain->thread_state_lock);
+   bool sent = true;
+   if (r != 0) {
+      mesa_logw("wsi(wl): WL Direct frame not sent: %s", strerror(-r));
+      if (image->wl_held) {
+         /* Never reached the server: it goes to X after all. */
+         image->wl_held = false;
+         chain->wl_held_count--;
+         if (generated)
+            chain->fg_generated--;
+         else
+            chain->wl_real_frames--;
+         f->frame_id = 0;
+         chain->wl_sent_id--;
+         sent = false;
+      }
+      /* (Otherwise the reader already gave it back: the frame is lost.) */
+      wl_direct_shutdown(chain->wl_link);   /* the reader ends, maintain() drops the link */
+   }
+   x11_wl_write_status(chain);
+   mtx_unlock(&chain->thread_state_lock);
+   return sent;   /* not sent: the X path waits for the render itself */
+
+to_x:
+   if (fd >= 0)
+      close(fd);
+   return false;
+}
+
+/* Present thread, no lock held: the app's image `image_index` to WL Direct. `display_ns`: when
+ * it is to be shown (a frame generation batch), 0: as it comes. */
+static bool
+x11_wl_present(struct x11_swapchain *chain, uint32_t image_index,
+               VkPresentModeKHR present_mode, uint64_t display_ns, uint64_t period)
+{
+   struct x11_image *image = &chain->images[image_index];
+   int fd = image->base.present_sync_fd;
+   image->base.present_sync_fd = -1;
+   const bool fifo = present_mode == VK_PRESENT_MODE_FIFO_KHR ||
+                     present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+   /* SurfaceFlinger shows a buffer at the first refresh at or after its desired time. */
+   const uint64_t desired = display_ns ? display_ns - period / 2 : 0;
+   return x11_wl_send(chain, image_index, fd, chain->base.fences[image_index],
+                      fifo || display_ns, desired, false);
+}
+
+/* ---------------------------------------------------------------- frame generation */
+
+/* Up to this many outputs (the most a batch uses, plus the one on screen and the one being
+ * replaced), within WL_DIRECT_MAX_IMAGES with the app's images. */
+#define X11_FG_OUTPUTS 5u
+
+/* The display's refresh grid: the period, and a refresh that really happened (0: none). */
+static uint64_t
+x11_fg_period(struct x11_swapchain *chain, uint64_t now, uint64_t *anchor)
+{
+   uint64_t period = 0;
+   *anchor = 0;
+   if (!wl_control_read_grid(now, &period, anchor)) {
+      period = __atomic_load_n(&chain->wl_refresh_ns, __ATOMIC_RELAXED);
+      *anchor = 0;
+   }
+   return period ? period : 16666667ull;
+}
+
+/* The refresh nearest to `t` (t itself without a grid). */
+static uint64_t
+x11_fg_snap(uint64_t t, uint64_t period, uint64_t anchor)
+{
+   if (!anchor)
+      return t;
+   const int64_t rel = (int64_t)(t - anchor);
+   const int64_t p = (int64_t)period;
+   const int64_t k = rel >= 0 ? (rel + p / 2) / p : -((-rel + p / 2) / p);
+   return (uint64_t)((int64_t)anchor + k * p);
+}
+
+static void
+x11_fg_sleep_until(uint64_t t)
+{
+   const uint64_t now = os_time_get_nano();
+   if (t <= now)
+      return;
+   if (t - now > 250000000ull)
+      t = now + 250000000ull;
+   os_time_nanosleep_until(t);
+}
+
+/* Present thread, no lock held: output `index` through X once `fd` (taken) signals. */
+static VkResult
+x11_fg_present_x(struct x11_swapchain *chain, uint32_t index, int fd,
+                 VkPresentModeKHR present_mode)
+{
+   if (fd >= 0) {
+      sync_wait(fd, 1000);
+      close(fd);
+   }
+   struct x11_image *image = &chain->images[index];
+   mtx_lock(&chain->thread_state_lock);
+   while (chain->status >= 0 &&
+          image->present_queued_count == ARRAY_SIZE(image->pending_completions))
+      u_cnd_monotonic_wait(&chain->thread_state_cond, &chain->thread_state_lock);
+   VkResult result = chain->status;
+   if (result >= 0) {
+      result = x11_present_to_x11(chain, index, 0, present_mode);
+      if (result >= 0) {
+         chain->fg_generated++;
+         x11_wl_write_status(chain);
+         if (present_mode == VK_PRESENT_MODE_FIFO_KHR ||
+             present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+            while (chain->status >= 0 && image->present_queued_count != 0)
+               u_cnd_monotonic_wait(&chain->thread_state_cond, &chain->thread_state_lock);
+         }
+      }
+   }
+   mtx_unlock(&chain->thread_state_lock);
+   return result;
+}
+
+/* Present thread, no lock held: shows the generated frames of the batch made at the present
+ * of `image_index`. The batch and the game frame after it split the game's frame interval
+ * evenly, continuing from the previous game frame's display time, each on the refresh nearest
+ * to its time. Returns when the game frame is to be shown (0: no batch); *period: the refresh
+ * period used. */
+static uint64_t
+x11_fg_present_batch(struct x11_swapchain *chain, uint32_t image_index,
+                     VkPresentModeKHR present_mode, uint64_t *period_out, VkResult *result)
+{
+   struct x11_image *image = &chain->images[image_index];
+   const uint32_t n = image->fg_count;
+   const uint64_t now = os_time_get_nano();
+   uint64_t anchor;
+   const uint64_t period = x11_fg_period(chain, now, &anchor);
+   *period_out = period;
+   if (!n) {
+      if (image->fg_fd < 0)
+         chain->fg_last_real_ns = 0;   /* no frame generation: the next batch starts over */
+      return 0;
+   }
+
+   /* The interval to split: the FPS limit when the game holds it (the measured interval is a
+    * smoothed estimate), else the measured one. */
+   uint64_t interval = image->fg_interval_ns;
+   struct wl_control_settings settings;
+   if (wl_control_read_settings_now(&settings) && settings.fps_limit) {
+      const uint64_t limit = 1000000000ull / settings.fps_limit;
+      if (!interval || (interval * 10 >= limit * 9 && interval * 10 <= limit * 11))
+         interval = limit;
+   }
+   if (!interval)
+      interval = (uint64_t)(n + 1) * period;
+   const uint64_t step = interval / (n + 1);
+
+   /* The first frame cannot be shown before the generation's GPU work and the next latch. */
+   const uint64_t lead = period + period / 2;
+   uint64_t start = chain->fg_last_real_ns ? chain->fg_last_real_ns + step : 0;
+   if (!start || start < now + lead || start > now + lead + interval) {
+      /* The first batch, or after a hitch: start over, half a refresh past the minimum, so the
+       * next game frame arriving a little late does not start it over again. */
+      start = now + lead + period / 2;
+   }
+
+   uint64_t at[WL_DIRECT_MAX_IMAGES + 1];
+   uint64_t prev = 0;
+   for (uint32_t g = 0; g <= n; g++) {
+      uint64_t t = x11_fg_snap(start + g * step, period, anchor);
+      if (prev && t < prev + period / 2)
+         t = prev + period;   /* never two on one refresh */
+      at[g] = prev = t;
+   }
+   chain->fg_last_real_ns = at[n];
+
+   for (uint32_t g = 0; g < n; g++) {
+      const uint32_t out = image->fg_outputs[g];
+      if (chain->status < 0 || *result < 0) {
+         mtx_lock(&chain->thread_state_lock);
+         chain->images[out].fg_free = true;   /* never shown */
+         mtx_unlock(&chain->thread_state_lock);
+         continue;
+      }
+      if (x11_wl_is_granted(chain)) {
+         x11_fg_sleep_until(at[g] - 2 * period);
+         if (x11_wl_send(chain, out, os_dupfd_cloexec(image->fg_fd), VK_NULL_HANDLE, true,
+                         at[g] - period / 2, true))
+            continue;
+      }
+      x11_fg_sleep_until(at[g] - period);
+      *result = x11_fg_present_x(chain, out, os_dupfd_cloexec(image->fg_fd), present_mode);
+   }
+   return at[n];
+}
+
+/* vkQueuePresentKHR, the app's thread, after the present submit (wsi_swapchain::wl_fg_frame):
+ * the batch of generated frames that goes before this game frame. */
+static void
+x11_wl_fg_frame(struct wsi_swapchain *wsi_chain, VkQueue queue, uint32_t image_index)
+{
+   struct x11_swapchain *chain = (struct x11_swapchain *)wsi_chain;
+   const struct wsi_wl_fg_ops *ops = chain->base.wsi->wl_fg;
+   struct x11_image *image = &chain->images[image_index];
+   image->fg_count = 0;
+   if (image->fg_fd >= 0)
+      close(image->fg_fd);
+   image->fg_fd = -1;
+
+   struct wl_control_settings st;
+   if (!ops || !wl_control_read_settings_now(&st) || st.fg_mode == WL_FG_OFF) {
+      mtx_lock(&chain->thread_state_lock);
+      chain->fg_state = WL_FG_STATE_OFF;
+      mtx_unlock(&chain->thread_state_lock);
+      return;
+   }
+   if (!chain->fg) {
+      if (chain->fg_possible && !chain->fg_asked_recreate && chain->fg_output_count == 0) {
+         /* Turned on after the swapchain was made: the outputs come with the next one. */
+         chain->fg_asked_recreate = true;
+         mtx_lock(&chain->thread_state_lock);
+         x11_swapchain_result(chain, VK_SUBOPTIMAL_KHR);
+         mtx_unlock(&chain->thread_state_lock);
+      }
+      return;
+   }
+
+   uint64_t anchor;
+   const uint64_t period = x11_fg_period(chain, os_time_get_nano(), &anchor);
+   const struct wsi_wl_fg_params params = {
+      .multiplier = st.fg_mode == WL_FG_FIXED ? st.fg_multiplier : 0,
+      .target_fps = st.fg_mode == WL_FG_TARGET ? st.fg_target_fps : 0,
+      .flow_side = st.fg_flow_side,
+      .fast_interp = (st.fg_flags & WL_FG_FAST_INTERP) != 0,
+      .refresh_hz = (float)(1.0e9 / (double)period),
+      .min_fps = st.fg_min_fps,
+      .resume_fps = st.fg_resume_fps,
+   };
+
+   int fds[WL_DIRECT_MAX_IMAGES];
+   uint32_t free_mask = 0;
+   mtx_lock(&chain->thread_state_lock);
+   for (uint32_t o = 0; o < chain->fg_output_count; o++) {
+      struct x11_image *out = &chain->images[chain->base.image_count + o];
+      fds[o] = -1;
+      if (out->fg_free && !out->wl_held && out->present_queued_count == 0) {
+         free_mask |= 1u << o;
+         fds[o] = out->wl_release_fd;
+         out->wl_release_fd = -1;
+      }
+   }
+   mtx_unlock(&chain->thread_state_lock);
+
+   struct wsi_wl_fg_result res;
+   memset(&res, 0, sizeof(res));
+   res.fence_fd = -1;
+   ops->frame(chain->fg, queue, image->base.image, &params, free_mask, fds, &res);
+
+   mtx_lock(&chain->thread_state_lock);
+   for (uint32_t o = 0; o < chain->fg_output_count; o++) {
+      if (fds[o] >= 0) {
+         struct x11_image *out = &chain->images[chain->base.image_count + o];
+         if (out->wl_release_fd >= 0)
+            close(out->wl_release_fd);
+         out->wl_release_fd = fds[o];   /* not used: still its fence */
+      }
+   }
+   for (uint32_t g = 0; g < res.count; g++)
+      chain->images[chain->base.image_count + res.outputs[g]].fg_free = false;
+   chain->fg_state = res.state;
+   mtx_unlock(&chain->thread_state_lock);
+
+   if (res.fence_fd >= 0) {
+      /* The game frame is shown once the generation has read it (and put it back in
+       * PRESENT_SRC): its acquire fence is the generation's. */
+      image->fg_fd = res.fence_fd;
+      if (image->base.present_sync_fd >= 0)
+         close(image->base.present_sync_fd);
+      image->base.present_sync_fd = os_dupfd_cloexec(res.fence_fd);
+   }
+   image->fg_count = res.count;
+   for (uint32_t g = 0; g < res.count; g++)
+      image->fg_outputs[g] = chain->base.image_count + res.outputs[g];
+   image->fg_interval_ns = res.interval_ns;
+}
+
+/* The app's acquire: the FPS limit from wl.control. */
+static void
+x11_wl_limit(struct x11_swapchain *chain, uint64_t timeout)
+{
+   struct wl_control_settings settings;
+   const uint32_t fps = wl_control_read_settings_now(&settings) ? settings.fps_limit : 0;
+   if (!fps) {
+      chain->wl_limit.last_ns = 0;
+      return;
+   }
+   if (timeout == 0)
+      return;   /* a poll: no sleeping in it */
+   const uint64_t refresh = __atomic_load_n(&chain->wl_refresh_ns, __ATOMIC_RELAXED);
+   MESA_TRACE_SCOPE("fps limit");
+   wl_limiter_wait(&chain->wl_limit, fps, refresh, MIN2(timeout, 200000000ull));
+}
+
+static xcb_atom_t
+x11_set_cardinal_property(xcb_connection_t *conn, xcb_window_t window,
+                          const char *name, uint32_t value)
+{
+   xcb_intern_atom_cookie_t cookie =
+      xcb_intern_atom(conn, 0, strlen(name), name);
+   xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(conn, cookie, NULL);
+   if (reply == NULL)
+      return XCB_ATOM_NONE;
+
+   const xcb_atom_t atom = reply->atom;
+   xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom,
+                       XCB_ATOM_CARDINAL, 32, 1, &value);
+   xcb_flush(conn);
+   free(reply);
+   return atom;
+}
+#endif
+
 static VkResult
 x11_release_images(struct wsi_swapchain *wsi_chain,
                    uint32_t count, const uint32_t *indices)
@@ -2269,6 +2942,10 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
    if (result < 0)
       return result;
 
+#ifdef VK_WSI_ANDROID_AHB
+   x11_wl_limit(chain, timeout);
+#endif
+
    if (chain->base.image_info.explicit_sync) {
       result = x11_wait_for_explicit_sync_release_submission(chain, timeout,
                                                              image_index);
@@ -2299,10 +2976,23 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
 
    assert(*image_index < chain->base.image_count);
 #ifdef VK_WSI_ANDROID_AHB
-   if (!(chain->base.wsi->sw && !chain->has_mit_shm) &&
-       !chain->base.image_info.explicit_sync)
-      xcb_sync_await_fence(chain->conn, 1,
-                           &chain->images[*image_index].sync_fence);
+   struct x11_image *image = &chain->images[*image_index];
+   mtx_lock(&chain->thread_state_lock);
+   const bool from_direct = image->wl_returned;
+   const int release_fd = image->wl_release_fd;
+   image->wl_returned = false;
+   image->wl_release_fd = -1;
+   mtx_unlock(&chain->thread_state_lock);
+   if (from_direct) {
+      /* SurfaceFlinger may still read it: the app's semaphore / fence get its release
+       * fence (wsi_common_acquire_next_image2). */
+      if (image->base.acquire_fence_fd >= 0)
+         close(image->base.acquire_fence_fd);
+      image->base.acquire_fence_fd = release_fd;
+   } else if (!(chain->base.wsi->sw && !chain->has_mit_shm) &&
+              !chain->base.image_info.explicit_sync) {
+      xcb_sync_await_fence(chain->conn, 1, &image->sync_fence);
+   }
 #elif defined(HAVE_X11_DRM)
    if (chain->images[*image_index].shm_fence &&
        !chain->base.image_info.explicit_sync)
@@ -2408,7 +3098,7 @@ x11_manage_event_queue(void *state)
 
       bool assume_forward_progress = false;
 
-      for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      for (uint32_t i = 0; i < x11_image_total(chain); i++) {
          if (chain->images[i].present_queued_count != 0) {
             /* We must pump through a present wait and unblock FIFO thread if using FIFO mode. */
             assume_forward_progress = true;
@@ -2632,6 +3322,37 @@ x11_manage_present_queue(void *state)
 
       VkPresentModeKHR present_mode = chain->images[image_index].present_mode;
 
+#ifdef VK_WSI_ANDROID_AHB
+      x11_wl_maintain(chain);
+      /* Frame generation: the frames made at this present go first, then this one, at the
+       * time the batch plans for it. */
+      uint64_t period = 0;
+      VkResult fg_result = VK_SUCCESS;
+      const uint64_t display_ns =
+         x11_fg_present_batch(chain, image_index, present_mode, &period, &fg_result);
+      struct x11_image *pimage = &chain->images[image_index];
+      const int fg_wait_fd = pimage->fg_fd;   /* the generation read this image */
+      pimage->fg_fd = -1;
+      pimage->fg_count = 0;
+      if (fg_result < 0) {
+         if (fg_wait_fd >= 0)
+            close(fg_wait_fd);
+         result = fg_result;
+         break;
+      }
+      if (display_ns)
+         x11_fg_sleep_until(display_ns - (x11_wl_is_granted(chain) ? 2 * period : period));
+      if (x11_wl_present(chain, image_index, present_mode, display_ns, period)) {
+         if (fg_wait_fd >= 0)
+            close(fg_wait_fd);
+         continue;
+      }
+      if (fg_wait_fd >= 0) {
+         sync_wait(fg_wait_fd, 1000);
+         close(fg_wait_fd);
+      }
+#endif
+
       /* Not necessary to block when we have explicit sync */
       bool need_fence_wait =
             x11_needs_render_wait(chain->base.wsi, wsi_conn, present_mode) &&
@@ -2674,6 +3395,10 @@ x11_manage_present_queue(void *state)
          mtx_unlock(&chain->thread_state_lock);
          break;
       }
+#ifdef VK_WSI_ANDROID_AHB
+      chain->wl_real_frames++;
+      x11_wl_write_status(chain);
+#endif
 
       if (present_mode == VK_PRESENT_MODE_FIFO_KHR ||
           present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
@@ -2737,6 +3462,10 @@ x11_image_init(VkDevice device_h, struct x11_swapchain *chain,
                              &image->base);
    if (result != VK_SUCCESS)
       return result;
+#ifdef VK_WSI_ANDROID_AHB
+   image->wl_release_fd = -1;
+   image->fg_fd = -1;
+#endif
 
    image->update_region = None;
    if (chain->base.wsi->sw && !chain->has_mit_shm)
@@ -3146,11 +3875,31 @@ x11_swapchain_destroy(struct wsi_swapchain *wsi_chain,
    thrd_join(chain->queue_manager, NULL);
    thrd_join(chain->event_manager, NULL);
 
+#ifdef VK_WSI_ANDROID_AHB
+   x11_wl_drop(chain);
+   if (chain->wl_atom != XCB_ATOM_NONE) {
+      xcb_void_cookie_t del =
+         xcb_delete_property_checked(chain->conn, chain->window, chain->wl_atom);
+      xcb_discard_reply(chain->conn, del.sequence);
+   }
+   if (chain->fg)
+      chain->base.wsi->wl_fg->destroy(chain->fg);   /* waits for its GPU work */
+   chain->fg = NULL;
+   for (uint32_t i = 0; i < x11_image_total(chain); i++) {
+      if (chain->images[i].wl_release_fd >= 0)
+         close(chain->images[i].wl_release_fd);
+      chain->images[i].wl_release_fd = -1;
+      if (chain->images[i].fg_fd >= 0)
+         close(chain->images[i].fg_fd);
+      chain->images[i].fg_fd = -1;
+   }
+#endif
+
    if (!chain->base.image_info.explicit_sync)
       wsi_queue_destroy(&chain->acquire_queue);
    wsi_queue_destroy(&chain->present_queue);
 
-   for (uint32_t i = 0; i < chain->base.image_count; i++)
+   for (uint32_t i = 0; i < x11_image_total(chain); i++)
       x11_image_finish(chain, pAllocator, &chain->images[i]);
 #ifdef HAVE_X11_DRM
    xcb_void_cookie_t cookie;
@@ -3318,6 +4067,14 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       }
    }
 
+#ifdef VK_WSI_ANDROID_AHB
+   /* WL Direct: SurfaceFlinger keeps the shown image until the next one is latched and the X
+    * server keeps the last pixmap it got, so one more image keeps the game's count free. */
+   if (!wsi_device->x11.strict_imageCount && wl_direct_socket_path() &&
+       num_images < WL_DIRECT_MAX_IMAGES)
+      num_images++;
+#endif
+
    /* Check that we have a window up-front. It is an error to not have one. */
    xcb_window_t window = x11_surface_get_window(icd_surface);
 
@@ -3333,8 +4090,18 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    const uint16_t cur_height = geometry->height;
    free(geometry);
 
+   /* Frame generation on when the swapchain is made: its outputs are made with it (turned on
+    * later, the swapchain asks to be recreated, x11_wl_fg_frame). */
+   uint32_t fg_outputs = 0;
+#ifdef VK_WSI_ANDROID_AHB
+   struct wl_control_settings fg_settings;
+   if (wsi_device->wl_fg && wl_control_read_settings_now(&fg_settings) &&
+       fg_settings.fg_mode != WL_FG_OFF && num_images < WL_DIRECT_MAX_IMAGES)
+      fg_outputs = MIN2(X11_FG_OUTPUTS, WL_DIRECT_MAX_IMAGES - num_images);
+#endif
+
    /* Allocate the actual swapchain. The size depends on image count. */
-   size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
+   size_t size = sizeof(*chain) + (num_images + fg_outputs) * sizeof(chain->images[0]);
    chain = vk_zalloc(pAllocator, size, 8,
                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (chain == NULL)
@@ -3453,6 +4220,14 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->base.poll_early_refresh = x11_poll_early_refresh;
    chain->base.present_mode = present_mode;
    chain->base.image_count = num_images;
+#ifdef VK_WSI_ANDROID_AHB
+   if (wsi_device->wl_fg)
+      chain->base.wl_fg_frame = x11_wl_fg_frame;
+   /* Not with a blit: the outputs and the game's images must be the engine's kind. */
+   chain->fg_possible = wsi_device->wl_fg && chain->base.blit.type == WSI_SWAPCHAIN_NO_BLIT &&
+                        num_images < WL_DIRECT_MAX_IMAGES;
+   chain->fg_output_count = chain->fg_possible ? fg_outputs : 0;
+#endif
 
    /* This is what Xserver is using. We cannot really query it, but we rely on it working. */
    chain->base.present_timing.time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
@@ -3536,12 +4311,30 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    xcb_discard_reply(chain->conn, cookie.sequence);
 
    uint32_t image = 0;
-   for (; image < chain->base.image_count; image++) {
+   for (; image < x11_image_total(chain); image++) {
       result = x11_image_init(device, chain, pCreateInfo, pAllocator,
                               &chain->images[image]);
       if (result != VK_SUCCESS)
          goto fail_init_images;
+#ifdef VK_WSI_ANDROID_AHB
+      if (image >= chain->base.image_count)
+         chain->images[image].fg_output = chain->images[image].fg_free = true;
+#endif
    }
+
+#ifdef VK_WSI_ANDROID_AHB
+   if (chain->fg_output_count) {
+      VkImage outputs[WL_DIRECT_MAX_IMAGES];
+      for (uint32_t o = 0; o < chain->fg_output_count; o++)
+         outputs[o] = chain->images[chain->base.image_count + o].base.image;
+      chain->fg = wsi_device->wl_fg->create(device, chain->base.image_info.create.format,
+                                            pCreateInfo->imageExtent.width,
+                                            pCreateInfo->imageExtent.height,
+                                            chain->fg_output_count, outputs);
+      if (!chain->fg)
+         mesa_logw("wsi(wl): no frame generation for this swapchain");
+   }
+#endif
 
    /* The queues have a length of base.image_count + 1 because we will
     * occasionally use UINT32_MAX to signal the other thread that an error
@@ -3587,6 +4380,9 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
                            wsi_device->engine_name ? wsi_device->engine_name : "");
    x11_set_string_property(conn, window, "_MESA_DRV_GPU_NAME",
                            wsi_device->properties2.properties.deviceName);
+   /* A WL swapchain: it limits its frame rate itself (acquire) and may present through
+    * WL Direct; xcore leaves the window's presents unlimited. */
+   chain->wl_atom = x11_set_cardinal_property(conn, window, WL_SWAPCHAIN_PROPERTY, 1);
 #else
    /* It is safe to set it here as only one swapchain can be associated with
     * the window, and swapchain creation does the association. At this point
@@ -3603,6 +4399,9 @@ fail_init_event_queue:
    /* Push a UINT32_MAX to wake up the manager */
    wsi_queue_push(&chain->present_queue, UINT32_MAX);
    thrd_join(chain->queue_manager, NULL);
+#ifdef VK_WSI_ANDROID_AHB
+   x11_wl_drop(chain);
+#endif
 
 fail_init_fifo_queue:
    wsi_queue_destroy(&chain->present_queue);
@@ -3610,6 +4409,10 @@ fail_init_fifo_queue:
       wsi_queue_destroy(&chain->acquire_queue);
 
 fail_init_images:
+#ifdef VK_WSI_ANDROID_AHB
+   if (chain->fg)
+      wsi_device->wl_fg->destroy(chain->fg);
+#endif
    for (uint32_t j = 0; j < image; j++)
       x11_image_finish(chain, pAllocator, &chain->images[j]);
 

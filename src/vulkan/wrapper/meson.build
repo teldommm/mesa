@@ -61,20 +61,63 @@ adrenotools_dep = declare_dependency(
   link_with : adrenotools_subproj.get_variable('adrenotools_lib'),
 )
 
+# WFG frame generation (wrapper_wfg.c, LICENSE.wfg): its shaders, each compiled into a
+# header wrapper_wfg.c includes.  [header variable, source, defines]
+wfg_shaders = [
+  ['dis_luma_r16_comp', 'dis_luma_r16.comp', []],
+  ['dis_luma_r32_comp', 'dis_luma_r32.comp', []],
+  ['dis_gradient_comp', 'dis_gradient.comp', []],
+  ['dis_inverse_search_comp', 'dis_inverse_search.comp', []],
+  ['dis_propagate_comp', 'dis_propagate.comp', []],
+  ['dis_densify_comp', 'dis_densify.comp', []],
+  ['dis_fullscreen_vert', 'dis_fullscreen.vert', []],
+  ['dis_interpolate_frag', 'dis_interpolate.frag', []],
+  ['dis_hist_comp', 'dis_hist.comp', []],
+  ['dis_hist_r16_comp', 'dis_hist.comp', ['-DDIS_HIST_R16']],
+  ['dis_side_comp', 'dis_side.comp', []],
+  ['dis_flow_pack_comp', 'dis_flow_pack.comp', []],
+  ['dis_splat_comp', 'dis_splat.comp', []],
+  ['dis_fill_comp', 'dis_fill.comp', []],
+  ['dis_vr_prep_comp', 'dis_vr_prep.comp', []],
+  ['dis_vr_d1_comp', 'dis_vr_d1.comp', []],
+  ['dis_vr_d2_comp', 'dis_vr_d2.comp', []],
+  ['dis_vr_w_comp', 'dis_vr_w.comp', []],
+  ['dis_vr_coef_comp', 'dis_vr_coef.comp', []],
+  ['dis_vr_sor_comp', 'dis_vr_sor.comp', []],
+  ['dis_vr_add_comp', 'dis_vr_add.comp', []],
+  ['dis_fb_poly_comp', 'dis_fb_poly.comp', []],
+  ['dis_fb_hsum_comp', 'dis_fb_hsum.comp', []],
+  ['dis_fb_vsolve_comp', 'dis_fb_vsolve.comp', []],
+]
+
+wfg_spv_header = files('wfg_spv_header.py')
+wfg_shader_headers = []
+foreach s : wfg_shaders
+  wfg_shader_headers += custom_target(
+    s[0] + '.spv.h',
+    input : files('wfg_shaders/' + s[1]),
+    output : s[0] + '.spv.h',
+    command : [prog_python, wfg_spv_header, prog_glslang, '@INPUT@', '@OUTPUT@', s[0]] + s[2],
+  )
+endforeach
+
 wrapper_files = files(
   'graphicsenv_hook.cpp',
   'spirv_patcher.cpp',
   'wrapper_bcn.c',
   'wrapper_device.c',
   'wrapper_device_memory.c',
+  'wrapper_fg.c',
   'wrapper_instance.c',
   'wrapper_log.c',
   'wrapper_physical_device.c',
+  'wrapper_wfg.c',
 )
 
 libvulkan_wrapper = shared_library(
   'vulkan_wrapper',
-  [wrapper_entrypoints, wrapper_trampolines, wrapper_features, wrapper_files],
+  [wrapper_entrypoints, wrapper_trampolines, wrapper_features, wrapper_files,
+   wfg_shader_headers],
   include_directories : [inc_include, inc_src],
   dependencies : [
     idep_vulkan_lite_runtime,

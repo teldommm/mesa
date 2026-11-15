@@ -200,6 +200,13 @@ struct wsi_image {
    void *cpu_map;
 #ifdef VK_WSI_ANDROID_AHB
    struct AHardwareBuffer *ahardware_buffer;
+   /* The sync file the last present's GPU work signals (exported from the swapchain's
+    * sync_file_semaphore after the present submit), for a compositor that takes an acquire
+    * fence. -1: none; the backend takes it (and closes it). */
+   int present_sync_fd;
+   /* When the compositor still reads the image after giving it back: the next
+    * vkAcquireNextImageKHR imports it into the app's semaphore / fence. -1: none. */
+   int acquire_fence_fd;
 #endif
 
    VkQueryPool query_pool;
@@ -260,6 +267,14 @@ struct wsi_swapchain {
     * create_sync_for_memory().
     */
    VkSemaphore dma_buf_semaphore;
+
+#ifdef VK_WSI_ANDROID_AHB
+   /* AHardwareBuffer images: signaled by every present submit next to the image's fence and
+    * exported as a sync file into wsi_image::present_sync_fd. A sync file export resets a
+    * binary semaphore, so the per-image fences (waited on by the backends) are left alone.
+    * VK_NULL_HANDLE when the driver cannot export one. */
+   VkSemaphore sync_file_semaphore;
+#endif
 
    struct wsi_image_info image_info;
    uint32_t image_count;
@@ -337,6 +352,13 @@ struct wsi_swapchain {
    void (*set_timing_request)(struct wsi_swapchain *swap_chain,
                             const struct wsi_image_timing_request *request);
    void (*poll_timing_request)(struct wsi_swapchain *swap_chain);
+#ifdef VK_WSI_ANDROID_AHB
+   /* WL swapchain frame generation (wsi_common_wl.h): in vkQueuePresentKHR, after the present's
+    * own submit and the export of image->present_sync_fd, on the application's queue. NULL:
+    * none. */
+   void (*wl_fg_frame)(struct wsi_swapchain *swap_chain, VkQueue queue,
+                       uint32_t image_index);
+#endif
 
    /* On some backends we may be able to query the refresh parameters before
     * we get any feedback from the compositor.
