@@ -289,11 +289,19 @@ wl_control_read_grid(uint64_t now_ns, uint64_t *period_ns, uint64_t *anchor_ns)
 {
    struct wl_control *c = wl_control_get();
    struct wl_control_clock clock;
-   if (!c || !wl_control_read_clock(c, &clock, NULL) || !clock.period_ns || !clock.anchor_ns)
+   *period_ns = 0;
+   *anchor_ns = 0;
+   if (!c || !wl_control_read_clock(c, &clock, NULL))
+      return false;
+
+   /* The period is useful even without a fresh anchor: FG's display-rate cap and the limiter's
+    * interval snapping must not fall back to 60 Hz just because display timing is unavailable.
+    * Only the anchor becomes invalid when feedback stops. */
+   *period_ns = clock.period_ns;
+   if (!clock.period_ns || !clock.anchor_ns)
       return false;
    if (now_ns > clock.anchor_ns && now_ns - clock.anchor_ns > 2000000000ull)
       return false;
-   *period_ns = clock.period_ns;
    *anchor_ns = clock.anchor_ns;
    return true;
 }
@@ -351,10 +359,9 @@ wl_limiter_wait(struct wl_limiter *lim, uint32_t fps, uint64_t fallback_period_n
       return 0;
    }
    uint64_t period = 0, anchor = 0;
-   if (!wl_control_read_grid(now, &period, &anchor)) {
+   wl_control_read_grid(now, &period, &anchor);
+   if (!period)
       period = fallback_period_ns;
-      anchor = 0;
-   }
    uint64_t slot = wl_limiter_next_slot(lim->last_ns, now, fps, period, anchor);
    uint64_t slept = 0;
    if (slot > now) {

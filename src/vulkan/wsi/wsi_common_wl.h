@@ -73,7 +73,9 @@ void wl_direct_close(struct wl_direct *link);
 
 /* false: no file (or not version 1): the caller uses its defaults. */
 bool wl_control_read_settings_now(struct wl_control_settings *out);
-/* The refresh grid the emulator published; false if none or stale (older than a second). */
+/* The refresh grid the emulator published; false if its anchor is none or stale (older than two
+ * seconds). `period_ns` is still filled when the period is known without a fresh anchor;
+ * `anchor_ns` is then 0. */
 bool wl_control_read_grid(uint64_t now_ns, uint64_t *period_ns, uint64_t *anchor_ns);
 void wl_control_write_status_now(const struct wl_control_status *status);
 

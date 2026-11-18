@@ -2611,10 +2611,9 @@ x11_fg_period(struct x11_swapchain *chain, uint64_t now, uint64_t *anchor)
 {
    uint64_t period = 0;
    *anchor = 0;
-   if (!wl_control_read_grid(now, &period, anchor)) {
+   wl_control_read_grid(now, &period, anchor);
+   if (!period)
       period = __atomic_load_n(&chain->wl_refresh_ns, __ATOMIC_RELAXED);
-      *anchor = 0;
-   }
    return period ? period : 16666667ull;
 }
 
