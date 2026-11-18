@@ -126,8 +126,9 @@ AHardwareBuffers:
 | `WRAPPER_DRIVER_NAME`, `WRAPPER_DRIVER_INFO` | spoof driverName / driverInfo in both structs (default: `Wrapper driver` / the driver version) |
 | `WRAPPER_DRIVER_VERSION` | spoof driverVersion: a raw number, or a dotted version encoded for the reported vendor (NVIDIA 10.8.8.6 bits, `VK_MAKE_VERSION` layout otherwise); a dotted value is also the default driverInfo |
 | `WRAPPER_VK_VERSION` | spoof apiVersion (`1.3.280`) |
-| `WRAPPER_VMEM_MAX_SIZE` | size (MiB) reported for the first device-local heap; lowering always applies. With Turnip it can't raise the heap (Turnip refuses allocations past its own one), with other drivers it can, up to the larger of the driver's heap and Mesa's GPU heap share of the physical memory (75% above 4 GiB). `heapBudget` and `heapUsage` are clamped to the heap size |
-| `WRAPPER_MEMORY_BUDGET` | emulate `VK_EXT_memory_budget` when the driver lacks it, and in place of the Qualcomm driver's own one (default on; `0` keeps the driver's) |
+| `WRAPPER_VMEM_MAX_SIZE` | size (MiB) reported for the first device-local heap; lowering always applies. With Turnip it can't raise the heap (Turnip refuses allocations past its own one), with other drivers it can, up to the larger of the driver's heap and Mesa's GPU heap share of the physical memory (75% above 4 GiB) |
+| `WRAPPER_MEMORY_BUDGET_MODE` | `off` (default): keep the native `VK_EXT_memory_budget` values unchanged; `proportional`: scale `heapBudget` and `heapUsage` by the old/new heap ratio when lowering it; `emulated`: replace the native budget with the emulated one on any driver |
+| `WRAPPER_MEMORY_BUDGET` | legacy fallback when `WRAPPER_MEMORY_BUDGET_MODE` is unset: an explicit `1` selects `emulated`, `0` selects `off` |
 | `WRAPPER_MEMORY_BUDGET_RESERVE` | memory (MiB) kept out of the emulated budget for the system, default 1024 |
 | `WRAPPER_SUBGROUP_OPS` | `1`/`0`: report or hide the driver's subgroup operations (default: reported on Adreno — Turnip and the Qualcomm driver — hidden elsewhere) |
 | `WRAPPER_SAFE_CREATE_DEVICE` | retry vkCreateDevice with an empty pNext (default on) |

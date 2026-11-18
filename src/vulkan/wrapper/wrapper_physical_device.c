@@ -456,19 +456,32 @@ wrapper_setup_subgroup_ops(struct wrapper_physical_device *pdevice)
                expose ? "Exposing" : "Hiding");
 }
 
-/* The Qualcomm driver's own budget is replaced by the emulated one, other
- * drivers that have the extension keep theirs (Turnip already derives it
- * from the system memory). */
+/* WRAPPER_MEMORY_BUDGET_MODE controls both correction of the native budget
+ * after a heap override and optional emulation on any driver.  An explicit
+ * legacy WRAPPER_MEMORY_BUDGET=1 still selects emulation when the new option
+ * is absent. */
 static void
 wrapper_setup_memory_budget(struct wrapper_physical_device *pdevice)
 {
-   const bool qualcomm =
-      pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
+   enum wrapper_memory_budget_mode mode = WRAPPER_MEMORY_BUDGET_OFF;
+   const char *env = getenv("WRAPPER_MEMORY_BUDGET_MODE");
 
-   if (pdevice->base_supported_extensions.EXT_memory_budget && !qualcomm)
-      return;
+   if (env && *env) {
+      if (!strcmp(env, "off"))
+         mode = WRAPPER_MEMORY_BUDGET_OFF;
+      else if (!strcmp(env, "proportional"))
+         mode = WRAPPER_MEMORY_BUDGET_PROPORTIONAL;
+      else if (!strcmp(env, "emulated"))
+         mode = WRAPPER_MEMORY_BUDGET_EMULATED;
+      else
+         WRAPPER_LOG(error, "Ignoring WRAPPER_MEMORY_BUDGET_MODE=%s", env);
+   } else if (getenv("WRAPPER_MEMORY_BUDGET") &&
+              debug_get_bool_option("WRAPPER_MEMORY_BUDGET", false)) {
+      mode = WRAPPER_MEMORY_BUDGET_EMULATED;
+   }
 
-   if (!debug_get_bool_option("WRAPPER_MEMORY_BUDGET", true))
+   pdevice->memory_budget_mode = mode;
+   if (mode != WRAPPER_MEMORY_BUDGET_EMULATED)
       return;
 
    pdevice->emulate_memory_budget = true;
@@ -1044,17 +1057,29 @@ wrapper_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    if (budget) {
       budget_prev->pNext = (VkBaseOutStructure *)budget;
       wrapper_fill_memory_budget(pdevice, props, budget);
-   } else {
-      /* The driver's own budget: heapBudget must not exceed the heap size,
-       * which WRAPPER_VMEM_MAX_SIZE may have lowered; usage past it is
-       * reported as the heap size, as in wrapper_fill_memory_budget(). */
+   } else if (pdevice->memory_budget_mode != WRAPPER_MEMORY_BUDGET_OFF) {
       VkPhysicalDeviceMemoryBudgetPropertiesEXT *native =
          vk_find_struct(pMemoryProperties->pNext,
                         PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT);
       for (uint32_t i = 0; native && i < props->memoryHeapCount; i++) {
          const VkDeviceSize size = props->memoryHeaps[i].size;
-         native->heapBudget[i] = MIN2(native->heapBudget[i], size);
-         native->heapUsage[i] = MIN2(native->heapUsage[i], size);
+
+         if (pdevice->memory_budget_mode ==
+                WRAPPER_MEMORY_BUDGET_PROPORTIONAL &&
+             i < pdevice->memory_properties.memoryHeapCount) {
+            const VkDeviceSize old_size =
+               pdevice->memory_properties.memoryHeaps[i].size;
+
+            /* Match GameScope's wrapper: lowering a heap preserves the
+             * native budget/usage ratio.  Never scale values upwards. */
+            if (size < old_size && old_size) {
+               const long double ratio = (long double)size / old_size;
+               native->heapBudget[i] =
+                  (VkDeviceSize)(native->heapBudget[i] * ratio);
+               native->heapUsage[i] =
+                  (VkDeviceSize)(native->heapUsage[i] * ratio);
+            }
+         }
       }
    }
 }

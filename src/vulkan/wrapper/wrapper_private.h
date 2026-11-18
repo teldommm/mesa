@@ -88,6 +88,12 @@ struct wrapper_identity {
    char driver_info[VK_MAX_DRIVER_INFO_SIZE];
 };
 
+enum wrapper_memory_budget_mode {
+   WRAPPER_MEMORY_BUDGET_OFF = 0,
+   WRAPPER_MEMORY_BUDGET_PROPORTIONAL,
+   WRAPPER_MEMORY_BUDGET_EMULATED,
+};
+
 struct wrapper_physical_device {
    struct vk_physical_device vk;
 
@@ -109,10 +115,12 @@ struct wrapper_physical_device {
    /* Report the driver's subgroup operations (WRAPPER_SUBGROUP_OPS) */
    bool expose_subgroup_ops;
 
-   /* VK_EXT_memory_budget emulated for drivers without it, and in place of
-    * the Qualcomm driver's own one: usage is tracked per heap at
-    * vkAllocateMemory/vkFreeMemory time, the budget is derived from
-    * MemAvailable minus a reserve (WRAPPER_MEMORY_BUDGET*). */
+   /* Selected by WRAPPER_MEMORY_BUDGET_MODE: leave the native budget alone,
+    * proportionally scale it after a heap override, or replace it with the
+    * emulated one on any driver.  Emulated usage is tracked per heap
+    * at vkAllocateMemory/vkFreeMemory time, and the budget is derived from
+    * MemAvailable minus a reserve (WRAPPER_MEMORY_BUDGET_RESERVE). */
+   enum wrapper_memory_budget_mode memory_budget_mode;
    bool emulate_memory_budget;
    uint64_t memory_budget_reserve;
    uint64_t heap_usage[VK_MAX_MEMORY_HEAPS];
