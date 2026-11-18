@@ -169,6 +169,7 @@ wl_direct_read(struct wl_direct *link, struct wl_direct_event *ev)
          ev->granted = m->granted;
          ev->reason = m->reason;
          ev->refresh_ns = m->refresh_ns;
+         ev->capabilities = m->capabilities;
          return 1;
       }
       case WL_DIRECT_RELEASE: {
@@ -182,6 +183,7 @@ wl_direct_read(struct wl_direct *link, struct wl_direct_event *ev)
          ev->frame_id = m->frame_id;
          ev->latch_ns = m->latch_ns;
          ev->present_ns = m->present_ns;
+         ev->timing_flags = m->flags;
          return 1;
       }
       default:
@@ -350,7 +352,7 @@ wl_limiter_next_slot(uint64_t last_ns, uint64_t now_ns, uint32_t fps,
 }
 
 uint64_t
-wl_limiter_wait(struct wl_limiter *lim, uint32_t fps, uint64_t fallback_period_ns,
+wl_limiter_wait(struct wl_limiter *lim, uint32_t fps, uint64_t preferred_period_ns,
                 uint64_t max_wait_ns)
 {
    const uint64_t now = wl_now_ns();
@@ -358,10 +360,10 @@ wl_limiter_wait(struct wl_limiter *lim, uint32_t fps, uint64_t fallback_period_n
       lim->last_ns = 0;
       return 0;
    }
-   uint64_t period = 0, anchor = 0;
-   wl_control_read_grid(now, &period, &anchor);
-   if (!period)
-      period = fallback_period_ns;
+   uint64_t grid_period = 0, grid_anchor = 0;
+   wl_control_read_grid(now, &grid_period, &grid_anchor);
+   const uint64_t period = preferred_period_ns ? preferred_period_ns : grid_period;
+   const uint64_t anchor = period == grid_period ? grid_anchor : 0;
    uint64_t slot = wl_limiter_next_slot(lim->last_ns, now, fps, period, anchor);
    uint64_t slept = 0;
    if (slot > now) {

@@ -39,11 +39,13 @@ struct wl_direct_event {
    uint32_t granted;         /* GRANT */
    uint32_t reason;          /* GRANT */
    uint64_t refresh_ns;      /* GRANT */
+   uint32_t capabilities;    /* GRANT: WL_GRANT_* */
    uint32_t image;           /* RELEASE */
    int      fd;              /* RELEASE: the release fence (owned by the caller), or -1 */
    uint64_t frame_id;        /* TIMING */
    uint64_t latch_ns;        /* TIMING */
    uint64_t present_ns;      /* TIMING */
+   uint32_t timing_flags;    /* TIMING: WL_TIMING_* */
 };
 
 /* Connects and hands over the swapchain's images (HELLO, the images, WELCOME); waits at most
@@ -87,9 +89,10 @@ struct wl_limiter {
 
 /* Sleeps until the next frame slot for `fps` (0: none) and claims it. The interval snaps to a
  * whole number of refreshes when it is within 5% of one, and the slots then sit on the refresh
- * grid (period / anchor from wl.control, or `fallback_period_ns`). At most `max_wait_ns`.
+ * grid. A nonzero `preferred_period_ns` (the latest Direct GRANT) takes precedence over
+ * wl.control; its anchor is used only when both periods agree. At most `max_wait_ns`.
  * Returns the time slept. */
-uint64_t wl_limiter_wait(struct wl_limiter *lim, uint32_t fps, uint64_t fallback_period_ns,
+uint64_t wl_limiter_wait(struct wl_limiter *lim, uint32_t fps, uint64_t preferred_period_ns,
                          uint64_t max_wait_ns);
 
 /* The slot computation of wl_limiter_wait: when the frame after one at `last_ns` may start, at

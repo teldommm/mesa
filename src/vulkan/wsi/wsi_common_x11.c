@@ -1403,9 +1403,10 @@ struct x11_swapchain {
    bool                                         wl_granted;
    uint32_t                                     wl_reason;
    uint64_t                                     wl_refresh_ns;
+   uint32_t                                     wl_capabilities;  /* WL_GRANT_* */
    uint64_t                                     wl_next_try_ns;   /* present thread */
    uint64_t                                     wl_sent_id;       /* frame ids of this link */
-   uint64_t                                     wl_done_id;
+   uint32_t                                     wl_outstanding;   /* TIMING not received yet */
    uint32_t                                     wl_held_count;
 #define X11_WL_FRAME_RING 16
    struct {
@@ -2278,17 +2279,18 @@ x11_wl_frame_done(struct x11_swapchain *chain, uint64_t frame_id, uint64_t prese
 {
    if (!frame_id)
       return;
-   if (frame_id > chain->wl_done_id)
-      chain->wl_done_id = frame_id;
-
    __typeof__(chain->wl_frames[0]) *f = &chain->wl_frames[frame_id % X11_WL_FRAME_RING];
    if (f->frame_id != frame_id)
       return;
    f->frame_id = 0;
+   if (chain->wl_outstanding)
+      chain->wl_outstanding--;
 
    if (f->timing_serial) {
+      /* Zero is a real "unknown / not presented" result. Substituting the current time would
+       * fabricate display feedback and corrupt GOOGLE / EXT present timing. */
       wsi_swapchain_present_timing_notify_completion(&chain->base, f->timing_serial,
-                                                     present_ns ? present_ns : os_time_get_nano(),
+                                                     present_ns,
                                                      &chain->images[f->image].base);
    }
    if (f->present_id) {
@@ -2316,7 +2318,9 @@ x11_wl_give_back(struct x11_swapchain *chain, uint32_t index, int fd)
    if (image->wl_release_fd >= 0)
       close(image->wl_release_fd);
    image->wl_release_fd = fd;
-   x11_wl_frame_done(chain, image->wl_frame_id, 0);
+   image->wl_frame_id = 0;
+   /* RELEASE is only a buffer lifetime event. The frame's WSI credit and present timing finish
+    * at TIMING, which for Direct + FX belongs to the final Ring output, not this input image. */
    if (image->fg_output) {
       /* The next batch renders into it once the fence signals (wsi_wl_fg_ops::frame). */
       image->fg_free = true;
@@ -2364,8 +2368,8 @@ x11_wl_reader(void *state)
                       ev.granted ? "WL Direct" : "X", ev.reason);
          chain->wl_granted = ev.granted != 0;
          chain->wl_reason = ev.reason;
-         if (ev.refresh_ns)
-            __atomic_store_n(&chain->wl_refresh_ns, ev.refresh_ns, __ATOMIC_RELAXED);
+         __atomic_store_n(&chain->wl_refresh_ns, ev.refresh_ns, __ATOMIC_RELAXED);
+         __atomic_store_n(&chain->wl_capabilities, ev.capabilities, __ATOMIC_RELAXED);
          break;
       case WL_DIRECT_RELEASE:
          if (ev.image < x11_image_total(chain)) {
@@ -2374,7 +2378,7 @@ x11_wl_reader(void *state)
          }
          break;
       case WL_DIRECT_TIMING:
-         if (!ev.present_ns)
+         if (ev.timing_flags & WL_TIMING_DROPPED)
             chain->wl_dropped_frames++;
          x11_wl_frame_done(chain, ev.frame_id, ev.present_ns);
          break;
@@ -2395,6 +2399,14 @@ x11_wl_reader(void *state)
    chain->wl_granted = false;
    for (uint32_t i = 0; i < x11_image_total(chain); i++)
       x11_wl_give_back(chain, i, -1);
+   /* No more TIMING can arrive on this link. Complete every lifecycle explicitly; RELEASE above
+    * deliberately does not do it. */
+   for (uint32_t i = 0; i < X11_WL_FRAME_RING; i++) {
+      const uint64_t frame_id = chain->wl_frames[i].frame_id;
+      if (frame_id)
+         x11_wl_frame_done(chain, frame_id, 0);
+   }
+   chain->wl_outstanding = 0;
    u_cnd_monotonic_broadcast(&chain->thread_state_cond);
    mtx_unlock(&chain->thread_state_lock);
    return 0;
@@ -2465,7 +2477,9 @@ x11_wl_maintain(struct x11_swapchain *chain)
    chain->wl_dead = false;
    chain->wl_granted = granted != 0;
    chain->wl_reason = reason;
-   chain->wl_sent_id = chain->wl_done_id = 0;
+   chain->wl_sent_id = 0;
+   chain->wl_outstanding = 0;
+   chain->wl_capabilities = 0;
    memset(chain->wl_frames, 0, sizeof(chain->wl_frames));
    mtx_unlock(&chain->thread_state_lock);
 
@@ -2487,6 +2501,13 @@ x11_wl_is_granted(struct x11_swapchain *chain)
    const bool granted = chain->wl_granted && !chain->wl_dead;
    mtx_unlock(&chain->thread_state_lock);
    return granted;
+}
+
+static bool
+x11_wl_has_desired_time(struct x11_swapchain *chain)
+{
+   return (__atomic_load_n(&chain->wl_capabilities, __ATOMIC_RELAXED) &
+           WL_GRANT_DESIRED_PRESENT_TIME) != 0;
 }
 
 /* Present thread, no lock held: image `index` to WL Direct, if granted. `fd` (taken): the sync
@@ -2513,24 +2534,28 @@ x11_wl_send(struct x11_swapchain *chain, uint32_t index, int fd, VkFence fence, 
 
    mtx_lock(&chain->thread_state_lock);
    if (paced) {
-      /* The server keeps one frame in flight and one pending, so a third waits here until one
-       * of them is shown or given back. */
+      /* The server keeps one frame in flight and one pending, so a third waits for TIMING.
+       * Buffer RELEASE alone must not open this credit: in Direct + FX it precedes the output. */
       MESA_TRACE_SCOPE("wait direct");
       struct timespec deadline;
       timespec_from_nsec(&deadline, os_time_get_nano() + 100000000ull);
       while (chain->status >= 0 && chain->wl_granted && !chain->wl_dead &&
-             chain->wl_sent_id - chain->wl_done_id >= 2) {
+             chain->wl_outstanding >= 2) {
          if (u_cnd_monotonic_timedwait(&chain->thread_state_cond, &chain->thread_state_lock,
                                        &deadline) == thrd_timedout)
             break;
       }
    }
-   if (chain->status < 0 || !chain->wl_granted || chain->wl_dead) {
+   if (chain->status < 0 || !chain->wl_granted || chain->wl_dead ||
+       (paced && chain->wl_outstanding >= 2)) {
+      /* In particular, a 100 ms timeout falls back to X. Sending a third Direct frame here would
+       * overwrite the server's pending slot and drop a generated frame. */
       mtx_unlock(&chain->thread_state_lock);
       goto to_x;
    }
 
    const uint64_t frame_id = ++chain->wl_sent_id;
+   chain->wl_outstanding++;
    image->wl_held = true;
    image->wl_frame_id = frame_id;
    chain->wl_held_count++;
@@ -2547,6 +2572,21 @@ x11_wl_send(struct x11_swapchain *chain, uint32_t index, int fd, VkFence fence, 
    uint64_t desired = desired_ns;
    if (!desired && req->time && !(req->flags & VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT))
       desired = req->time;
+   if (desired && !x11_wl_has_desired_time(chain)) {
+      /* Do not silently ignore the application's absolute present-time request. */
+      image->wl_held = false;
+      image->wl_frame_id = 0;
+      chain->wl_held_count--;
+      chain->wl_outstanding--;
+      if (generated)
+         chain->fg_generated--;
+      else
+         chain->wl_real_frames--;
+      f->frame_id = 0;
+      chain->wl_sent_id--;
+      mtx_unlock(&chain->thread_state_lock);
+      goto to_x;
+   }
    mtx_unlock(&chain->thread_state_lock);
 
    int r = wl_direct_frame(chain->wl_link, index, fd, frame_id, desired, generated);
@@ -2567,6 +2607,7 @@ x11_wl_send(struct x11_swapchain *chain, uint32_t index, int fd, VkFence fence, 
             chain->wl_real_frames--;
          f->frame_id = 0;
          chain->wl_sent_id--;
+         chain->wl_outstanding--;
          sent = false;
       }
       /* (Otherwise the reader already gave it back: the frame is lost.) */
@@ -2594,7 +2635,8 @@ x11_wl_present(struct x11_swapchain *chain, uint32_t image_index,
    const bool fifo = present_mode == VK_PRESENT_MODE_FIFO_KHR ||
                      present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
    /* SurfaceFlinger shows a buffer at the first refresh at or after its desired time. */
-   const uint64_t desired = display_ns ? display_ns - period / 2 : 0;
+   const uint64_t desired = display_ns && x11_wl_has_desired_time(chain)
+                               ? display_ns - period / 2 : 0;
    return x11_wl_send(chain, image_index, fd, chain->base.fences[image_index],
                       fifo || display_ns, desired, false);
 }
@@ -2609,11 +2651,14 @@ x11_wl_present(struct x11_swapchain *chain, uint32_t image_index,
 static uint64_t
 x11_fg_period(struct x11_swapchain *chain, uint64_t now, uint64_t *anchor)
 {
-   uint64_t period = 0;
-   *anchor = 0;
-   wl_control_read_grid(now, &period, anchor);
-   if (!period)
-      period = __atomic_load_n(&chain->wl_refresh_ns, __ATOMIC_RELAXED);
+   uint64_t grid_period = 0, grid_anchor = 0;
+   wl_control_read_grid(now, &grid_period, &grid_anchor);
+   const uint64_t direct_period =
+      __atomic_load_n(&chain->wl_refresh_ns, __ATOMIC_RELAXED);
+   const uint64_t period = direct_period ? direct_period : grid_period;
+   /* GRANT is the freshest mode notification. An anchor from wl.control is valid only for the
+    * same period; otherwise it would place the new mode on the old refresh grid. */
+   *anchor = period == grid_period ? grid_anchor : 0;
    return period ? period : 16666667ull;
 }
 
@@ -2733,9 +2778,12 @@ x11_fg_present_batch(struct x11_swapchain *chain, uint32_t image_index,
          continue;
       }
       if (x11_wl_is_granted(chain)) {
-         x11_fg_sleep_until(at[g] - 2 * period);
+         const bool desired_time = x11_wl_has_desired_time(chain);
+         /* Without desired-present-time support an early packet would be latched immediately.
+          * Send it one refresh before its slot instead, just like the X fallback below. */
+         x11_fg_sleep_until(at[g] - (desired_time ? 2 * period : period));
          if (x11_wl_send(chain, out, os_dupfd_cloexec(image->fg_fd), VK_NULL_HANDLE, true,
-                         at[g] - period / 2, true))
+                         desired_time ? at[g] - period / 2 : 0, true))
             continue;
       }
       x11_fg_sleep_until(at[g] - period);
@@ -3340,7 +3388,9 @@ x11_manage_present_queue(void *state)
          break;
       }
       if (display_ns)
-         x11_fg_sleep_until(display_ns - (x11_wl_is_granted(chain) ? 2 * period : period));
+         x11_fg_sleep_until(display_ns -
+            (x11_wl_is_granted(chain) && x11_wl_has_desired_time(chain)
+                ? 2 * period : period));
       if (x11_wl_present(chain, image_index, present_mode, display_ns, period)) {
          if (fg_wait_fd >= 0)
             close(fg_wait_fd);
