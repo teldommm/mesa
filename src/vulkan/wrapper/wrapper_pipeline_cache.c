@@ -10,20 +10,24 @@
  *
  * What this file does, below the application and above the driver:
  *
- *  - vkCreatePipelineCache: a cache the application creates empty is primed
- *    from the file the last run saved and tracked.  Caches created with initial
- *    data, flags or a pNext chain belong to the application and are left alone.
- *  - Pipelines created with VK_NULL_HANDLE as the cache use a cache of the
- *    wrapper's own (WRAPPER_PIPELINE_CACHE_IMPLICIT=0 turns that off).
+ *  - One persistent cache of the wrapper's own is created at device creation,
+ *    primed from the file the last run saved.  Pipelines created with
+ *    VK_NULL_HANDLE as the cache use it, and so do pipelines created with an
+ *    application cache that was created empty (or with only the header of an
+ *    empty one): vkd3d-proton makes one such cache per pipeline, and giving
+ *    each of them the whole file would cost far more than it saves.  Those
+ *    application caches stay empty, merges into them are dropped.  Caches with
+ *    real data, flags or a pNext chain belong to the application and are
+ *    passed through untouched.  (WRAPPER_PIPELINE_CACHE_IMPLICIT=0 turns the
+ *    whole thing off.)
  *  - The caches are written back WRAPPER_PIPELINE_CACHE_DELAY_MS after the last
  *    pipeline was created, at least once a minute while pipelines keep
- *    coming, when the application destroys a cache and when the device goes
- *    away.  A process that is killed keeps what was saved, which is why the
+ *    coming and when the device goes away.  A process that is killed keeps what was saved, which is why the
  *    saving does not wait for the exit.  A save only happens when the
  *    driver's data grew.
  *
- * One file per (game, vendor, device, driver version, pipelineCacheUUID, cache
- * slot), written with a header of the wrapper's own (size and hash of the
+ * One file per (game, vendor, device, driver version, pipelineCacheUUID),
+ * written with a header of the wrapper's own (size and hash of the
  * data) next to the driver's, through a temporary file that is synced before
  * the rename.  A truncated or damaged file is deleted, never given to the
  * driver.  The identity in the key and in the checks is the real driver's, not
@@ -69,6 +73,10 @@
 #define WPC_TEMP_MAX_AGE_SEC  120
 #define WPC_DEFAULT_DELAY_MS  2000
 #define WPC_DEFAULT_MAX_MB    512
+#define WPC_MAX_SHADOW        1024
+/* A cache created with at most this much data is an empty one (the header
+ * of an empty cache is 32 bytes) */
+#define WPC_EMPTY_DATA_MAX    256
 
 /* On-disk header, followed by the data of vkGetPipelineCacheData */
 struct wpc_file_header {
@@ -123,6 +131,12 @@ struct wrapper_pipeline_cache_state {
    struct wpc_entry entries[WPC_NUM_ENTRIES];
    /* Never changes after init (VK_NULL_HANDLE: not used) */
    VkPipelineCache implicit_cache;
+
+   /* Caches the application created empty (vkd3d-proton makes one per
+    * pipeline): pipelines made with them go to implicit_cache instead.
+    * Protected by mtx. */
+   VkPipelineCache *shadow;
+   unsigned shadow_count, shadow_cap;
 
    /* Gate between pipeline creation and vkGetPipelineCacheData, and the
     * bookkeeping of the entries */
@@ -671,6 +685,7 @@ wrapper_pipeline_cache_device_finish(struct wrapper_device *device)
                                                   st->implicit_cache, NULL);
    }
 
+   free(st->shadow);
    pthread_mutex_destroy(&st->save_mtx);
    pthread_cond_destroy(&st->cond);
    pthread_mutex_destroy(&st->mtx);
@@ -712,6 +727,32 @@ wpc_end_use(struct wrapper_pipeline_cache_state *st, VkPipelineCache cache,
    pthread_mutex_unlock(&st->mtx);
 }
 
+static bool
+wpc_is_shadow_locked(const struct wrapper_pipeline_cache_state *st,
+                     VkPipelineCache cache)
+{
+   for (unsigned i = 0; i < st->shadow_count; i++) {
+      if (st->shadow[i] == cache)
+         return true;
+   }
+   return false;
+}
+
+/* The cache pipelines created with 'cache' really go to */
+static VkPipelineCache
+wpc_resolve_cache(struct wrapper_pipeline_cache_state *st, VkPipelineCache cache)
+{
+   if (st->implicit_cache == VK_NULL_HANDLE)
+      return cache;
+   if (cache == VK_NULL_HANDLE)
+      return st->implicit_cache;
+
+   pthread_mutex_lock(&st->mtx);
+   const bool shadowed = wpc_is_shadow_locked(st, cache);
+   pthread_mutex_unlock(&st->mtx);
+   return shadowed ? st->implicit_cache : cache;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 wrapper_CreatePipelineCache(VkDevice _device,
                             const VkPipelineCacheCreateInfo *pCreateInfo,
@@ -720,41 +761,42 @@ wrapper_CreatePipelineCache(VkDevice _device,
 {
    VK_FROM_HANDLE(wrapper_device, device, _device);
    struct wrapper_pipeline_cache_state *st = device->pipeline_cache;
-   unsigned index = 0;
 
-   /* A cache with data, flags or extensions of its own is the application's */
-   if (st && pCreateInfo->initialDataSize == 0 && pCreateInfo->flags == 0 &&
-       pCreateInfo->pNext == NULL) {
-      pthread_mutex_lock(&st->mtx);
-      for (unsigned i = 1; i < WPC_NUM_ENTRIES; i++) {
-         if (st->entries[i].status == WPC_ENTRY_FREE) {
-            st->entries[i].status = WPC_ENTRY_RESERVED;
-            index = i;
-            break;
-         }
-      }
-      pthread_mutex_unlock(&st->mtx);
-
-      if (!index)
-         WRAPPER_LOG(info, "Pipeline cache: more than %d caches alive, the "
-                     "extra ones are not saved", WPC_MAX_APP_CACHES);
-   }
-
-   if (!index) {
+   /* An empty cache (or one that only holds the header of an empty one, as
+    * vkd3d-proton gets back from a shadowed cache) carries nothing worth
+    * keeping: it's created empty and shadowed by the wrapper's persistent
+    * cache.  Caches with real data, flags or extensions are the application's. */
+   if (!st || st->implicit_cache == VK_NULL_HANDLE ||
+       pCreateInfo->initialDataSize > WPC_EMPTY_DATA_MAX ||
+       pCreateInfo->flags != 0 || pCreateInfo->pNext != NULL) {
       return device->dispatch_table.CreatePipelineCache(
          device->dispatch_handle, pCreateInfo, pAllocator, pPipelineCache);
    }
 
-   wpc_entry_path(st, index, st->entries[index].path,
-                  sizeof(st->entries[index].path));
-   VkResult res = wpc_create_entry_cache(st, index, pCreateInfo, pAllocator,
-                                         pPipelineCache);
-   if (res != VK_SUCCESS) {
-      pthread_mutex_lock(&st->mtx);
-      st->entries[index].status = WPC_ENTRY_FREE;
-      pthread_mutex_unlock(&st->mtx);
+   VkPipelineCacheCreateInfo info = *pCreateInfo;
+   info.initialDataSize = 0;
+   info.pInitialData = NULL;
+
+   VkResult res = device->dispatch_table.CreatePipelineCache(
+      device->dispatch_handle, &info, pAllocator, pPipelineCache);
+   if (res != VK_SUCCESS)
+      return res;
+
+   pthread_mutex_lock(&st->mtx);
+   if (st->shadow_count < WPC_MAX_SHADOW) {
+      if (st->shadow_count == st->shadow_cap) {
+         const unsigned cap = st->shadow_cap ? st->shadow_cap * 2 : 64;
+         VkPipelineCache *n = realloc(st->shadow, cap * sizeof(*n));
+         if (n) {
+            st->shadow = n;
+            st->shadow_cap = cap;
+         }
+      }
+      if (st->shadow_count < st->shadow_cap)
+         st->shadow[st->shadow_count++] = *pPipelineCache;
    }
-   return res;
+   pthread_mutex_unlock(&st->mtx);
+   return VK_SUCCESS;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -765,28 +807,14 @@ wrapper_DestroyPipelineCache(VkDevice _device, VkPipelineCache pipelineCache,
    struct wrapper_pipeline_cache_state *st = device->pipeline_cache;
 
    if (st && pipelineCache != VK_NULL_HANDLE) {
-      pthread_mutex_lock(&st->save_mtx);
-      for (unsigned i = 1; i < WPC_NUM_ENTRIES; i++) {
-         struct wpc_entry *e = &st->entries[i];
-
-         pthread_mutex_lock(&st->mtx);
-         const bool mine = e->status == WPC_ENTRY_ACTIVE &&
-                           e->cache == pipelineCache;
-         const bool dirty = e->dirty;
-         pthread_mutex_unlock(&st->mtx);
-         if (!mine)
-            continue;
-
-         if (dirty)
-            wpc_save_entry(st, e);
-
-         pthread_mutex_lock(&st->mtx);
-         e->status = WPC_ENTRY_FREE;
-         e->cache = VK_NULL_HANDLE;
-         pthread_mutex_unlock(&st->mtx);
-         break;
+      pthread_mutex_lock(&st->mtx);
+      for (unsigned i = 0; i < st->shadow_count; i++) {
+         if (st->shadow[i] == pipelineCache) {
+            st->shadow[i] = st->shadow[--st->shadow_count];
+            break;
+         }
       }
-      pthread_mutex_unlock(&st->save_mtx);
+      pthread_mutex_unlock(&st->mtx);
    }
 
    device->dispatch_table.DestroyPipelineCache(device->dispatch_handle,
@@ -805,6 +833,11 @@ wrapper_MergePipelineCaches(VkDevice _device, VkPipelineCache dstCache,
       return device->dispatch_table.MergePipelineCaches(
          device->dispatch_handle, dstCache, srcCacheCount, pSrcCaches);
    }
+
+   /* Shadowed caches hold nothing: merging into one is dropped */
+   if (st->implicit_cache != VK_NULL_HANDLE &&
+       wpc_resolve_cache(st, dstCache) == st->implicit_cache)
+      return VK_SUCCESS;
 
    wpc_begin_use(st);
    VkResult res = device->dispatch_table.MergePipelineCaches(
@@ -829,8 +862,7 @@ wrapper_CreateGraphicsPipelines(VkDevice _device, VkPipelineCache pipelineCache,
          pAllocator, pPipelines);
    }
 
-   if (pipelineCache == VK_NULL_HANDLE)
-      pipelineCache = st->implicit_cache;
+   pipelineCache = wpc_resolve_cache(st, pipelineCache);
 
    wpc_begin_use(st);
    VkResult res = device->dispatch_table.CreateGraphicsPipelines(
@@ -856,8 +888,7 @@ wrapper_CreateComputePipelines(VkDevice _device, VkPipelineCache pipelineCache,
          pAllocator, pPipelines);
    }
 
-   if (pipelineCache == VK_NULL_HANDLE)
-      pipelineCache = st->implicit_cache;
+   pipelineCache = wpc_resolve_cache(st, pipelineCache);
 
    wpc_begin_use(st);
    VkResult res = device->dispatch_table.CreateComputePipelines(
