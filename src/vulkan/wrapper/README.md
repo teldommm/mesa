@@ -136,6 +136,12 @@ AHardwareBuffers:
 | `WRAPPER_EMULATE_BCN` | BCn mode, see above (default 3) |
 | `WRAPPER_USE_BCN_CACHE` | keep decompressed textures in `WRAPPER_CACHE_PATH` |
 | `WRAPPER_CACHE_PATH` | directory of the BCn cache |
+| `WRAPPER_PIPELINE_CACHE` | persistent `VkPipelineCache` (the proprietary Qualcomm driver keeps no shader cache of its own, so games recompile shaders at every start). `0` off (default), `1` every driver, `2` only the proprietary Qualcomm driver (Turnip keeps using the Mesa shader cache). Needs `WRAPPER_PIPELINE_CACHE_PATH` or `WRAPPER_CACHE_PATH` |
+| `WRAPPER_PIPELINE_CACHE_PATH` | directory of the pipeline cache files (default: `WRAPPER_CACHE_PATH`) |
+| `WRAPPER_CACHE_KEY` | name of the cache files (default: the executable name); set it per game when several share one executable, e.g. under Wine |
+| `WRAPPER_PIPELINE_CACHE_DELAY_MS` | save this long after the last new pipeline, default 2000 (also saved when the cache is destroyed and at exit) |
+| `WRAPPER_PIPELINE_CACHE_MAX_MB` | don't write files larger than this, default 512 |
+| `WRAPPER_PIPELINE_CACHE_IMPLICIT` | cache pipelines created without a `VkPipelineCache` (vkd3d-proton does that for some), default on |
 | `WRAPPER_NO_BCN_THREAD` | decompress on the calling thread only |
 | `WRAPPER_MARK_BCN` | fill emulated textures with a per format color (debug) |
 | `WRAPPER_NO_PATCH_OPCONSTCOMP` | Mali: skip the OpSpecConstantComposite patch |

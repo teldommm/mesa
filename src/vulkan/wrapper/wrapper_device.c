@@ -426,6 +426,10 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
       return vk_error(physical_device, result);
    }
 
+   /* Persistent pipeline cache (WRAPPER_PIPELINE_CACHE); stays off on any
+    * problem, the device doesn't depend on it. */
+   wrapper_pipeline_cache_device_init(device);
+
    /* Without the placed-map emulation the memory entrypoints go straight to
     * the driver, unless the BCn emulation has to know the application's
     * mappings. */
@@ -1050,6 +1054,9 @@ wrapper_DestroyDevice(VkDevice _device, const VkAllocationCallbacks* pAllocator)
    }
 
    wrapper_bcn_device_finish(device);
+
+   /* Needs the driver's device, so before it goes */
+   wrapper_pipeline_cache_device_finish(device);
 
    if (device->dispatch_handle != VK_NULL_HANDLE) {
       device->dispatch_table.DestroyDevice(device->dispatch_handle,

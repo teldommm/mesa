@@ -192,6 +192,10 @@ struct wrapper_device {
    /* Command buffers holding staging buffers (wrapper_command_buffer::
     * staging_link) */
    struct list_head bcn_staging_cmd_list;
+
+   /* Persistent pipeline cache (WRAPPER_PIPELINE_CACHE), see
+    * wrapper_pipeline_cache.c.  NULL when it's off. */
+   struct wrapper_pipeline_cache_state *pipeline_cache;
 };
 
 VK_DEFINE_HANDLE_CASTS(wrapper_device, vk.base, VkDevice,
@@ -259,5 +263,17 @@ wrapper_bcn_track_map(struct wrapper_device *device, VkDeviceMemory memory,
 
 void
 wrapper_bcn_untrack_map(struct wrapper_device *device, VkDeviceMemory memory);
+
+/* wrapper_pipeline_cache.c */
+struct wrapper_pipeline_cache_state;
+
+/* Never fails the device: when the cache can't be set up it stays off. */
+VkResult
+wrapper_pipeline_cache_device_init(struct wrapper_device *device);
+
+/* Saves what is unsaved and frees the state; before the driver's device is
+ * destroyed. */
+void
+wrapper_pipeline_cache_device_finish(struct wrapper_device *device);
 
 #endif

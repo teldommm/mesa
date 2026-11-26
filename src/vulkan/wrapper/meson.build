@@ -70,6 +70,7 @@ wrapper_files = files(
   'wrapper_instance.c',
   'wrapper_log.c',
   'wrapper_physical_device.c',
+  'wrapper_pipeline_cache.c',
 )
 
 libvulkan_wrapper = shared_library(
