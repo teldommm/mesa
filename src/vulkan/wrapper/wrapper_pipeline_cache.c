@@ -37,9 +37,14 @@
  * driver.  The identity in the key and in the checks is the real driver's, not
  * the one the application sees (WRAPPER_VENDOR_ID and friends).
  *
- * vkGetPipelineCacheData does not run at the same time as pipeline creation
- * (a small gate in the creation entrypoints), the proprietary compiler has been
- * seen to crash with concurrent calls.
+ * vkGetPipelineCacheData never runs at the same time as pipeline creation
+ * (a small gate in the creation, merge and cache-data entrypoints): the
+ * proprietary compiler has been seen to crash with concurrent calls.  The
+ * wait for in-flight creations is bounded, so a game that keeps compiling
+ * pipelines is never stalled by a save: the pass gives up after a short
+ * moment and is retried after the next idle gap instead.  Only the wait is
+ * bounded; the driver's own vkGetPipelineCacheData still runs with the gate
+ * closed and nothing in the wrapper can shorten it.
  */
 
 #include <ctype.h>
@@ -75,6 +80,12 @@
 #define WPC_NUM_ENTRIES       (1 + WPC_MAX_APP_CACHES)
 #define WPC_POLL_US           100000
 #define WPC_FORCE_SAVE_NS     (60ull * 1000000000ull)
+/* A save must not stall a busy game: the wait for in-flight pipeline
+ * creations is capped at this, otherwise the pass is skipped and retried at
+ * the next idle gap.  Device destruction waits longer (the game is supposed
+ * to be quiesced there, this only bounds a stuck application thread). */
+#define WPC_GATE_TIMEOUT_NS   (50ll * 1000000ll)
+#define WPC_GATE_EXIT_TIMEOUT_NS (2ll * 1000000000ll)
 #define WPC_TEMP_MAX_AGE_SEC  120
 #define WPC_DEFAULT_DELAY_MS  2000
 #define WPC_DEFAULT_MAX_MB    512
@@ -382,10 +393,14 @@ wpc_cleanup_temp_files(const struct wrapper_pipeline_cache_state *st)
 
 /* Takes the exclusive turn (no pipeline creation inside the driver) around
  * vkGetPipelineCacheData.  Called with save_mtx held.  Returns the data to
- * free, NULL when there's nothing (new) to save. */
+ * free, NULL when there's nothing (new) to save.  The turn is not taken when
+ * pipelines are being created: closing the gate stalls every creation
+ * entrypoint, which is what freezes a game in the middle of compiling its
+ * shaders, so the wait for the in-flight ones is capped at 'gate_timeout_ns'
+ * and an overlong wait leaves the entry dirty for a later retry. */
 static void *
 wpc_snapshot(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e,
-             size_t *out_size)
+             int64_t gate_timeout_ns, size_t *out_size)
 {
    struct wrapper_device *device = st->device;
    void *buf = NULL;
@@ -393,11 +408,40 @@ wpc_snapshot(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e,
 
    pthread_mutex_lock(&st->mtx);
    st->saving = true;
-   while (st->in_flight)
-      pthread_cond_wait(&st->cond, &st->mtx);
-   e->dirty = false;
+
+   /* pthread_cond_timedwait's clock is CLOCK_REALTIME (the cond is created
+    * without a monotonic attribute), so the deadline is taken from it too. */
+   struct timespec deadline;
+   clock_gettime(CLOCK_REALTIME, &deadline);
+   deadline.tv_sec += gate_timeout_ns / 1000000000ll;
+   deadline.tv_nsec += gate_timeout_ns % 1000000000ll;
+   if (deadline.tv_nsec >= 1000000000ll) {
+      deadline.tv_sec++;
+      deadline.tv_nsec -= 1000000000ll;
+   }
+   while (st->in_flight) {
+      if (pthread_cond_timedwait(&st->cond, &st->mtx, &deadline) == ETIMEDOUT)
+         break;
+   }
+   const bool busy = st->in_flight != 0;
+   if (!busy)
+      e->dirty = false;
+
    pthread_mutex_unlock(&st->mtx);
 
+   if (busy) {
+      /* Reopen the gate right away, the game must not wait for a save */
+      pthread_mutex_lock(&st->mtx);
+      st->saving = false;
+      pthread_cond_broadcast(&st->cond);
+      pthread_mutex_unlock(&st->mtx);
+      WRAPPER_LOG(info, "Pipeline cache: %s not saved now, pipelines are "
+                  "being created", e->path);
+      *out_size = 0;
+      return NULL;
+   }
+
+   WRAPPER_LOG(info, "Pipeline cache: saving %s", e->path);
    VkResult res = device->dispatch_table.GetPipelineCacheData(
       device->dispatch_handle, e->cache, &size, NULL);
    if (res == VK_SUCCESS && size > e->saved_size) {
@@ -435,10 +479,11 @@ wpc_snapshot(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e,
 
 /* Called with save_mtx held */
 static void
-wpc_save_entry(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e)
+wpc_save_entry(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e,
+               int64_t gate_timeout_ns)
 {
    size_t size;
-   void *blob = wpc_snapshot(st, e, &size);
+   void *blob = wpc_snapshot(st, e, gate_timeout_ns, &size);
 
    if (!blob)
       return;
@@ -457,7 +502,7 @@ wpc_save_entry(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e)
 }
 
 static void
-wpc_save_all(struct wrapper_pipeline_cache_state *st)
+wpc_save_all(struct wrapper_pipeline_cache_state *st, int64_t gate_timeout_ns)
 {
    pthread_mutex_lock(&st->save_mtx);
 
@@ -469,7 +514,7 @@ wpc_save_all(struct wrapper_pipeline_cache_state *st)
       pthread_mutex_unlock(&st->mtx);
 
       if (want)
-         wpc_save_entry(st, e);
+         wpc_save_entry(st, e, gate_timeout_ns);
    }
 
    pthread_mutex_lock(&st->mtx);
@@ -513,7 +558,7 @@ wpc_thread_main(void *arg)
       if (stop)
          break;
       if (due)
-         wpc_save_all(st);
+         wpc_save_all(st, WPC_GATE_TIMEOUT_NS);
    }
    return NULL;
 }
@@ -735,8 +780,9 @@ wrapper_pipeline_cache_device_finish(struct wrapper_device *device)
       pthread_join(st->thread, NULL);
 
    /* The caches the application leaked go with the device, but not before
-    * they are saved */
-   wpc_save_all(st);
+    * they are saved.  The game is quiesced here, the long timeout only
+    * bounds a thread stuck inside a creation call. */
+   wpc_save_all(st, WPC_GATE_EXIT_TIMEOUT_NS);
 
    if (st->implicit_cache != VK_NULL_HANDLE &&
        device->dispatch_handle != VK_NULL_HANDLE) {
@@ -902,6 +948,28 @@ wrapper_MergePipelineCaches(VkDevice _device, VkPipelineCache dstCache,
    VkResult res = device->dispatch_table.MergePipelineCaches(
       device->dispatch_handle, dstCache, srcCacheCount, pSrcCaches);
    wpc_end_use(st, dstCache, res == VK_SUCCESS);
+   return res;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+wrapper_GetPipelineCacheData(VkDevice _device, VkPipelineCache pipelineCache,
+                             size_t *pDataSize, void *pData)
+{
+   VK_FROM_HANDLE(wrapper_device, device, _device);
+   struct wrapper_pipeline_cache_state *st = device->pipeline_cache;
+
+   if (!st || pipelineCache == VK_NULL_HANDLE) {
+      return device->dispatch_table.GetPipelineCacheData(
+         device->dispatch_handle, pipelineCache, pDataSize, pData);
+   }
+
+   /* The application's own reads of cache data take the same gate: the
+    * proprietary compiler does not tolerate concurrent cache-data calls,
+    * and this was the only such entrypoint without the gate. */
+   wpc_begin_use(st);
+   VkResult res = device->dispatch_table.GetPipelineCacheData(
+      device->dispatch_handle, pipelineCache, pDataSize, pData);
+   wpc_end_use(st, pipelineCache, false);
    return res;
 }
 
