@@ -130,6 +130,11 @@ struct wrapper_pipeline_cache_state {
    int64_t interval_ns;                /* least time between two saves */
    int64_t force_ns;                   /* save at least this often while pipelines keep coming */
    bool save_on_exit_only;
+   /* WRAPPER_PIPELINE_CACHE_REQUEST: the launcher writes a token into this
+    * file to ask for a save, the answer is the same token in <path>.done and
+    * <path>.alive.<pid> says someone is listening.  Thread only. */
+   char request_path[WPC_PATH_MAX];
+   char request_token[64];
    bool use_implicit;
 
    /* Entry 0 is the wrapper's own cache for pipelines created without one,
@@ -432,7 +437,15 @@ wpc_save_entry(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e)
    if (!blob)
       return;
 
-   if (!wpc_vk_header_matches(wpc_props(st), blob, size)) {
+   struct stat sb;
+   if (stat(e->path, &sb) == 0 && S_ISREG(sb.st_mode) &&
+       (uint64_t)sb.st_size >= sizeof(struct wpc_file_header) + size) {
+      /* Another device of the process (or an earlier run) already saved at
+       * least as much: never replace a bigger file with a smaller one */
+      WRAPPER_LOG(info, "Pipeline cache: %s already holds %lld bytes, not "
+                  "replacing it with %zu", e->path, (long long)sb.st_size, size);
+      e->saved_size = size;
+   } else if (!wpc_vk_header_matches(wpc_props(st), blob, size)) {
       WRAPPER_LOG(error, "Pipeline cache: the driver's data has an unexpected "
                   "header, not saving %s", e->path);
    } else if (wpc_write_file(st, e->path, blob, size)) {
@@ -468,6 +481,57 @@ wpc_save_all(struct wrapper_pipeline_cache_state *st)
    pthread_mutex_unlock(&st->save_mtx);
 }
 
+/* Returns true when the launcher asked for a save that wasn't answered yet */
+static bool
+wpc_request_pending(struct wrapper_pipeline_cache_state *st, char *token,
+                    size_t token_size)
+{
+   if (!st->request_path[0])
+      return false;
+
+   int fd = open(st->request_path, O_RDONLY | O_CLOEXEC);
+   if (fd < 0)
+      return false;
+   ssize_t n = read(fd, token, token_size - 1);
+   close(fd);
+   if (n <= 0)
+      return false;
+   token[n] = '\0';
+   return strcmp(token, st->request_token) != 0;
+}
+
+static void
+wpc_answer_request(struct wrapper_pipeline_cache_state *st, const char *token)
+{
+   char done[WPC_PATH_MAX + 16];
+
+   snprintf(st->request_token, sizeof(st->request_token), "%s", token);
+   snprintf(done, sizeof(done), "%s.done", st->request_path);
+   int fd = open(done, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0660);
+   if (fd >= 0) {
+      if (write(fd, token, strlen(token)) < 0)
+         WRAPPER_LOG(error, "Pipeline cache: can't answer the save request");
+      close(fd);
+   }
+}
+
+static void
+wpc_alive_marker(struct wrapper_pipeline_cache_state *st, bool create)
+{
+   char path[WPC_PATH_MAX + 32];
+
+   if (!st->request_path[0])
+      return;
+   snprintf(path, sizeof(path), "%s.alive.%d", st->request_path, (int)getpid());
+   if (create) {
+      int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0660);
+      if (fd >= 0)
+         close(fd);
+   } else {
+      unlink(path);
+   }
+}
+
 static void *
 wpc_thread_main(void *arg)
 {
@@ -479,7 +543,7 @@ wpc_thread_main(void *arg)
       pthread_mutex_lock(&st->mtx);
       const bool stop = st->stop;
       bool due = false;
-      if (!stop) {
+      if (!stop && !st->save_on_exit_only) {
          bool any_dirty = false;
          for (unsigned i = 0; i < WPC_NUM_ENTRIES; i++)
             any_dirty |= st->entries[i].status == WPC_ENTRY_ACTIVE &&
@@ -496,8 +560,15 @@ wpc_thread_main(void *arg)
 
       if (stop)
          break;
-      if (due)
+
+      char token[sizeof(st->request_token)];
+      if (wpc_request_pending(st, token, sizeof(token))) {
+         WRAPPER_LOG(info, "Pipeline cache: save requested by the launcher");
          wpc_save_all(st);
+         wpc_answer_request(st, token);
+      } else if (due) {
+         wpc_save_all(st);
+      }
    }
    return NULL;
 }
@@ -513,6 +584,59 @@ wpc_start_thread_locked(struct wrapper_pipeline_cache_state *st)
    else
       WRAPPER_LOG(error, "Pipeline cache: failed to start the saving thread, "
                   "caches are saved when they are destroyed only");
+}
+
+/* ------------------------------------------------------------------------ */
+/* Saving at process exit                                                   */
+/* ------------------------------------------------------------------------ */
+
+/* Wine usually ends a game without vkDestroyDevice, so the saving at device
+ * teardown never runs.  The live states are kept in a small registry and
+ * saved from an atexit handler too. */
+#define WPC_MAX_LIVE 8
+static pthread_mutex_t wpc_live_mtx = PTHREAD_MUTEX_INITIALIZER;
+static struct wrapper_pipeline_cache_state *wpc_live[WPC_MAX_LIVE];
+static bool wpc_atexit_registered;
+
+static void wpc_save_all(struct wrapper_pipeline_cache_state *st);
+
+void
+wrapper_pipeline_cache_atexit(void)
+{
+   pthread_mutex_lock(&wpc_live_mtx);
+   for (unsigned i = 0; i < WPC_MAX_LIVE; i++) {
+      if (wpc_live[i])
+         wpc_save_all(wpc_live[i]);
+   }
+   pthread_mutex_unlock(&wpc_live_mtx);
+}
+
+static void
+wpc_live_add(struct wrapper_pipeline_cache_state *st)
+{
+   pthread_mutex_lock(&wpc_live_mtx);
+   for (unsigned i = 0; i < WPC_MAX_LIVE; i++) {
+      if (!wpc_live[i]) {
+         wpc_live[i] = st;
+         break;
+      }
+   }
+   if (!wpc_atexit_registered) {
+      wpc_atexit_registered = true;
+      atexit(wrapper_pipeline_cache_atexit);
+   }
+   pthread_mutex_unlock(&wpc_live_mtx);
+}
+
+static void
+wpc_live_remove(struct wrapper_pipeline_cache_state *st)
+{
+   pthread_mutex_lock(&wpc_live_mtx);
+   for (unsigned i = 0; i < WPC_MAX_LIVE; i++) {
+      if (wpc_live[i] == st)
+         wpc_live[i] = NULL;
+   }
+   pthread_mutex_unlock(&wpc_live_mtx);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -567,7 +691,7 @@ wpc_create_entry_cache(struct wrapper_pipeline_cache_state *st, unsigned index,
    e->cache = *out_cache;
    e->dirty = false;
    e->status = WPC_ENTRY_ACTIVE;
-   if (!st->save_on_exit_only)
+   if (!st->save_on_exit_only || st->request_path[0])
       wpc_start_thread_locked(st);
    pthread_mutex_unlock(&st->mtx);
 
@@ -643,6 +767,9 @@ wrapper_pipeline_cache_device_init(struct wrapper_device *device)
       1000000000ll, st->interval_ns);
    const char *save = getenv("WRAPPER_PIPELINE_CACHE_SAVE");
    st->save_on_exit_only = save && !strcmp(save, "exit");
+   const char *request = getenv("WRAPPER_PIPELINE_CACHE_REQUEST");
+   if (request && *request && strlen(request) < WPC_PATH_MAX - 32)
+      snprintf(st->request_path, sizeof(st->request_path), "%s", request);
    st->use_implicit = debug_get_bool_option("WRAPPER_PIPELINE_CACHE_IMPLICIT", true);
    st->last_activity_ns = st->last_pass_ns = os_time_get_nano();
 
@@ -670,6 +797,8 @@ wrapper_pipeline_cache_device_init(struct wrapper_device *device)
    }
 
    device->pipeline_cache = st;
+   wpc_live_add(st);
+   wpc_alive_marker(st, true);
    WRAPPER_LOG(info, "Pipeline cache: enabled, dir %s, key %s, save after "
                "%lld ms idle, implicit cache %s", st->dir, st->key,
                (long long)(st->idle_ns / 1000000),
@@ -684,6 +813,9 @@ wrapper_pipeline_cache_device_finish(struct wrapper_device *device)
 
    if (!st)
       return;
+
+   wpc_live_remove(st);
+   wpc_alive_marker(st, false);
 
    pthread_mutex_lock(&st->mtx);
    st->stop = true;

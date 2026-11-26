@@ -142,7 +142,8 @@ AHardwareBuffers:
 | `WRAPPER_PIPELINE_CACHE_DELAY_MS` | save this long after the last new pipeline, default 10000 |
 | `WRAPPER_PIPELINE_CACHE_INTERVAL_S` | least time between two saves, default 120. A save of a big cache stalls pipeline creation for seconds, so it must be rare |
 | `WRAPPER_PIPELINE_CACHE_FORCE_S` | save at least this often while pipelines keep coming, default 600 |
-| `WRAPPER_PIPELINE_CACHE_SAVE` | `exit`: save only when the device is destroyed (no stalls while playing, but nothing is kept if the process is killed); default: also while running |
+| `WRAPPER_PIPELINE_CACHE_SAVE` | `exit`: save only when the device is destroyed or the process exits through `exit()` (no stalls while playing, but nothing is kept if the process is killed); default: also while running |
+| `WRAPPER_PIPELINE_CACHE_REQUEST` | path of a file the launcher writes a token into to ask for a save right now (the game is about to be killed); the wrapper answers with the same token in `<path>.done` and keeps `<path>.alive.<pid>` while it listens |
 | `WRAPPER_PIPELINE_CACHE_MAX_MB` | don't write files larger than this, default 512 |
 | `WRAPPER_PIPELINE_CACHE_IMPLICIT` | `0` turns the persistent cache off altogether. One cache of the wrapper's own is used for pipelines created without a `VkPipelineCache` and for ones created with an empty application cache (vkd3d-proton makes one per pipeline); application caches with real data are left alone. Default on |
 | `WRAPPER_NO_BCN_THREAD` | decompress on the calling thread only |

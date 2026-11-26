@@ -276,4 +276,9 @@ wrapper_pipeline_cache_device_init(struct wrapper_device *device);
 void
 wrapper_pipeline_cache_device_finish(struct wrapper_device *device);
 
+/* atexit handler: saves the caches of the devices that are still alive (the
+ * application usually doesn't destroy its device when it exits) */
+void
+wrapper_pipeline_cache_atexit(void);
+
 #endif
