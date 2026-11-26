@@ -20,11 +20,15 @@
  *    real data, flags or a pNext chain belong to the application and are
  *    passed through untouched.  (WRAPPER_PIPELINE_CACHE_IMPLICIT=0 turns the
  *    whole thing off.)
- *  - The caches are written back WRAPPER_PIPELINE_CACHE_DELAY_MS after the last
- *    pipeline was created, at least once a minute while pipelines keep
- *    coming and when the device goes away.  A process that is killed keeps what was saved, which is why the
- *    saving does not wait for the exit.  A save only happens when the
- *    driver's data grew.
+ *  - WRAPPER_PIPELINE_CACHE_SAVE picks when the caches are written back:
+ *    "auto" (default) WRAPPER_PIPELINE_CACHE_DELAY_MS after the last new
+ *    pipeline, at least once a minute while pipelines keep coming and when
+ *    the device goes away; "rare" the same idle rule, but no more than one
+ *    save pass per WRAPPER_PIPELINE_CACHE_INTERVAL_S seconds, whatever is
+ *    left is saved at exit; "exit" nothing during the run at all, one save
+ *    when the device goes away.  A process that is killed keeps what was
+ *    saved, except in the exit mode.  A save only happens when the driver's
+ *    data grew.
  *
  * One file per (game, vendor, device, driver version, pipelineCacheUUID),
  * written with a header of the wrapper's own (size and hash of the
@@ -47,6 +51,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -73,6 +78,7 @@
 #define WPC_TEMP_MAX_AGE_SEC  120
 #define WPC_DEFAULT_DELAY_MS  2000
 #define WPC_DEFAULT_MAX_MB    512
+#define WPC_DEFAULT_RARE_INTERVAL_S 300
 #define WPC_MAX_SHADOW        1024
 /* A cache created with at most this much data is an empty one (the header
  * of an empty cache is 32 bytes) */
@@ -102,6 +108,13 @@ struct wpc_vk_header {
    uint8_t uuid[VK_UUID_SIZE];
 };
 
+/* WRAPPER_PIPELINE_CACHE_SAVE: when the caches are written back */
+enum wpc_save_mode {
+   WPC_SAVE_AUTO = 0,   /* after the idle delay, a forced pass once a minute */
+   WPC_SAVE_RARE,       /* after the idle delay, one pass per interval at most */
+   WPC_SAVE_EXIT,       /* nothing during the run, one save when the device goes away */
+};
+
 enum wpc_entry_status {
    WPC_ENTRY_FREE = 0,
    WPC_ENTRY_RESERVED,
@@ -124,6 +137,10 @@ struct wrapper_pipeline_cache_state {
    char key[96];
    uint64_t max_bytes;
    int64_t idle_ns;
+   /* WRAPPER_PIPELINE_CACHE_SAVE, constant after init */
+   enum wpc_save_mode save_mode;
+   /* Rare mode: at least this long between two save passes */
+   int64_t min_pass_ns;
    bool use_implicit;
 
    /* Entry 0 is the wrapper's own cache for pipelines created without one,
@@ -480,8 +497,15 @@ wpc_thread_main(void *arg)
                          st->entries[i].dirty;
          if (any_dirty) {
             const int64_t now = os_time_get_nano();
-            due = now - st->last_activity_ns >= st->idle_ns ||
-                  now - st->last_pass_ns >= (int64_t)WPC_FORCE_SAVE_NS;
+            if (st->save_mode == WPC_SAVE_RARE) {
+               /* Rare saving: idle since the last pipeline and no more than
+                * one pass per interval; what is left is saved at exit. */
+               due = now - st->last_activity_ns >= st->idle_ns &&
+                     now - st->last_pass_ns >= st->min_pass_ns;
+            } else {
+               due = now - st->last_activity_ns >= st->idle_ns ||
+                     now - st->last_pass_ns >= (int64_t)WPC_FORCE_SAVE_NS;
+            }
          }
       }
       pthread_mutex_unlock(&st->mtx);
@@ -498,7 +522,9 @@ wpc_thread_main(void *arg)
 static void
 wpc_start_thread_locked(struct wrapper_pipeline_cache_state *st)
 {
-   if (st->thread_running)
+   /* The exit mode has no saving during the run, so nothing for a thread to
+    * do: the caches are saved when the device goes away. */
+   if (st->thread_running || st->save_mode == WPC_SAVE_EXIT)
       return;
    if (pthread_create(&st->thread, NULL, wpc_thread_main, st) == 0)
       st->thread_running = true;
@@ -585,6 +611,23 @@ wpc_sanitize_key(char *dst, size_t size, const char *src)
       snprintf(dst, size, "unknown");
 }
 
+static enum wpc_save_mode
+wpc_get_save_mode(void)
+{
+   /* "auto" / 0 (default), "rare" / 1, "exit" / "on-exit" / 2 */
+   const char *s = getenv("WRAPPER_PIPELINE_CACHE_SAVE");
+   if (s && *s) {
+      if (!strcmp(s, "rare") || !strcmp(s, "1"))
+         return WPC_SAVE_RARE;
+      if (!strcmp(s, "exit") || !strcmp(s, "on-exit") || !strcmp(s, "2"))
+         return WPC_SAVE_EXIT;
+      if (strcmp(s, "0") && strcasecmp(s, "auto") && strcasecmp(s, "normal"))
+         WRAPPER_LOG(info, "Pipeline cache: unknown WRAPPER_PIPELINE_CACHE_SAVE "
+                     "value '%s', saving as usual", s);
+   }
+   return WPC_SAVE_AUTO;
+}
+
 VkResult
 wrapper_pipeline_cache_device_init(struct wrapper_device *device)
 {
@@ -626,6 +669,10 @@ wrapper_pipeline_cache_device_init(struct wrapper_device *device)
                                            WPC_DEFAULT_DELAY_MS);
    st->max_bytes = (uint64_t)CLAMP(max_mb, 1, 4096) << 20;
    st->idle_ns = CLAMP(delay_ms, 100, 600000) * 1000000ll;
+   st->save_mode = wpc_get_save_mode();
+   int64_t rare_s = debug_get_num_option("WRAPPER_PIPELINE_CACHE_INTERVAL_S",
+                                         WPC_DEFAULT_RARE_INTERVAL_S);
+   st->min_pass_ns = CLAMP(rare_s, 1, 86400) * 1000000000ll;
    st->use_implicit = debug_get_bool_option("WRAPPER_PIPELINE_CACHE_IMPLICIT", true);
    st->last_activity_ns = st->last_pass_ns = os_time_get_nano();
 
@@ -653,9 +700,21 @@ wrapper_pipeline_cache_device_init(struct wrapper_device *device)
    }
 
    device->pipeline_cache = st;
-   WRAPPER_LOG(info, "Pipeline cache: enabled, dir %s, key %s, save after "
-               "%lld ms idle, implicit cache %s", st->dir, st->key,
-               (long long)(st->idle_ns / 1000000),
+
+   char save_desc[96];
+   if (st->save_mode == WPC_SAVE_EXIT)
+      snprintf(save_desc, sizeof(save_desc), "saving at exit only");
+   else if (st->save_mode == WPC_SAVE_RARE)
+      snprintf(save_desc, sizeof(save_desc),
+               "rare saves, >= %lld s apart, after %lld ms idle",
+               (long long)(st->min_pass_ns / 1000000000),
+               (long long)(st->idle_ns / 1000000));
+   else
+      snprintf(save_desc, sizeof(save_desc), "save after %lld ms idle",
+               (long long)(st->idle_ns / 1000000));
+
+   WRAPPER_LOG(info, "Pipeline cache: enabled, dir %s, key %s, %s, implicit "
+               "cache %s", st->dir, st->key, save_desc,
                st->implicit_cache ? "on" : "off");
    return VK_SUCCESS;
 }

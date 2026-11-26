@@ -139,7 +139,9 @@ AHardwareBuffers:
 | `WRAPPER_PIPELINE_CACHE` | persistent `VkPipelineCache` (the proprietary Qualcomm driver keeps no shader cache of its own, so games recompile shaders at every start). `0` off (default), `1` every driver, `2` only the proprietary Qualcomm driver (Turnip keeps using the Mesa shader cache). Needs `WRAPPER_PIPELINE_CACHE_PATH` or `WRAPPER_CACHE_PATH` |
 | `WRAPPER_PIPELINE_CACHE_PATH` | directory of the pipeline cache files (default: `WRAPPER_CACHE_PATH`) |
 | `WRAPPER_CACHE_KEY` | name of the cache files (default: the executable name); set it per game when several share one executable, e.g. under Wine |
-| `WRAPPER_PIPELINE_CACHE_DELAY_MS` | save this long after the last new pipeline, default 2000 (also saved when the cache is destroyed and at exit) |
+| `WRAPPER_PIPELINE_CACHE_DELAY_MS` | save this long after the last new pipeline, default 2000 (also saved when the cache is destroyed and at exit; ignored by `WRAPPER_PIPELINE_CACHE_SAVE=exit`) |
+| `WRAPPER_PIPELINE_CACHE_SAVE` | when the cache is written: `auto` (default) as `WRAPPER_PIPELINE_CACHE_DELAY_MS` says, `rare` no more than one save per `WRAPPER_PIPELINE_CACHE_INTERVAL_S` seconds (and still only after the idle delay), `exit` nothing during the run, everything is written when the device is destroyed. A process that is killed keeps what was last saved, except in the `exit` mode. Numeric `0` / `1` / `2` are accepted as well |
+| `WRAPPER_PIPELINE_CACHE_INTERVAL_S` | minimum interval between saves in the `rare` mode, default 300 |
 | `WRAPPER_PIPELINE_CACHE_MAX_MB` | don't write files larger than this, default 512 |
 | `WRAPPER_PIPELINE_CACHE_IMPLICIT` | `0` turns the persistent cache off altogether. One cache of the wrapper's own is used for pipelines created without a `VkPipelineCache` and for ones created with an empty application cache (vkd3d-proton makes one per pipeline); application caches with real data are left alone. Default on |
 | `WRAPPER_NO_BCN_THREAD` | decompress on the calling thread only |
