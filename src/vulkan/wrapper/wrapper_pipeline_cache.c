@@ -76,7 +76,6 @@
 #define WPC_TEMP_MAX_AGE_SEC  120
 #define WPC_DEFAULT_DELAY_MS  10000
 #define WPC_DEFAULT_MAX_MB    512
-#define WPC_MAX_SHADOW        1024
 /* A cache created with at most this much data is an empty one (the header
  * of an empty cache is 32 bytes) */
 #define WPC_EMPTY_DATA_MAX    256
@@ -157,6 +156,7 @@ struct wrapper_pipeline_cache_state {
    bool saving;                        /* a save has the exclusive turn */
    int64_t last_activity_ns;           /* last successful pipeline creation */
    int64_t last_pass_ns;               /* last time the entries were saved */
+   bool had_pass;                      /* the first save isn't held back by the interval */
    bool stop;
    bool thread_running;
    pthread_t thread;
@@ -482,6 +482,7 @@ wpc_save_all(struct wrapper_pipeline_cache_state *st)
 
    pthread_mutex_lock(&st->mtx);
    st->last_pass_ns = os_time_get_nano();
+   st->had_pass = true;
    pthread_mutex_unlock(&st->mtx);
 
    pthread_mutex_unlock(&st->save_mtx);
@@ -556,7 +557,8 @@ wpc_thread_main(void *arg)
                          st->entries[i].dirty;
          if (any_dirty) {
             const int64_t now = os_time_get_nano();
-            const bool spaced = now - st->last_pass_ns >= st->interval_ns;
+            const bool spaced = !st->had_pass ||
+                                now - st->last_pass_ns >= st->interval_ns;
             due = spaced &&
                   (now - st->last_activity_ns >= st->idle_ns ||
                    now - st->last_pass_ns >= st->force_ns);
@@ -923,7 +925,9 @@ wrapper_CreatePipelineCache(VkDevice _device,
     * cache.  Caches with real data, flags or extensions are the application's. */
    if (!st || st->implicit_cache == VK_NULL_HANDLE ||
        pCreateInfo->initialDataSize > WPC_EMPTY_DATA_MAX ||
-       pCreateInfo->flags != 0 || pCreateInfo->pNext != NULL) {
+       (pCreateInfo->flags &
+        ~VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT) != 0 ||
+       pCreateInfo->pNext != NULL) {
       return device->dispatch_table.CreatePipelineCache(
          device->dispatch_handle, pCreateInfo, pAllocator, pPipelineCache);
    }
@@ -938,18 +942,16 @@ wrapper_CreatePipelineCache(VkDevice _device,
       return res;
 
    pthread_mutex_lock(&st->mtx);
-   if (st->shadow_count < WPC_MAX_SHADOW) {
-      if (st->shadow_count == st->shadow_cap) {
-         const unsigned cap = st->shadow_cap ? st->shadow_cap * 2 : 64;
-         VkPipelineCache *n = realloc(st->shadow, cap * sizeof(*n));
-         if (n) {
-            st->shadow = n;
-            st->shadow_cap = cap;
-         }
+   if (st->shadow_count == st->shadow_cap) {
+      const unsigned cap = st->shadow_cap ? st->shadow_cap * 2 : 64;
+      VkPipelineCache *n = realloc(st->shadow, cap * sizeof(*n));
+      if (n) {
+         st->shadow = n;
+         st->shadow_cap = cap;
       }
-      if (st->shadow_count < st->shadow_cap)
-         st->shadow[st->shadow_count++] = *pPipelineCache;
    }
+   if (st->shadow_count < st->shadow_cap)
+      st->shadow[st->shadow_count++] = *pPipelineCache;
    pthread_mutex_unlock(&st->mtx);
    return VK_SUCCESS;
 }
