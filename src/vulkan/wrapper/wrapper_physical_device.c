@@ -457,9 +457,7 @@ wrapper_setup_subgroup_ops(struct wrapper_physical_device *pdevice)
 }
 
 /* WRAPPER_MEMORY_BUDGET_MODE controls both correction of the native budget
- * after a heap override and optional emulation on any driver.  An explicit
- * legacy WRAPPER_MEMORY_BUDGET=1 still selects emulation when the new option
- * is absent. */
+ * after a heap override and optional emulation on any driver. */
 static void
 wrapper_setup_memory_budget(struct wrapper_physical_device *pdevice)
 {
@@ -475,9 +473,6 @@ wrapper_setup_memory_budget(struct wrapper_physical_device *pdevice)
          mode = WRAPPER_MEMORY_BUDGET_EMULATED;
       else
          WRAPPER_LOG(error, "Ignoring WRAPPER_MEMORY_BUDGET_MODE=%s", env);
-   } else if (getenv("WRAPPER_MEMORY_BUDGET") &&
-              debug_get_bool_option("WRAPPER_MEMORY_BUDGET", false)) {
-      mode = WRAPPER_MEMORY_BUDGET_EMULATED;
    }
 
    pdevice->memory_budget_mode = mode;

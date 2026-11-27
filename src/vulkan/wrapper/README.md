@@ -128,7 +128,6 @@ AHardwareBuffers:
 | `WRAPPER_VK_VERSION` | spoof apiVersion (`1.3.280`) |
 | `WRAPPER_VMEM_MAX_SIZE` | size (MiB) reported for the first device-local heap; lowering always applies. With Turnip it can't raise the heap (Turnip refuses allocations past its own one), with other drivers it can, up to the larger of the driver's heap and Mesa's GPU heap share of the physical memory (75% above 4 GiB) |
 | `WRAPPER_MEMORY_BUDGET_MODE` | `off` (default): keep the native `VK_EXT_memory_budget` values unchanged; `proportional`: scale `heapBudget` and `heapUsage` by the old/new heap ratio when lowering it; `emulated`: replace the native budget with the emulated one on any driver |
-| `WRAPPER_MEMORY_BUDGET` | legacy fallback when `WRAPPER_MEMORY_BUDGET_MODE` is unset: an explicit `1` selects `emulated`, `0` selects `off` |
 | `WRAPPER_MEMORY_BUDGET_RESERVE` | memory (MiB) kept out of the emulated budget for the system, default 1024 |
 | `WRAPPER_SUBGROUP_OPS` | `1`/`0`: report or hide the driver's subgroup operations (default: reported on Adreno — Turnip and the Qualcomm driver — hidden elsewhere) |
 | `WRAPPER_SAFE_CREATE_DEVICE` | retry vkCreateDevice with an empty pNext (default on) |
@@ -136,15 +135,15 @@ AHardwareBuffers:
 | `WRAPPER_EMULATE_BCN` | BCn mode, see above (default 3) |
 | `WRAPPER_USE_BCN_CACHE` | keep decompressed textures in `WRAPPER_CACHE_PATH` |
 | `WRAPPER_CACHE_PATH` | directory of the BCn cache |
-| `WRAPPER_PIPELINE_CACHE` | persistent `VkPipelineCache` (the proprietary Qualcomm driver keeps no shader cache of its own, so games recompile shaders at every start). `0` off (default), `1` every driver, `2` only the proprietary Qualcomm driver (Turnip keeps using the Mesa shader cache). Needs `WRAPPER_PIPELINE_CACHE_PATH` or `WRAPPER_CACHE_PATH` |
+| `WRAPPER_PIPELINE_CACHE` | persistent `VkPipelineCache` (the proprietary Qualcomm driver keeps no shader cache of its own, so games recompile shaders at every start). `0` off (default), `1` on. Only the proprietary Qualcomm driver gets the cache; on any other driver (Turnip has the Mesa shader cache) it stays off. Needs `WRAPPER_PIPELINE_CACHE_PATH` or `WRAPPER_CACHE_PATH` |
 | `WRAPPER_PIPELINE_CACHE_PATH` | directory of the pipeline cache files (default: `WRAPPER_CACHE_PATH`) |
 | `WRAPPER_CACHE_KEY` | name of the cache files (default: the executable name); set it per game when several share one executable, e.g. under Wine |
-| `WRAPPER_PIPELINE_CACHE_DELAY_MS` | save this long after the last new pipeline, default 10000 |
-| `WRAPPER_PIPELINE_CACHE_INTERVAL_S` | least time between two saves, default 120. A save of a big cache stalls pipeline creation for seconds, so it must be rare |
-| `WRAPPER_PIPELINE_CACHE_FORCE_S` | save at least this often while pipelines keep coming, default 600 |
+| `WRAPPER_PIPELINE_CACHE_SAVE_DELAY` | seconds without a new pipeline before the cache is saved (fractions are fine, min 0.1), default 10 |
+| `WRAPPER_PIPELINE_CACHE_SAVE_INTERVAL` | least seconds between two saves, default 120 (the first save isn't held back). A save of a big cache stalls pipeline creation for seconds, so it must be rare |
+| `WRAPPER_PIPELINE_CACHE_SAVE_FORCE` | save at least this often (seconds) while pipelines keep coming, default 600 |
 | `WRAPPER_PIPELINE_CACHE_SAVE` | `exit`: save only when the device is destroyed or the process exits through `exit()` (no stalls while playing, but nothing is kept if the process is killed); default: also while running |
 | `WRAPPER_PIPELINE_CACHE_REQUEST` | path of a file the launcher writes a token into to ask for a save right now (the game is about to be killed); the wrapper answers with the same token in `<path>.done` and keeps `<path>.alive.<pid>` while it listens |
-| `WRAPPER_PIPELINE_CACHE_MAX_MB` | size limit of the cache file, default 512. A bigger cache isn't saved, and a file already over the limit isn't loaded: it's deleted and the cache starts empty. The cache can't be trimmed (the driver's data is one opaque blob), so this is a ceiling; lower it to see whether a huge cache is what makes a game hitch |
+| `WRAPPER_PIPELINE_CACHE_MAX_SIZE` | size limit (MiB) of the cache file, default 512. A bigger cache isn't saved, and a file already over the limit isn't loaded: it's deleted and the cache starts empty. The cache can't be trimmed (the driver's data is one opaque blob), so this is a ceiling; lower it to see whether a huge cache is what makes a game hitch |
 | `WRAPPER_PIPELINE_CACHE_IMPLICIT` | `0` turns the persistent cache off altogether. One cache of the wrapper's own is used for pipelines created without a `VkPipelineCache` and for ones created with an empty application cache (vkd3d-proton makes one per pipeline); application caches with real data are left alone. Default on |
 | `WRAPPER_NO_BCN_THREAD` | decompress on the calling thread only |
 | `WRAPPER_MARK_BCN` | fill emulated textures with a per format color (debug) |

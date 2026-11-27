@@ -20,10 +20,10 @@
  *    real data, flags or a pNext chain belong to the application and are
  *    passed through untouched.  (WRAPPER_PIPELINE_CACHE_IMPLICIT=0 turns the
  *    whole thing off.)
- *  - The cache is written back WRAPPER_PIPELINE_CACHE_DELAY_MS after the last
+ *  - The cache is written back WRAPPER_PIPELINE_CACHE_SAVE_DELAY after the last
  *    pipeline was created (never more often than every
- *    WRAPPER_PIPELINE_CACHE_INTERVAL_S), at least every
- *    WRAPPER_PIPELINE_CACHE_FORCE_S while pipelines keep
+ *    WRAPPER_PIPELINE_CACHE_SAVE_INTERVAL), at least every
+ *    WRAPPER_PIPELINE_CACHE_SAVE_FORCE while pipelines keep
  *    coming and when the device goes away.  A process that is killed keeps what was saved, which is why the
  *    saving does not wait for the exit.  A save only happens when the
  *    driver's data grew.
@@ -71,10 +71,10 @@
 #define WPC_ENTRY_IMPLICIT    0
 #define WPC_NUM_ENTRIES       (1 + WPC_MAX_APP_CACHES)
 #define WPC_POLL_US           100000
-#define WPC_DEFAULT_INTERVAL_S 120
-#define WPC_DEFAULT_FORCE_S   600
+#define WPC_DEFAULT_INTERVAL_S 120.0
+#define WPC_DEFAULT_FORCE_S   600.0
 #define WPC_TEMP_MAX_AGE_SEC  120
-#define WPC_DEFAULT_DELAY_MS  10000
+#define WPC_DEFAULT_DELAY_S   10.0
 #define WPC_DEFAULT_MAX_MB    512
 /* A cache created with at most this much data is an empty one (the header
  * of an empty cache is 32 bytes) */
@@ -286,7 +286,7 @@ wpc_load_file(const struct wrapper_pipeline_cache_state *st, const char *path,
    if (!ok) {
       if ((uint64_t)sb.st_size > sizeof(h) + st->max_bytes)
          WRAPPER_LOG(info, "Pipeline cache: %s is %lld bytes, over the limit of "
-                     "%llu (WRAPPER_PIPELINE_CACHE_MAX_MB): starting empty",
+                     "%llu (WRAPPER_PIPELINE_CACHE_MAX_SIZE): starting empty",
                      path, (long long)sb.st_size,
                      (unsigned long long)st->max_bytes);
       else
@@ -404,7 +404,7 @@ wpc_snapshot(struct wrapper_pipeline_cache_state *st, struct wpc_entry *e,
       if (size > st->max_bytes) {
          if (!e->too_big_logged) {
             WRAPPER_LOG(info, "Pipeline cache: %zu bytes is over the limit "
-                        "(WRAPPER_PIPELINE_CACHE_MAX_MB), not saving %s",
+                        "(WRAPPER_PIPELINE_CACHE_MAX_SIZE), not saving %s",
                         size, e->path);
             e->too_big_logged = true;
          }
@@ -726,18 +726,34 @@ wpc_sanitize_key(char *dst, size_t size, const char *src)
       snprintf(dst, size, "unknown");
 }
 
+/* A time in seconds from the environment (fractions are fine), in ns */
+static int64_t
+wpc_env_seconds(const char *name, double def, double min, double max)
+{
+   double v = def;
+   const char *str = getenv(name);
+
+   if (str && *str) {
+      char *end;
+      const double parsed = strtod(str, &end);
+      if (end != str && parsed == parsed)
+         v = parsed;
+   }
+   return (int64_t)(CLAMP(v, min, max) * 1e9);
+}
+
 VkResult
 wrapper_pipeline_cache_device_init(struct wrapper_device *device)
 {
    const struct wrapper_physical_device *pdevice = device->physical;
    const int64_t mode = debug_get_num_option("WRAPPER_PIPELINE_CACHE", 0);
 
-   /* 0: off, 1: every driver, 2: only the proprietary Qualcomm driver.
-    * Nothing here may fail the device. */
+   /* 0: off, anything else: on, for the proprietary Qualcomm driver only.
+    * Turnip has the Mesa shader cache of its own, and other drivers keep
+    * theirs.  Nothing here may fail the device. */
    if (mode == 0)
       return VK_SUCCESS;
-   if (mode == 2 &&
-       pdevice->driver_properties.driverID != VK_DRIVER_ID_QUALCOMM_PROPRIETARY) {
+   if (pdevice->driver_properties.driverID != VK_DRIVER_ID_QUALCOMM_PROPRIETARY) {
       WRAPPER_LOG(info, "Pipeline cache: not the Qualcomm driver, disabled");
       return VK_SUCCESS;
    }
@@ -761,18 +777,16 @@ wrapper_pipeline_cache_device_init(struct wrapper_device *device)
    wpc_sanitize_key(st->key, sizeof(st->key),
                     (key && *key) ? key : get_executable_name());
 
-   int64_t max_mb = debug_get_num_option("WRAPPER_PIPELINE_CACHE_MAX_MB",
-                                         WPC_DEFAULT_MAX_MB);
-   int64_t delay_ms = debug_get_num_option("WRAPPER_PIPELINE_CACHE_DELAY_MS",
-                                           WPC_DEFAULT_DELAY_MS);
+   const int64_t max_mb = debug_get_num_option(
+      "WRAPPER_PIPELINE_CACHE_MAX_SIZE", WPC_DEFAULT_MAX_MB);
    st->max_bytes = (uint64_t)CLAMP(max_mb, 1, 4096) << 20;
-   st->idle_ns = CLAMP(delay_ms, 100, 600000) * 1000000ll;
-   st->interval_ns = CLAMP(debug_get_num_option(
-      "WRAPPER_PIPELINE_CACHE_INTERVAL_S", WPC_DEFAULT_INTERVAL_S), 0, 86400) *
-      1000000000ll;
-   st->force_ns = MAX2(CLAMP(debug_get_num_option(
-      "WRAPPER_PIPELINE_CACHE_FORCE_S", WPC_DEFAULT_FORCE_S), 1, 86400) *
-      1000000000ll, st->interval_ns);
+   st->idle_ns = wpc_env_seconds("WRAPPER_PIPELINE_CACHE_SAVE_DELAY",
+                                 WPC_DEFAULT_DELAY_S, 0.1, 3600);
+   st->interval_ns = wpc_env_seconds("WRAPPER_PIPELINE_CACHE_SAVE_INTERVAL",
+                                     WPC_DEFAULT_INTERVAL_S, 0, 86400);
+   st->force_ns = MAX2(wpc_env_seconds("WRAPPER_PIPELINE_CACHE_SAVE_FORCE",
+                                       WPC_DEFAULT_FORCE_S, 1, 86400),
+                       st->interval_ns);
    const char *save = getenv("WRAPPER_PIPELINE_CACHE_SAVE");
    st->save_on_exit_only = save && !strcmp(save, "exit");
    const char *request = getenv("WRAPPER_PIPELINE_CACHE_REQUEST");
