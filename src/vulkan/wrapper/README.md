@@ -144,7 +144,7 @@ AHardwareBuffers:
 | `WRAPPER_PIPELINE_CACHE_FORCE_S` | save at least this often while pipelines keep coming, default 600 |
 | `WRAPPER_PIPELINE_CACHE_SAVE` | `exit`: save only when the device is destroyed or the process exits through `exit()` (no stalls while playing, but nothing is kept if the process is killed); default: also while running |
 | `WRAPPER_PIPELINE_CACHE_REQUEST` | path of a file the launcher writes a token into to ask for a save right now (the game is about to be killed); the wrapper answers with the same token in `<path>.done` and keeps `<path>.alive.<pid>` while it listens |
-| `WRAPPER_PIPELINE_CACHE_MAX_MB` | don't write files larger than this, default 512 |
+| `WRAPPER_PIPELINE_CACHE_MAX_MB` | size limit of the cache file, default 512. A bigger cache isn't saved, and a file already over the limit isn't loaded: it's deleted and the cache starts empty. The cache can't be trimmed (the driver's data is one opaque blob), so this is a ceiling; lower it to see whether a huge cache is what makes a game hitch |
 | `WRAPPER_PIPELINE_CACHE_IMPLICIT` | `0` turns the persistent cache off altogether. One cache of the wrapper's own is used for pipelines created without a `VkPipelineCache` and for ones created with an empty application cache (vkd3d-proton makes one per pipeline); application caches with real data are left alone. Default on |
 | `WRAPPER_NO_BCN_THREAD` | decompress on the calling thread only |
 | `WRAPPER_MARK_BCN` | fill emulated textures with a per format color (debug) |

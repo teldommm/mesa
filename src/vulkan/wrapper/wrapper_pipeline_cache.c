@@ -284,7 +284,13 @@ wpc_load_file(const struct wrapper_pipeline_cache_state *st, const char *path,
    close(fd);
 
    if (!ok) {
-      WRAPPER_LOG(info, "Pipeline cache: dropping unusable file %s", path);
+      if ((uint64_t)sb.st_size > sizeof(h) + st->max_bytes)
+         WRAPPER_LOG(info, "Pipeline cache: %s is %lld bytes, over the limit of "
+                     "%llu (WRAPPER_PIPELINE_CACHE_MAX_MB): starting empty",
+                     path, (long long)sb.st_size,
+                     (unsigned long long)st->max_bytes);
+      else
+         WRAPPER_LOG(info, "Pipeline cache: dropping unusable file %s", path);
       free(buf);
       unlink(path);
       return NULL;
