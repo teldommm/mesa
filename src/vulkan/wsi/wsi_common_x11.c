@@ -933,14 +933,24 @@ x11_surface_get_capabilities2(VkIcdSurfaceBase *icd_surface,
       case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR: {
          VkSurfaceCapabilitiesPresentId2KHR *pid2 = (void *)ext;
 
+#ifdef VK_WSI_ANDROID_AHB
+         pid2->presentId2Supported =
+            vk_physical_device_from_handle(wsi_device->pdevice)->supported_extensions.KHR_present_id2;
+#else
          pid2->presentId2Supported = VK_TRUE;
+#endif
          break;
       }
 
       case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR: {
          VkSurfaceCapabilitiesPresentWait2KHR *pwait2 = (void *)ext;
 
+#ifdef VK_WSI_ANDROID_AHB
+         pwait2->presentWait2Supported =
+            vk_physical_device_from_handle(wsi_device->pdevice)->supported_extensions.KHR_present_wait2;
+#else
          pwait2->presentWait2Supported = VK_TRUE;
+#endif
          break;
       }
 

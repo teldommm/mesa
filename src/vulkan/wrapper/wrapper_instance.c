@@ -14,6 +14,8 @@
 #include "vk_common_entrypoints.h"
 #include "vk_dispatch_table.h"
 #include "vk_extensions.h"
+#include "vk_util.h"
+#include "util/simple_mtx.h"
 #include "adrenotools/driver.h"
 
 const struct vk_instance_extension_table wrapper_instance_extensions = {
@@ -58,6 +60,8 @@ static PFN_vkCreateDebugUtilsMessengerEXT create_debug_utils_messenger;
 static PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_utils_messenger;
 static VkDebugUtilsMessengerEXT debug_utils_messenger;
 static struct vk_instance_extension_table *supported_instance_extensions;
+static uint32_t instance_extension_versions[VK_INSTANCE_EXTENSION_COUNT];
+static simple_mtx_t vulkan_init_mutex = SIMPLE_MTX_INITIALIZER;
 static bool has_intercepted_layer_paths = false;
 
 #ifdef __LP64__
@@ -152,52 +156,67 @@ vulkan_library_init(void)
    if (vulkan_library_handle)
       return true;
 
-   vulkan_library_handle = get_vulkan_handle();
-   if (!vulkan_library_handle) {
+   void *handle = get_vulkan_handle();
+   if (!handle) {
       fprintf(stderr, "wrapper: failed to load the Vulkan driver: %s\n", dlerror());
       return false;
    }
 
-   create_instance = dlsym(vulkan_library_handle, "vkCreateInstance");
-   get_instance_proc_addr = dlsym(vulkan_library_handle, "vkGetInstanceProcAddr");
-   enumerate_instance_version = dlsym(vulkan_library_handle,
+   create_instance = dlsym(handle, "vkCreateInstance");
+   get_instance_proc_addr = dlsym(handle, "vkGetInstanceProcAddr");
+   enumerate_instance_version = dlsym(handle,
                                       "vkEnumerateInstanceVersion");
    enumerate_instance_extension_properties =
-      dlsym(vulkan_library_handle, "vkEnumerateInstanceExtensionProperties");
+      dlsym(handle, "vkEnumerateInstanceExtensionProperties");
    enumerate_instance_layer_properties =
-      dlsym(vulkan_library_handle, "vkEnumerateInstanceLayerProperties");
+      dlsym(handle, "vkEnumerateInstanceLayerProperties");
 
    if (!create_instance || !get_instance_proc_addr ||
        !enumerate_instance_extension_properties) {
       fprintf(stderr, "wrapper: the Vulkan driver lacks required entrypoints\n");
+      dlclose(handle);
       return false;
    }
 
+   vulkan_library_handle = handle;
    return true;
 }
 
 static VkResult
-wrapper_vulkan_init(void)
+wrapper_init_instance_extensions(void)
 {
-   VkExtensionProperties props[VK_INSTANCE_EXTENSION_COUNT];
-   uint32_t prop_count = VK_INSTANCE_EXTENSION_COUNT;
-   VkResult result;
-
    if (supported_instance_extensions)
       return VK_SUCCESS;
 
-   if (!vulkan_library_init())
-      return VK_ERROR_INCOMPATIBLE_DRIVER;
+   VkExtensionProperties *props = NULL;
+   uint32_t prop_count;
+   VkResult result;
 
-   result = enumerate_instance_extension_properties(NULL, &prop_count, props);
-   if (result != VK_SUCCESS && result != VK_INCOMPLETE)
+   do {
+      free(props);
+      result = enumerate_instance_extension_properties(NULL, &prop_count, NULL);
+      if (result != VK_SUCCESS)
+         return result;
+      props = calloc(MAX2(prop_count, 1), sizeof(*props));
+      if (!props)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      result = enumerate_instance_extension_properties(NULL, &prop_count, props);
+   } while (result == VK_INCOMPLETE);
+   if (result != VK_SUCCESS) {
+      free(props);
       return result;
+   }
 
    struct vk_instance_extension_table *exts = malloc(sizeof(*exts));
-   if (!exts)
+   if (!exts) {
+      free(props);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
 
    *exts = wrapper_instance_extensions;
+
+   for (int i = 0; i < VK_INSTANCE_EXTENSION_COUNT; i++)
+      instance_extension_versions[i] = vk_instance_extensions[i].specVersion;
 
    for (uint32_t i = 0; i < prop_count; i++) {
       int idx;
@@ -211,7 +230,11 @@ wrapper_vulkan_init(void)
          continue;
 
       exts->extensions[idx] = true;
+      if (!wrapper_instance_extensions.extensions[idx])
+         instance_extension_versions[idx] =
+            MIN2(props[i].specVersion, vk_instance_extensions[idx].specVersion);
    }
+   free(props);
 
    /* The wrapper's command buffers / queues are not the driver's, so debug
     * utils can't simply be forwarded. */
@@ -222,10 +245,23 @@ wrapper_vulkan_init(void)
    return VK_SUCCESS;
 }
 
+static VkResult
+wrapper_vulkan_init(void)
+{
+   simple_mtx_lock(&vulkan_init_mutex);
+   VkResult result = vulkan_library_init() ? wrapper_init_instance_extensions() :
+                                          VK_ERROR_INCOMPATIBLE_DRIVER;
+   simple_mtx_unlock(&vulkan_init_mutex);
+   return result;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 wrapper_EnumerateInstanceVersion(uint32_t* pApiVersion)
 {
-   if (!vulkan_library_init())
+   simple_mtx_lock(&vulkan_init_mutex);
+   bool loaded = vulkan_library_init();
+   simple_mtx_unlock(&vulkan_init_mutex);
+   if (!loaded)
       return vk_error(NULL, VK_ERROR_INCOMPATIBLE_DRIVER);
 
    if (!enumerate_instance_version) {
@@ -245,9 +281,20 @@ wrapper_EnumerateInstanceExtensionProperties(const char* pLayerName,
    if (result != VK_SUCCESS)
       return vk_error(NULL, result);
 
-   return vk_enumerate_instance_extension_properties(supported_instance_extensions,
-                                                     pPropertyCount,
-                                                     pProperties);
+   VK_OUTARRAY_MAKE_TYPED(VkExtensionProperties, out, pProperties, pPropertyCount);
+   for (int i = 0; i < VK_INSTANCE_EXTENSION_COUNT; i++) {
+      if (!supported_instance_extensions->extensions[i])
+         continue;
+#ifdef ANDROID_STRICT
+      if (!vk_android_allowed_instance_extensions.extensions[i])
+         continue;
+#endif
+      vk_outarray_append_typed(VkExtensionProperties, &out, prop) {
+         *prop = vk_instance_extensions[i];
+         prop->specVersion = instance_extension_versions[i];
+      }
+   }
+   return vk_outarray_status(&out);
 }
 
 static void
@@ -416,6 +463,7 @@ wrapper_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
          enumerate_instance_version(&wrapper_application_info.apiVersion);
    }
    wrapper_create_info.pApplicationInfo = &wrapper_application_info;
+   instance->dispatch_api_version = wrapper_application_info.apiVersion;
 
    if (WRAPPER_LOG_LEVEL(validation) || WRAPPER_LOG_LEVEL(apidump))
       setup_debug_layers(&wrapper_create_info, &layer_settings_info);

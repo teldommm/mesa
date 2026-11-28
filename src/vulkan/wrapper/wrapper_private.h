@@ -25,6 +25,7 @@ struct wrapper_instance {
    struct vk_instance vk;
 
    VkInstance dispatch_handle;
+   uint32_t dispatch_api_version;
    struct vk_instance_dispatch_table dispatch_table;
 };
 
@@ -110,6 +111,7 @@ struct wrapper_physical_device {
    /* What the underlying driver really supports */
    struct vk_features base_supported_features;
    struct vk_device_extension_table base_supported_extensions;
+   uint32_t extension_versions[VK_DEVICE_EXTENSION_COUNT];
    struct vk_physical_device_dispatch_table dispatch_table;
 
    /* Report the driver's subgroup operations (WRAPPER_SUBGROUP_OPS) */
@@ -137,6 +139,13 @@ struct wrapper_physical_device {
    uint32_t bcn_fake_mask;
    uint32_t bcn_emulate_mask;
 };
+
+static inline bool
+wrapper_has_core_timeline_semaphore(const struct wrapper_physical_device *pdevice)
+{
+   return pdevice->instance->dispatch_api_version >= VK_API_VERSION_1_2 &&
+          pdevice->properties2.properties.apiVersion >= VK_API_VERSION_1_2;
+}
 
 static inline bool
 wrapper_bcn_is_emulated(const struct wrapper_physical_device *pdevice,

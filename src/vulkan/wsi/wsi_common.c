@@ -191,7 +191,8 @@ wsi_device_init(struct wsi_device *wsi,
                            supported_extensions->KHR_present_wait2;
 
    wsi->has_timeline_semaphore =
-      supported_extensions->KHR_timeline_semaphore;
+      supported_extensions->KHR_timeline_semaphore ||
+      device_options->supports_core_timeline_semaphore;
    wsi->has_host_query_reset =
       supported_extensions->EXT_host_query_reset;
 

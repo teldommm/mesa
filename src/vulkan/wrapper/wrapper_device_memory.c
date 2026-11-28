@@ -208,6 +208,10 @@ wrapper_allocate_memory_dmaheap(struct wrapper_device *device,
 {
    VkResult result;
 
+   if (!device->physical->base_supported_extensions.EXT_external_memory_dma_buf ||
+       !device->dispatch_table.GetMemoryFdPropertiesKHR)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+
    *out_fd = wrapper_dmabuf_alloc(device, pAllocateInfo->allocationSize);
    if (*out_fd < 0)
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
@@ -269,6 +273,9 @@ wrapper_allocate_memory_opaque_fd(struct wrapper_device *device,
                                   int *out_fd)
 {
    VkResult result;
+
+   if (!device->dispatch_table.GetMemoryFdKHR)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
 
    VkExportMemoryAllocateInfo export_memory_info = {
       .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
@@ -685,7 +692,7 @@ wrapper_MapMemory2KHR(VkDevice _device,
 
    struct wrapper_device_memory *mem =
       wrapper_device_memory_lookup(device, pMemoryMapInfo->memory);
-   if (!placed_info || !mem) {
+   if (!(pMemoryMapInfo->flags & VK_MEMORY_MAP_PLACED_BIT_EXT)) {
       result = device->dispatch_table.MapMemory(device->dispatch_handle,
          pMemoryMapInfo->memory, pMemoryMapInfo->offset, pMemoryMapInfo->size,
          0, ppData);
@@ -695,6 +702,8 @@ wrapper_MapMemory2KHR(VkDevice _device,
                                *ppData);
       return result;
    }
+   if (!placed_info || !mem)
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
    WRAPPER_LOG(info, "Emulating vkMapMemory2KHR");
 
@@ -770,6 +779,8 @@ wrapper_UnmapMemory2KHR(VkDevice _device,
    struct wrapper_device_memory *mem =
       wrapper_device_memory_lookup(device, pMemoryUnmapInfo->memory);
    if (!mem || !mem->map_address) {
+      if (pMemoryUnmapInfo->flags & VK_MEMORY_UNMAP_RESERVE_BIT_EXT)
+         return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
       device->dispatch_table.UnmapMemory(device->dispatch_handle,
                                          pMemoryUnmapInfo->memory);
       return VK_SUCCESS;

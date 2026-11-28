@@ -11,6 +11,7 @@
 #include "vk_common_entrypoints.h"
 #include "vk_device.h"
 #include "vk_dispatch_table.h"
+#include "vk_enum_to_str.h"
 #include "vk_extensions.h"
 #include "vk_queue.h"
 #include "vk_util.h"
@@ -60,11 +61,24 @@ add_extension(const char **exts, uint32_t *count, const char *name)
    exts[(*count)++] = name;
 }
 
+static bool
+wrapper_uses_robustness2_alias(const struct wrapper_device *device)
+{
+   const struct vk_device_extension_table *base =
+      &device->physical->base_supported_extensions;
+   return device->vk.enabled_extensions.EXT_robustness2 &&
+          !base->EXT_robustness2 && base->KHR_robustness2;
+}
+
 static void
 wrapper_filter_enabled_extensions(const struct wrapper_device *device,
                                   uint32_t *enable_extension_count,
                                   const char **enable_extensions)
 {
+   if (wrapper_uses_robustness2_alias(device))
+      add_extension(enable_extensions, enable_extension_count,
+                    VK_KHR_ROBUSTNESS_2_EXTENSION_NAME);
+
    for (int idx = 0; idx < VK_DEVICE_EXTENSION_COUNT; idx++) {
       if (!device->vk.enabled_extensions.extensions[idx])
          continue;
@@ -117,6 +131,40 @@ wrapper_append_required_extensions(const struct wrapper_device *device,
 #undef REQUIRED_EXTENSION
 }
 
+/* Copy the structures we understand before changing links or feature bits.
+ * Unknown structures are ignored by Vulkan implementations. */
+static VkResult
+wrapper_copy_device_pnext(VkDeviceCreateInfo *create_info, void **storage)
+{
+   size_t size = 0;
+   vk_foreach_struct_const(item, create_info->pNext)
+      size += ALIGN_POT(vk_structure_type_size_or_zero(item), _Alignof(max_align_t));
+
+   *storage = size ? malloc(size) : NULL;
+   if (size && !*storage)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   uint8_t *next = *storage;
+   VkBaseOutStructure *tail = NULL;
+   const VkBaseInStructure *source = create_info->pNext;
+   create_info->pNext = NULL;
+   vk_foreach_struct_const(item, source) {
+      size_t item_size = vk_structure_type_size_or_zero(item);
+      if (!item_size)
+         continue;
+
+      VkBaseOutStructure *copy = memcpy(next, item, item_size);
+      copy->pNext = NULL;
+      if (tail)
+         tail->pNext = copy;
+      else
+         create_info->pNext = copy;
+      tail = copy;
+      next += ALIGN_POT(item_size, _Alignof(max_align_t));
+   }
+   return VK_SUCCESS;
+}
+
 static void
 unlink_vk_struct(VkBaseInStructure *create_info,
                  const VkBaseInStructure **current,
@@ -162,20 +210,13 @@ process_device_pnext_chain(VkBaseInStructure *create_info,
          UNLINK_UNLESS(base->EXT_robustness2 || base->KHR_robustness2,
                        "VkPhysicalDeviceRobustness2Features");
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR:
-         UNLINK_UNLESS(base->KHR_present_id, "VkPhysicalDevicePresentIdFeaturesKHR");
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR:
-         UNLINK_UNLESS(base->KHR_present_id2, "VkPhysicalDevicePresentId2FeaturesKHR");
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR:
-         UNLINK_UNLESS(base->KHR_present_wait, "VkPhysicalDevicePresentWaitFeaturesKHR");
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR:
-         UNLINK_UNLESS(base->KHR_present_wait2, "VkPhysicalDevicePresentWait2FeaturesKHR");
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR:
-         UNLINK_UNLESS(base->KHR_swapchain_maintenance1 ||
-                       base->EXT_swapchain_maintenance1,
-                       "VkPhysicalDeviceSwapchainMaintenance1Features");
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT:
-         UNLINK_UNLESS(base->EXT_map_memory_placed,
-                       "VkPhysicalDeviceMapMemoryPlacedFeaturesEXT");
+         unlink_vk_struct(create_info, &current, &prev);
+         continue;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
          UNLINK_UNLESS(api_version >= VK_API_VERSION_1_1,
                        "VkPhysicalDeviceVulkan11Features");
@@ -236,6 +277,38 @@ wrapper_create_device_queue(struct wrapper_device *device,
    }
 
    return VK_SUCCESS;
+}
+
+/* Enable the timeline used by WSI on the real device. The aggregate Vulkan
+ * 1.2 struct and standalone timeline feature must never coexist in pNext. */
+static VkResult
+wrapper_create_driver_device(struct wrapper_device *device,
+                             const VkDeviceCreateInfo *create_info,
+                             const VkAllocationCallbacks *alloc,
+                             bool needs_wsi_timeline)
+{
+   const struct wrapper_physical_device *physical = device->physical;
+   VkDeviceCreateInfo info = *create_info;
+   VkPhysicalDeviceTimelineSemaphoreFeatures timeline = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+      .pNext = (void *)info.pNext,
+      .timelineSemaphore = VK_TRUE,
+   };
+   if (needs_wsi_timeline) {
+      VkPhysicalDeviceVulkan12Features *vulkan12 =
+         vk_find_struct((void *)info.pNext, PHYSICAL_DEVICE_VULKAN_1_2_FEATURES);
+      VkPhysicalDeviceTimelineSemaphoreFeatures *standalone =
+         vk_find_struct((void *)info.pNext, PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES);
+      if (vulkan12)
+         vulkan12->timelineSemaphore = VK_TRUE;
+      else if (standalone)
+         standalone->timelineSemaphore = VK_TRUE;
+      else
+         info.pNext = &timeline;
+   }
+
+   return physical->dispatch_table.CreateDevice(
+      physical->dispatch_handle, &info, alloc, &device->dispatch_handle);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -306,6 +379,16 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
       return vk_error(physical_device, result);
    }
 
+   const bool needs_wsi_timeline = device->vk.enabled_features.presentWait ||
+                                  device->vk.enabled_features.presentWait2;
+   if ((device->vk.enabled_features.presentWait &&
+        !physical_device->vk.supported_features.presentWait) ||
+       (device->vk.enabled_features.presentWait2 &&
+        !physical_device->vk.supported_features.presentWait2)) {
+      wrapper_DestroyDevice(wrapper_device_to_handle(device), pAllocator);
+      return vk_error(physical_device, VK_ERROR_FEATURE_NOT_PRESENT);
+   }
+
    wrapper_filter_enabled_extensions(device,
       &wrapper_enable_extension_count, wrapper_enable_extensions);
    wrapper_append_required_extensions(device,
@@ -326,15 +409,20 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
    wrapper_create_info.enabledExtensionCount = wrapper_enable_extension_count;
    wrapper_create_info.ppEnabledExtensionNames = wrapper_enable_extensions;
 
-   /* Mask the faked features with what the driver really supports.  The
-    * VkPhysicalDeviceFeatures2 in the chain belongs to the application, only
-    * write to it when something actually has to be cleared. */
+   void *pnext_storage;
+   result = wrapper_copy_device_pnext(&wrapper_create_info, &pnext_storage);
+   if (result != VK_SUCCESS) {
+      wrapper_DestroyDevice(wrapper_device_to_handle(device), pAllocator);
+      return vk_error(physical_device, result);
+   }
+
+   /* Mask the faked features with what the driver really supports. */
    if (pCreateInfo->pEnabledFeatures) {
       enabled_features = *pCreateInfo->pEnabledFeatures;
       pdf = &enabled_features;
       wrapper_create_info.pEnabledFeatures = pdf;
    }
-   pdf2 = __vk_find_struct((void *)pCreateInfo->pNext,
+   pdf2 = __vk_find_struct((void *)wrapper_create_info.pNext,
                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
 
 #define DISABLE_FEATURE(f) \
@@ -378,18 +466,24 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
    if (wrapper_safe_create_device == -1)
       wrapper_safe_create_device = debug_get_bool_option("WRAPPER_SAFE_CREATE_DEVICE", true);
 
-   result = physical_device->dispatch_table.CreateDevice(
-      physical_device->dispatch_handle, &wrapper_create_info,
-      pAllocator, &device->dispatch_handle);
+   result = wrapper_create_driver_device(device, &wrapper_create_info,
+                                         pAllocator, needs_wsi_timeline);
 
    if (result != VK_SUCCESS && wrapper_safe_create_device) {
-      WRAPPER_LOG(info, "Forcing device creation with a NULL pNext chain");
+      WRAPPER_LOG(info, "Retrying device creation with a minimal pNext chain");
+      VkPhysicalDeviceRobustness2FeaturesKHR *robustness =
+         vk_find_struct((void *)wrapper_create_info.pNext,
+                        PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR);
       wrapper_create_info.pNext = NULL;
+      if (robustness && wrapper_uses_robustness2_alias(device)) {
+         robustness->pNext = NULL;
+         wrapper_create_info.pNext = robustness;
+      }
       used_fallback_create = true;
-      result = physical_device->dispatch_table.CreateDevice(
-         physical_device->dispatch_handle, &wrapper_create_info,
-         pAllocator, &device->dispatch_handle);
+      result = wrapper_create_driver_device(device, &wrapper_create_info,
+                                            pAllocator, needs_wsi_timeline);
    }
+   free(pnext_storage);
 
    if (result != VK_SUCCESS) {
       WRAPPER_LOG(error, "Failed driver createDevice, res %d", result);
@@ -403,6 +497,12 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
          physical_device->instance->dispatch_handle, "vkGetDeviceProcAddr");
    vk_device_dispatch_table_load(&device->dispatch_table, gdpa,
                                  device->dispatch_handle);
+
+   if (needs_wsi_timeline && !device->dispatch_table.WaitSemaphores) {
+      WRAPPER_LOG(error, "Driver lacks vkWaitSemaphores for WSI present wait");
+      wrapper_DestroyDevice(wrapper_device_to_handle(device), pAllocator);
+      return vk_error(physical_device, VK_ERROR_FEATURE_NOT_PRESENT);
+   }
 
    device->device_fault_enabled = enable_device_fault && !used_fallback_create;
 
@@ -433,14 +533,13 @@ wrapper_CreateDevice(VkPhysicalDevice physicalDevice,
    /* Without the placed-map emulation the memory entrypoints go straight to
     * the driver, unless the BCn emulation has to know the application's
     * mappings. */
-   if (!physical_device->vk.supported_features.memoryMapPlaced &&
+   if (!device->vk.enabled_features.memoryMapPlaced &&
        !device->bcn_active) {
-      device->vk.dispatch_table.MapMemory2 =
-         wrapper_device_trampolines.MapMemory2;
-      device->vk.dispatch_table.UnmapMemory =
-         wrapper_device_trampolines.UnmapMemory;
-      device->vk.dispatch_table.UnmapMemory2 =
-         wrapper_device_trampolines.UnmapMemory2;
+      if (device->dispatch_table.MapMemory2 && device->dispatch_table.UnmapMemory2) {
+         device->vk.dispatch_table.MapMemory2 = wrapper_device_trampolines.MapMemory2;
+         device->vk.dispatch_table.UnmapMemory = wrapper_device_trampolines.UnmapMemory;
+         device->vk.dispatch_table.UnmapMemory2 = wrapper_device_trampolines.UnmapMemory2;
+      }
 
       /* The emulated memory budget still needs to see every allocation. */
       if (!device->budget_table) {

@@ -276,25 +276,29 @@ wrapper_setup_device_extensions(struct wrapper_physical_device *pdevice)
    uint32_t pdevice_extension_count = 0;
    VkResult result;
 
-   result = pdevice->dispatch_table.EnumerateDeviceExtensionProperties(
-      pdevice->dispatch_handle, NULL, &pdevice_extension_count, NULL);
-   if (result != VK_SUCCESS)
-      return result;
-
-   pdevice_extensions = calloc(MAX2(pdevice_extension_count, 1),
-                               sizeof(*pdevice_extensions));
-   if (!pdevice_extensions)
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-   result = pdevice->dispatch_table.EnumerateDeviceExtensionProperties(
-      pdevice->dispatch_handle, NULL, &pdevice_extension_count,
-      pdevice_extensions);
-   if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+   pdevice_extensions = NULL;
+   do {
+      free(pdevice_extensions);
+      result = pdevice->dispatch_table.EnumerateDeviceExtensionProperties(
+         pdevice->dispatch_handle, NULL, &pdevice_extension_count, NULL);
+      if (result != VK_SUCCESS)
+         return result;
+      pdevice_extensions = calloc(MAX2(pdevice_extension_count, 1),
+                                  sizeof(*pdevice_extensions));
+      if (!pdevice_extensions)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      result = pdevice->dispatch_table.EnumerateDeviceExtensionProperties(
+         pdevice->dispatch_handle, NULL, &pdevice_extension_count,
+         pdevice_extensions);
+   } while (result == VK_INCOMPLETE);
+   if (result != VK_SUCCESS) {
       free(pdevice_extensions);
       return result;
    }
 
    *exts = wrapper_device_extensions;
+   for (int i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++)
+      pdevice->extension_versions[i] = vk_device_extensions[i].specVersion;
 
    for (uint32_t i = 0; i < pdevice_extension_count; i++) {
       int idx;
@@ -313,20 +317,22 @@ wrapper_setup_device_extensions(struct wrapper_physical_device *pdevice)
          continue;
 
       exts->extensions[idx] = true;
+      if (!wrapper_device_extensions.extensions[idx])
+         pdevice->extension_versions[idx] =
+            MIN2(pdevice_extensions[i].specVersion, vk_device_extensions[idx].specVersion);
    }
 
    free(pdevice_extensions);
 
-   /* Present wait is implemented by the common WSI on top of timeline
-    * semaphores. */
-   exts->KHR_present_wait = exts->KHR_timeline_semaphore;
-   exts->KHR_present_wait2 = exts->KHR_timeline_semaphore;
+   /* EXT and KHR use the same feature/property structures and semantics. */
+   if (exts->KHR_robustness2)
+      exts->EXT_robustness2 = true;
 
    return VK_SUCCESS;
 }
 
 static void
-wrapper_apply_device_extension_blacklist(struct wrapper_physical_device *physical_device)
+wrapper_apply_device_extension_blacklist(struct vk_device_extension_table *exts)
 {
    const char *env = getenv("WRAPPER_EXTENSION_BLACKLIST");
    if (!env || !*env)
@@ -347,7 +353,7 @@ wrapper_apply_device_extension_blacklist(struct wrapper_physical_device *physica
       for (int i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
          if (!strcmp(extension, vk_device_extensions[i].extensionName)) {
             WRAPPER_LOG(info, "Blacklisting extension %s", extension);
-            physical_device->vk.supported_extensions.extensions[i] = false;
+            exts->extensions[i] = false;
          }
       }
    }
@@ -669,19 +675,7 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    pdevice->base_supported_features = *supported_features;
 
    /* Implemented by the common WSI */
-   supported_features->presentId = true;
-   supported_features->presentId2 = true;
    supported_features->swapchainMaintenance1 = true;
-   if (wrapper_disable_present_wait) {
-      WRAPPER_LOG(info, "Disabling present wait");
-      supported_features->presentWait = false;
-      supported_features->presentWait2 = false;
-      pdevice->vk.supported_extensions.KHR_present_wait = false;
-      pdevice->vk.supported_extensions.KHR_present_wait2 = false;
-   } else {
-      supported_features->presentWait = supported_features->timelineSemaphore;
-      supported_features->presentWait2 = supported_features->timelineSemaphore;
-   }
    supported_features->imageCompressionControlSwapchain = false;
 
    /* Faked: the application may enable them, they are masked with what the
@@ -693,30 +687,18 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    supported_features->shaderClipDistance = true;
    supported_features->shaderCullDistance = true;
 
-   /* VK_EXT_map_memory_placed is emulated (see wrapper_device_memory.c) */
-   if (!wrapper_disable_placed) {
-      pdevice->vk.supported_extensions.EXT_map_memory_placed = true;
-      pdevice->vk.supported_extensions.KHR_map_memory2 = true;
-      supported_features->memoryMapPlaced = true;
-      supported_features->memoryUnmapReserve = true;
-   } else {
+   /* The ordinary map/unmap commands have a legacy fallback independent of placed maps. */
+   pdevice->vk.supported_extensions.KHR_map_memory2 = true;
+   supported_features->memoryMapRangePlaced = false;
+   /* A placed map needs an external allocation with a mappable backing. */
+   pdevice->vk.supported_extensions.EXT_map_memory_placed =
+      !wrapper_disable_placed &&
+      (pdevice->base_supported_extensions.KHR_external_memory_fd ||
+       pdevice->base_supported_extensions.ANDROID_external_memory_android_hardware_buffer);
+   if (wrapper_disable_placed)
       WRAPPER_LOG(info, "Disabling VK_EXT_map_memory_placed");
-      pdevice->vk.supported_extensions.EXT_map_memory_placed = false;
-      supported_features->memoryMapPlaced = false;
-      supported_features->memoryUnmapReserve = false;
-   }
-
-   result = wsi_device_init(&pdevice->wsi_device,
-                            wrapper_physical_device_to_handle(pdevice),
-                            wrapper_wsi_proc_addr, &_instance->alloc, -1,
-                            NULL, &(struct wsi_device_options){});
-   if (result != VK_SUCCESS) {
-      vk_physical_device_finish(&pdevice->vk);
-      vk_free(&_instance->alloc, pdevice);
-      return result;
-   }
-
-   pdevice->vk.wsi_device = &pdevice->wsi_device;
+   if (wrapper_disable_present_wait)
+      WRAPPER_LOG(info, "Disabling present wait");
 
    WRAPPER_LOG(info, "GPU Name: %s", pdevice->properties2.properties.deviceName);
    WRAPPER_LOG(info, "Driver Version: %u.%u.%u",
@@ -732,8 +714,6 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
       ? instance->vk.app_info.engine_name : "wrapper";
    const uint32_t engine_version = instance->vk.app_info.engine_version;
 
-   pdevice->wsi_device.engine_name = engine_name;
-
    if (pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
       wrapper_apply_qualcomm_workarounds(pdevice, app_name, engine_name,
                                          engine_version);
@@ -746,6 +726,54 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    wrapper_setup_subgroup_ops(pdevice);
    wrapper_setup_memory_budget(pdevice);
    wrapper_setup_vmem_override(pdevice);
+
+   struct vk_device_extension_table *wsi_exts = &pdevice->vk.supported_extensions;
+   struct vk_device_extension_table visible_extensions = *wsi_exts;
+   struct vk_device_extension_table *exts = &visible_extensions;
+   wrapper_apply_device_extension_blacklist(exts);
+   if (!exts->EXT_memory_budget)
+      pdevice->emulate_memory_budget = false;
+
+   const uint32_t advertised_api_version = pdevice->identity.api_version ?
+      pdevice->identity.api_version : pdevice->properties2.properties.apiVersion;
+   if (!exts->KHR_map_memory2 && advertised_api_version < VK_API_VERSION_1_4)
+      exts->EXT_map_memory_placed = false;
+   supported_features->memoryMapPlaced = exts->EXT_map_memory_placed;
+   supported_features->memoryUnmapReserve = exts->EXT_map_memory_placed;
+
+   const bool core_timeline = wrapper_has_core_timeline_semaphore(pdevice);
+   const bool can_wait = !wrapper_disable_present_wait && supported_features->timelineSemaphore &&
+                         (core_timeline || exts->KHR_timeline_semaphore) &&
+                         exts->KHR_swapchain;
+   exts->KHR_present_id &= exts->KHR_swapchain;
+   exts->KHR_present_id2 &= exts->KHR_swapchain;
+   exts->KHR_present_wait &= can_wait && exts->KHR_present_id;
+   exts->KHR_present_wait2 &= can_wait && exts->KHR_present_id2;
+   supported_features->presentId = exts->KHR_present_id;
+   supported_features->presentId2 = exts->KHR_present_id2;
+   supported_features->presentWait = exts->KHR_present_wait;
+   supported_features->presentWait2 = exts->KHR_present_wait2;
+
+   /* WSI needs the final present-wait flags. Keep its internal host memory
+    * and fence capabilities independent of what is exposed to applications. */
+   wsi_exts->KHR_present_wait = exts->KHR_present_wait;
+   wsi_exts->KHR_present_wait2 = exts->KHR_present_wait2;
+
+   result = wsi_device_init(&pdevice->wsi_device,
+                           wrapper_physical_device_to_handle(pdevice),
+                           wrapper_wsi_proc_addr, &_instance->alloc, -1, NULL,
+                           &(struct wsi_device_options) {
+                              .supports_core_timeline_semaphore =
+                                 core_timeline && supported_features->timelineSemaphore,
+                           });
+   if (result != VK_SUCCESS) {
+      vk_physical_device_finish(&pdevice->vk);
+      vk_free(&_instance->alloc, pdevice);
+      return result;
+   }
+   pdevice->vk.supported_extensions = visible_extensions;
+   pdevice->vk.wsi_device = &pdevice->wsi_device;
+   pdevice->wsi_device.engine_name = engine_name;
 
    if (wrapper_dmaheap_cached == -1)
       wrapper_dmaheap_cached = debug_get_bool_option("WRAPPER_DMAHEAP_CACHED", false);
@@ -777,13 +805,6 @@ wrapper_physical_device_init(struct wrapper_instance *instance,
    pdevice->wsi_device.android_ahb_ubwc =
       debug_get_bool_option("WRAPPER_AHB_UBWC", false) && !wrapper_bgra &&
       pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
-
-   /* Last, so the extensions the wrapper adds or emulates above (placed
-    * memory, map_memory2, memory_budget, pipeline_library, ...) can be
-    * blacklisted too. */
-   wrapper_apply_device_extension_blacklist(pdevice);
-   if (!pdevice->vk.supported_extensions.EXT_memory_budget)
-      pdevice->emulate_memory_budget = false;
 
    *out = pdevice;
    return VK_SUCCESS;
@@ -852,10 +873,21 @@ wrapper_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
                                            uint32_t* pPropertyCount,
                                            VkExtensionProperties* pProperties)
 {
-   return vk_common_EnumerateDeviceExtensionProperties(physicalDevice,
-                                                       pLayerName,
-                                                       pPropertyCount,
-                                                       pProperties);
+   VK_FROM_HANDLE(wrapper_physical_device, pdevice, physicalDevice);
+   VK_OUTARRAY_MAKE_TYPED(VkExtensionProperties, out, pProperties, pPropertyCount);
+   for (int i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
+      if (!pdevice->vk.supported_extensions.extensions[i])
+         continue;
+#ifdef ANDROID_STRICT
+      if (!vk_android_allowed_device_extensions.extensions[i])
+         continue;
+#endif
+      vk_outarray_append_typed(VkExtensionProperties, &out, prop) {
+         *prop = vk_device_extensions[i];
+         prop->specVersion = pdevice->extension_versions[i];
+      }
+   }
+   return vk_outarray_status(&out);
 }
 
 VKAPI_ATTR void VKAPI_CALL

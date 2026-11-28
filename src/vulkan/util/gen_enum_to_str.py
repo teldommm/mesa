@@ -112,7 +112,7 @@ C_TEMPLATE = Template(textwrap.dedent(u"""\
       % endif
     %endfor
 
-    size_t vk_structure_type_size(const struct VkBaseInStructure *item)
+    size_t vk_structure_type_size_or_zero(const struct VkBaseInStructure *item)
     {
         switch((int)item->sType) {
     % for struct in structs:
@@ -126,9 +126,16 @@ C_TEMPLATE = Template(textwrap.dedent(u"""\
     %endfor
         case VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO: return sizeof(VkLayerInstanceCreateInfo);
         case VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO: return sizeof(VkLayerDeviceCreateInfo);
-        default:
-            UNREACHABLE("Undefined struct type.");
+        default: return 0;
         }
+    }
+
+    size_t vk_structure_type_size(const struct VkBaseInStructure *item)
+    {
+        size_t size = vk_structure_type_size_or_zero(item);
+        if (!size)
+            UNREACHABLE("Undefined struct type.");
+        return size;
     }
 
     const char *
@@ -182,6 +189,7 @@ H_TEMPLATE = Template(textwrap.dedent(u"""\
       % endif
     % endfor
 
+    size_t vk_structure_type_size_or_zero(const struct VkBaseInStructure *item);
     size_t vk_structure_type_size(const struct VkBaseInStructure *item);
 
     const char * vk_ObjectType_to_ObjectName(VkObjectType type);

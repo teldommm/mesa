@@ -130,7 +130,7 @@ AHardwareBuffers:
 | `WRAPPER_MEMORY_BUDGET_MODE` | `off` (default): keep the native `VK_EXT_memory_budget` values unchanged; `proportional`: scale `heapBudget` and `heapUsage` by the old/new heap ratio when lowering it; `emulated`: replace the native budget with the emulated one on any driver |
 | `WRAPPER_MEMORY_BUDGET_RESERVE` | memory (MiB) kept out of the emulated budget for the system, default 1024 |
 | `WRAPPER_SUBGROUP_OPS` | `1`/`0`: report or hide the driver's subgroup operations (default: reported on Adreno — Turnip and the Qualcomm driver — hidden elsewhere) |
-| `WRAPPER_SAFE_CREATE_DEVICE` | retry vkCreateDevice with an empty pNext (default on) |
+| `WRAPPER_SAFE_CREATE_DEVICE` | retry vkCreateDevice with a minimal pNext, retaining WSI timeline and aliased robustness2 features when needed (default on) |
 | `WRAPPER_DEVICE_FAULT` | enable VK_EXT_device_fault reports on device loss |
 | `WRAPPER_EMULATE_BCN` | BCn mode, see above (default 3) |
 | `WRAPPER_USE_BCN_CACHE` | keep decompressed textures in `WRAPPER_CACHE_PATH` |
